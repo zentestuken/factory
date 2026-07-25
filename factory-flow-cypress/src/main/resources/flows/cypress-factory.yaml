@@ -1,0 +1,54 @@
+id: cypress-factory
+name: Cypress Factory
+version: 1.0.0
+triggers:
+  - event_type: manual
+input_schema:
+  required: [issueKey]
+output_schema:
+  artifacts: [test_plan.md]
+retry_policy:
+  max_attempts: 3
+  backoff_seconds: [30, 120, 300]
+agent_chain:
+  - step_id: triage
+    type: AGENT
+    worker_id: triage-agent
+    inputs: ["$trigger"]
+    outputs: [scope_manifest.md]
+
+  - step_id: context-load
+    type: AGENT
+    worker_id: cypress-context-loader
+    inputs: [scope_manifest.md]
+    outputs: [context.md]
+
+  - step_id: fragment-scan
+    type: AGENT
+    worker_id: cypress-fragment-scanner
+    inputs: [scope_manifest.md]
+    outputs: [fragment_library.md]
+
+  - step_id: test-spec
+    type: AGENT
+    worker_id: cypress-e2e-spec-agent
+    inputs: [scope_manifest.md, context.md, fragment_library.md]
+    outputs: [test_plan.md]
+
+  - step_id: gate-1-review
+    type: HITL_GATE
+    gate:
+      gate_id: gate-1-test-cases
+      title: "QA review: Cypress test cases"
+      review_instructions: >
+        Review the generated Cypress test cases for coverage, correctness, and
+        automatability. Verify that the automatable flag is accurate and that
+        automation notes reference real helpers from the fragment library where
+        applicable. Edit the test plan inline (AMEND) if cases need changes.
+      reviewed_artifacts: [test_plan.md, scope_manifest.md, context.md]
+
+  - step_id: testrail-sync
+    type: AGENT
+    worker_id: cypress-testrail-sync
+    inputs: [test_plan.md, scope_manifest.md]
+    outputs: [test_plan.md]

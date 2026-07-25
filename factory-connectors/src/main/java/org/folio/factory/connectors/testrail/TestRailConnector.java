@@ -23,4 +23,15 @@ public interface TestRailConnector {
      * Records results for cases in a run. Map: caseId → passed.
      */
     void addResults(long runId, Map<Long, Boolean> results, String comment);
+
+    /**
+     * Creates a test case with additional custom field metadata (e.g. automation type, team, ECS flag).
+     * The default implementation delegates to {@link #addCase} and ignores the metadata.
+     *
+     * @return the created case id
+     */
+    default long addCaseWithMetadata(long sectionId, String title, String steps, String expected,
+                                     Map<String, Object> metadata) {
+        return addCase(sectionId, title, steps, expected);
+    }
 }

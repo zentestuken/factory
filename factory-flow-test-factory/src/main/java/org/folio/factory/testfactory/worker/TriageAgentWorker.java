@@ -61,6 +61,8 @@ public class TriageAgentWorker extends AbstractLlmAgentWorker {
         metadata.put("endpoints", manifest.endpoints());
         metadata.put("risk_level", manifest.riskLevel());
         metadata.put("ambiguities", manifest.ambiguities());
+        metadata.put("ecs_enabled", manifest.ecsEnabled());
+        metadata.put("team", manifest.team());
         return resultWithUsage("scope_manifest.md",
                 frontmatterCodec.render(metadata, manifest.analysis()));
     }

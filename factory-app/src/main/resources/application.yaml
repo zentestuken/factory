@@ -42,9 +42,10 @@ spring:
       chat: ${FACTORY_LLM_PROVIDER:anthropic}
     anthropic:
       api-key: ${ANTHROPIC_API_KEY:}
+      timeout: ${FACTORY_LLM_TIMEOUT:300s}
       chat:
         options:
-          model: ${FACTORY_LLM_MODEL:claude-sonnet-4-5}
+          model: ${FACTORY_LLM_MODEL:claude-sonnet-4-6}
           max-tokens: 8192
     # Any OpenAI-compatible endpoint (Groq, Gemini, OpenRouter, local Ollama).
     # Active only when FACTORY_LLM_PROVIDER=openai.
@@ -127,6 +128,19 @@ factory:
     # Explicit placeholders: relaxed binding would NOT map the underscored env
     # vars onto these kebab-case properties by itself.
     testrail-section-id: ${FACTORY_TEST_FACTORY_TESTRAIL_SECTION_ID:}
+  cypress:
+    # GitHub repo ("owner/name") where generated Cypress specs will be committed.
+    target-repo: ${FACTORY_CYPRESS_TARGET_REPO:}
+    base-branch: ${FACTORY_CYPRESS_BASE_BRANCH:main}
+    # Local filesystem path to a checked-out copy of the TAF (stripes-testing).
+    # Used by FragmentScannerWorker to discover available fragment helpers.
+    # Leave blank to skip fragment scanning.
+    taf-root: ${FACTORY_CYPRESS_TAF_ROOT:}
+    # GitHub repo (owner/repo) containing the FOLIO AI skills.
+    # Context files are fetched from skills/write-testrail-cases/references/context/{area}.md on main.
+    folio-ai-repo: ${FACTORY_CYPRESS_FOLIO_AI_REPO:}
+    # TestRail section id for Cypress test cases (long integer).
+    testrail-section-id: ${FACTORY_CYPRESS_TESTRAIL_SECTION_ID:}
 
 logging:
   # OBS-1: JSON logging is opt-in via env so local `mvn spring-boot:run` stays

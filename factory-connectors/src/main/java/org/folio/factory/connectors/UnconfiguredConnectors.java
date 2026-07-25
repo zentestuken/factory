@@ -77,6 +77,11 @@ public final class UnconfiguredConnectors {
         }
 
         @Override
+        public String getFileContent(String repo, String branch, String path) {
+            throw notConfigured();
+        }
+
+        @Override
         public String connectorName() {
             return "github";
         }

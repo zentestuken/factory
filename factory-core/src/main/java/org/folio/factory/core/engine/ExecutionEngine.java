@@ -217,7 +217,7 @@ public class ExecutionEngine {
                         Map.of("attempt", attempts, "backoffSeconds", backoff));
                 engineMetrics.stepRetryScheduled();
                 log.warn("Step '{}' of execution {} failed (attempt {}); retrying in {}s: {}",
-                        step.stepId(), executionId, attempts, backoff, error);
+                        step.stepId(), executionId, attempts, backoff, error, e);
             } else {
                 log.warn("Step '{}' of execution {} failed but the run is already resolved; skipping retry",
                         step.stepId(), executionId);

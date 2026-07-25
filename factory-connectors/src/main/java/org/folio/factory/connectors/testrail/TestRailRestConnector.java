@@ -8,6 +8,7 @@ import tools.jackson.databind.JsonNode;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -37,6 +38,24 @@ public class TestRailRestConnector implements TestRailConnector, ConnectorHealth
                         "title", title,
                         "custom_steps", steps == null ? "" : steps,
                         "custom_expected", expected == null ? "" : expected))
+                .retrieve()
+                .body(JsonNode.class);
+        return response.path("id").asLong();
+    }
+
+    @Override
+    public long addCaseWithMetadata(long sectionId, String title, String steps, String expected,
+                                    Map<String, Object> metadata) {
+        Map<String, Object> request = new HashMap<>();
+        request.put("title", title);
+        request.put("custom_steps", steps == null ? "" : steps);
+        request.put("custom_expected", expected == null ? "" : expected);
+        if (metadata != null) {
+            request.putAll(metadata);
+        }
+        JsonNode response = restClient.post()
+                .uri("/index.php?/api/v2/add_case/{sectionId}", sectionId)
+                .body(request)
                 .retrieve()
                 .body(JsonNode.class);
         return response.path("id").asLong();

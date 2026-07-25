@@ -20,4 +20,9 @@ public interface GitHubConnector {
      * @return the created pull request's HTML URL
      */
     String createPullRequest(String repo, String headBranch, String baseBranch, String title, String body);
+
+    /**
+     * Returns the decoded text content of a file, or an empty string if the file does not exist.
+     */
+    String getFileContent(String repo, String branch, String path);
 }

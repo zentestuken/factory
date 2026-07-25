@@ -70,6 +70,23 @@ public class GitHubRestConnector implements GitHubConnector, ConnectorHealth {
         return response.path("html_url").asString("");
     }
 
+    @Override
+    public String getFileContent(String repo, String branch, String path) {
+        try {
+            JsonNode response = restClient.get()
+                    .uri("/repos/" + repo + "/contents/" + path + "?ref=" + branch)
+                    .retrieve()
+                    .body(JsonNode.class);
+            String encoded = response.path("content").asString("").replace("\n", "");
+            return new String(Base64.getDecoder().decode(encoded), StandardCharsets.UTF_8);
+        } catch (HttpClientErrorException e) {
+            if (e.getStatusCode() == HttpStatusCode.valueOf(404)) {
+                return "";
+            }
+            throw e;
+        }
+    }
+
     private java.util.Optional<String> existingFileSha(String repo, String branch, String path) {
         try {
             JsonNode existing = restClient.get()

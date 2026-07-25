@@ -63,6 +63,11 @@ class TestFactoryFinalizerWorkerTest {
                                         String title, String body) {
             return "https://github.com/o/r/pull/9";
         }
+
+        @Override
+        public String getFileContent(String repo, String branch, String path) {
+            return "";
+        }
     }
 
     static class FailingRunTestRail implements TestRailConnector {

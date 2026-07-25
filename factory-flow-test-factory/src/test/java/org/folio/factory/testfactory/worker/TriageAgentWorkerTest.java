@@ -29,7 +29,9 @@ class TriageAgentWorkerTest {
              "endpoints": ["/erm/sas"],
              "riskLevel": "medium",
              "ambiguities": ["Maximum name length is not specified"],
-             "analysis": "## Analysis\\n\\nThe story adds validation for agreement names."}
+             "analysis": "## Analysis\\n\\nThe story adds validation for agreement names.",
+             "ecsEnabled": false,
+             "team": "folio-erm"}
             """;
 
     private final FrontmatterCodec frontmatterCodec = new FrontmatterCodec();
@@ -116,7 +118,8 @@ class TriageAgentWorkerTest {
     void fallsBackToPayloadIssueKeyWhenManifestKeyIsBlank() {
         StubChatModel model = new StubChatModel().enqueue("""
                 {"issueKey": "", "summary": "s", "components": [], "endpoints": [],
-                 "riskLevel": "low", "ambiguities": [], "analysis": "## A"}
+                 "riskLevel": "low", "ambiguities": [], "analysis": "## A",
+                 "ecsEnabled": false, "team": ""}
                 """);
         JsonNode payload = jsonMapper.readTree("""
                 {"issueKey": "ERM-77", "issue": {"fields": {"summary": "x"}}}
