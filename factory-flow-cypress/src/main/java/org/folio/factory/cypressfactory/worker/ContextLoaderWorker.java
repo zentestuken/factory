@@ -12,6 +12,7 @@ import org.slf4j.LoggerFactory;
 import tools.jackson.databind.JsonNode;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -240,6 +241,9 @@ public class ContextLoaderWorker implements AgentWorker {
         return ID;
     }
 
+    private static final int THIN_CONTEXT_KBR_THRESHOLD = 10;
+    private static final String KBR_MARKER = "## Key Business Rule";
+
     @Override
     public AgentResult execute(AgentContext context) {
         String scopeManifest = context.requireInput("scope_manifest.md").content();
@@ -248,7 +252,27 @@ public class ContextLoaderWorker implements AgentWorker {
         List<String> areas = detectAreas(fm.metadata(), fm.body());
         String contextContent = fetchContexts(areas);
 
+        int kbrCount = countKeyBusinessRules(contextContent);
+        Map<String, Object> meta = new LinkedHashMap<>();
+        meta.put("areas", areas);
+        if (kbrCount < THIN_CONTEXT_KBR_THRESHOLD) {
+            log.info("Context for areas {} has {} KBR(s) (threshold {}) — marking context_quality: thin",
+                    areas, kbrCount, THIN_CONTEXT_KBR_THRESHOLD);
+            meta.put("context_quality", "thin");
+        }
+        contextContent = frontmatterCodec.render(meta, contextContent);
+
         return AgentResult.of("context.md", contextContent);
+    }
+
+    private int countKeyBusinessRules(String content) {
+        int count = 0;
+        int idx = 0;
+        while ((idx = content.indexOf(KBR_MARKER, idx)) != -1) {
+            count++;
+            idx += KBR_MARKER.length();
+        }
+        return count;
     }
 
     private List<String> detectAreas(JsonNode metadata, String body) {

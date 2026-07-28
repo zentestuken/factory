@@ -12,6 +12,7 @@ public record ScopeManifest(
         List<String> endpoints,
         String riskLevel,
         List<String> ambiguities,
+        List<String> acceptanceCriteria,
         String analysis,
         Boolean ecsEnabled,
         String team) {
@@ -20,6 +21,7 @@ public record ScopeManifest(
         components = components == null ? List.of() : components;
         endpoints = endpoints == null ? List.of() : endpoints;
         ambiguities = ambiguities == null ? List.of() : ambiguities;
+        acceptanceCriteria = acceptanceCriteria == null ? List.of() : acceptanceCriteria;
         team = team == null ? "" : team;
         ecsEnabled = ecsEnabled == null ? Boolean.FALSE : ecsEnabled;
     }

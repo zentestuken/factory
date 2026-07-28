@@ -9,13 +9,15 @@
 Before reading anything else: here is what the factory does from an end-user perspective.
 
 1. **You trigger the flow** via a REST call (`POST /api/triggers/manual` with the Jira issue key) or automatically via a Jira webhook on a story status transition.
-2. The factory detects the FOLIO area (e.g. Orders), loads the Orders context file, and scans
-   the fragment library — all automatically, no input from you.
-3. **Gate 1 lands**: a list of proposed test cases (e.g. 8 cases), each with an
+2. The factory detects the FOLIO area (e.g. Orders), loads the Orders context file, scans
+   the fragment library, and loads golden test case examples — all automatically.
+3. **Gate 0 lands**: a categorized list of proposed scenarios (S-01, S-02…) with shape notes
+   (journey vs atomic, step count, tier). You confirm coverage, add or remove scenarios, approve.
+4. **Gate 1 lands**: the generated test cases (one per confirmed scenario), each with an
    `automatable: true/false` flag. You review, override any flags, and approve.
-4. **Gate 2 lands**: the generated `.cy.js` spec files, already tagged with real TestRail
+5. **Gate 2 lands**: the generated `.cy.js` spec files, already tagged with real TestRail
    C###### IDs. You review the code quality and approve.
-5. After approval: specs are committed to stripes-testing in a PR, and (if execution mode is
+6. After approval: specs are committed to stripes-testing in a PR, and (if execution mode is
    enabled) Cypress runs and produces an Allure HTML report.
 
 That's it. The rest of this document explains how to build the system that does this.
@@ -96,9 +98,11 @@ from different contexts. The factory uses the Java connector; the MCP server sta
      │
      ▼
 [triage-agent]                                               REUSE from Flow A
-     │  ── Fetch story from Jira API (title, AC, labels, team field)
+     │  ── Fetch story + linked issues from Jira API
+     │  ── Extract acceptance criteria verbatim → acceptance_criteria[] in scope_manifest
      │  ── Identify affected FOLIO modules; map to test scope boundaries
-     │  ── Resolve team tag from Jira team field via configured mapping table
+     │  ── Map customfield_10057 → devTeam (used for TestRail custom_dev_team field)
+     │  ── Detect ECS context from labels/description → ecs_enabled flag
      ▼
 [scope_manifest.md]
      │
@@ -110,26 +114,56 @@ from different contexts. The factory uses the Java connector; the MCP server sta
      │  ── Provides: verbatim UI texts, business rules, capability sets/permissions for the area
      │  ── On ambiguity: record all matches; reviewer corrects inline at Gate 1
      │  ── On failure / unknown area: context.md with area: unknown; flow continues with empty context.md
+     │  ── Thin-context check: if < 10 Key Business Rules found → prepend context_quality: thin
+     │       frontmatter so downstream agents flag uncertain assertions as [verify on first execution]
      ▼
 [context.md]
      │
      ▼
 [fragment-scanner]                                                NEW · non-LLM
-     │  ── Walk FACTORY_TAF_ROOT/cypress/support/fragments/ (stripes-testing repo)
-     │  ── Collect every .js file: relative path + exported names
-     │       (export / export default / module.exports · no pre-filtering)
-     │  ── Full index ~100+ files passed to LLM; LLM selects relevant by name
+     │  ── TAF auto-cloned to {user.dir}/cypressTafClone at startup (TafSyncService)
+     │  ── Reads areas from context.md frontmatter; keywords from scope_manifest.md summary
+     │  ── Local path: score by filename (+3/kw) + content (+1/kw); fetch top-2 per area
+     │  ── GitHub API fallback when clone not ready (filename scoring only)
+     │  ── Extracts matching gui permissions from permissions.js per area
      ▼
-[fragment_index.md]
+[fragment_library.md]
      │
      ▼
-[e2e-spec-agent]                                                      NEW · LLM
+[examples-loader]                                                 NEW · non-LLM
+     │  ── Reads classpath:references/examples.md — 3 golden TestRail cases
+     │       with style annotations (terse expected results, no named actors,
+     │       compact preconditions, symbolic values, journey flag rules)
+     ▼
+[examples.md]
+     │
+     ▼
+[scenario-analysis]                                                   NEW · LLM
      │  ── Reads scope_manifest.md + context.md
+     │  ── Maps acceptance criteria → scenario candidates
+     │  ── Looks up area House Style (Type, step count, journey/atomic shape)
+     │  ── Produces categorized scenario proposals: happy path, business-rule
+     │       verification, capability boundaries, negative/edge, ECS variants
+     │  ── Each scenario: S-NN | title | Type | Steps: ~N | Journey: Yes/No | Tier
+     ▼
+[scenario_list.md]
+     │
+     ▼
+🛑 HITL Gate 0: Scenario Coverage Review
+     │  ── QA confirms WHAT will be tested before any case is written
+     │  ── Add missing coverage, remove out-of-scope items
+     │  ── Adjust journey vs atomic shape per scenario
+     │  ── test-spec generates exactly the confirmed scenarios
+     ▼
+[e2e-spec-agent]                                                      NEW · LLM
+     │  ── Reads scope_manifest.md + context.md + fragment_library.md
+     │        + examples.md + scenario_list.md
      │  ── System prompt: write-testrail-cases/SKILL.md guidelines (embedded)
-     │  ── Generate ALL test cases — automatable AND non-automatable
+     │       + House Style by Area table + Journey vs Atomic guidance
+     │       + Step Patterns + Entry Point Exhaustion rule
+     │  ── Generates exactly the cases listed in scenario_list.md
      │  ── automatable: true/false per case (no IDs yet — TestRail assigns them)
      │  ── Non-automatable: multi-tab flows, external auth, OS-level ops
-     │  ── Include scenario analysis block at top of test_plan.md
      ▼
 [test_plan.md]  — all cases with automatable flags; no IDs yet
      │
@@ -150,10 +184,10 @@ from different contexts. The factory uses the Java connector; the MCP server sta
      │
      ▼
 [cypress-automation-agent]                                            NEW · LLM
-     │  ── Reads updated test_plan.md (real C###### IDs) + fragment_index.md
+     │  ── Reads updated test_plan.md (real C###### IDs) + fragment_library.md
      │  ── Skip automatable: false cases entirely — no spec generated for them
-     │  ── System prompt: FACTORY_TAF_ROOT/CLAUDE.md + each
-     │       FACTORY_TAF_ROOT/.github/skills/<skill_name>/SKILL.md (embedded)
+     │  ── System prompt: cypressTafClone/CLAUDE.md + each
+     │       cypressTafClone/.github/skills/<skill_name>/SKILL.md (embedded)
      │  ── Generate .cy.js specs; use existing fragments; stub new ones for gaps
      │  ── Real IDs throughout: tags ['C627249'], AT_C627249_ vars, file names
      │  ── New fragment stubs: ⚠️ AI-GENERATED DRAFT banner required
@@ -171,11 +205,11 @@ from different contexts. The factory uses the Java connector; the MCP server sta
      ▼
 [cypress-execution-agent]                                         NEW · non-LLM
      │  ── Advisory mode (default): test_results.md mode: ADVISORY — no run
-     │  ── Execution mode: materialise specs + fragments to FACTORY_TAF_ROOT
-     │       rm -rf FACTORY_TAF_ROOT/allure-results
+     │  ── Execution mode: materialise specs + fragments to cypressTafClone/
+     │       rm -rf cypressTafClone/allure-results
      │       npx cypress run  (regular specs · ecsEnabled=false · allure=true)
      │       npx cypress run  (ECS specs only if present · ecsEnabled=true)
-     │       allure generate allure-results -o FACTORY_TAF_ROOT/allure-report
+     │       allure generate allure-results -o cypressTafClone/allure-report
      │  ── Env config: cypress-exec.yaml → FACTORY_CYPRESS_*_ENV → Gate 2 override
      ▼
 [test_results.md]  — pass/fail per case, totals
@@ -197,7 +231,7 @@ from different contexts. The factory uses the Java connector; the MCP server sta
      │  ── TestRail: all cases created with real C###### IDs
      │  ── stripes-testing: PR open with .cy.js specs + any new fragment stubs
      │  ── Jira: story commented with case count, PR link, run summary (passed/failed/skipped; execution mode only)
-     │  ── Allure HTML report at FACTORY_TAF_ROOT/allure-report/ (local)(execution mode only)
+     │  ── Allure HTML report at cypressTafClone/allure-report/ (local)(execution mode only)
 ```
 
 ---
@@ -248,7 +282,7 @@ corresponding `system.md` by hand.
 ### Who assembles the user prompts — the factory, every run
 
 The user prompt templates (`user.md` files) contain placeholders like `{{scope_manifest}}`,
-`{{context}}`, `{{fragment_index}}`, `{{test_plan}}`. The factory fills these in at runtime
+`{{context}}`, `{{fragment_library}}`, `{{test_plan}}`. The factory fills these in at runtime
 using the artifacts produced by previous steps in the same execution. A developer writes the
 template once; the factory does the assembly on every run.
 
@@ -258,7 +292,7 @@ template once; the factory does the assembly on every run.
 |---|---|---|
 | `system.md` files | Embedded at implementation time | Developer re-syncs when source changes |
 | `context.md` (area context file) | Fetched from GitHub API at runtime by `ContextLoaderWorker` | MQA — updating `inventory.md` etc. takes effect on the next factory run automatically |
-| `fragment_index.md` | Generated at runtime by `FragmentScannerWorker` by scanning the TAF | Always current — reflects the actual TAF on disk |
+| `fragment_library.md` | Generated at runtime by `FragmentScannerWorker` (area-scoped fragments + permissions) | Current — reflects TAF at last clone/pull |
 | `test_plan.md`, `scope_manifest.md` | Produced by earlier steps in the same execution | N/A — generated fresh each run |
 
 ### The three types of components you write
@@ -282,20 +316,27 @@ Mirror `factory-flow-test-factory`. One configuration class, one flow descriptor
 ```
 factory-flow-cypress/
   pom.xml
-  src/main/java/org/folio/factory/flowcypress/
+  src/main/java/org/folio/factory/cypressfactory/
     CypressFlowConfiguration.java
     worker/
-      ContextLoaderWorker.java          (non-LLM)
-      FragmentScannerWorker.java        (non-LLM)
-      E2eSpecAgentWorker.java       (LLM: generates test cases — owns e2e-spec-agent prompt)
-      CypressAutomationAgentWorker.java (LLM)
-      TestRailSyncAgentWorker.java      (non-LLM: push cases after Gate 1 → write real IDs into test_plan.md)
-      CypressExecutionWorker.java       (process runner, no LLM)
-      CypressFinalizerWorker.java       (adapted from Flow A)
+      ContextLoaderWorker.java              (non-LLM; thin-context detection built in)
+      FragmentScannerWorker.java            (non-LLM)
+      CypressExamplesLoaderWorker.java      (non-LLM; loads classpath:references/examples.md)
+      ScenarioAnalysisAgentWorker.java      (LLM; produces scenario_list.md for Gate 0)
+      E2eSpecAgentWorker.java               (LLM: generates test cases from confirmed scenarios)
+      CypressAutomationAgentWorker.java     (LLM)
+      TestRailSyncAgentWorker.java          (non-LLM: push cases after Gate 1 → write real IDs)
+      CypressExecutionWorker.java           (process runner, no LLM)
+      CypressFinalizerWorker.java           (adapted from Flow A)
   src/main/resources/
     flows/cypress-factory.yaml
-    cypress-exec.yaml                   (execution env config — regular + ECS params)
-    prompts/e2e-spec-agent/
+    cypress-exec.yaml                       (execution env config — regular + ECS params)
+    references/
+      examples.md                           (3 golden TestRail cases + anti-patterns)
+    prompts/cypress-e2e-spec-agent/
+      system.md
+      user.md
+    prompts/cypress-scenario-analysis/
       system.md
       user.md
     prompts/cypress-automation-agent/
@@ -373,35 +414,39 @@ continues — no hard failure.
 
 ### 3. `FragmentScannerWorker` — non-LLM worker (yaml id: `fragment-scanner`)
 
-Runs after context-loader, before e2e-spec-agent. Scans the entire
-`stripes-testing/cypress/support/fragments/` tree and produces a `fragment_index.md` artifact.
+Runs after context-loader. Produces `fragment_library.md` — area-scoped fragment excerpts and
+matching permissions from the stripes-testing TAF.
 
-**Fragment folders are not reliably mapped to FOLIO module/component names.** Folder names are
-arbitrary — some correspond to apps (`inventory`, `orders`), some to modals, some to cross-cutting
-workflows. Don't attempt to filter by component name from `scope_manifest.md`; instead, dump the
-full index and let the LLM use keyword matching against the test plan context to pick relevant
-fragments.
+**TAF is auto-cloned at startup by `TafSyncService`** to `{user.dir}/cypressTafClone` (shallow
+clone of `folio-org/stripes-testing`, branch `master`). No configuration required. When the clone
+is not yet ready, the worker falls back to the GitHub contents API automatically.
 
-`fragment_index.md` contains, for every `.js` file under `cypress/support/fragments/`:
-- File path relative to `cypress/support/fragments/`
-- Exported identifiers (parsed from `export` and `export default` lines, and from
-  `module.exports` assignments — some older TAF fragments use CommonJS style)
+**Inputs:** `context.md` (areas from frontmatter) + `scope_manifest.md` (summary for keywords).
 
-The full index will be large (~100+ files). To keep prompt size manageable:
-- Include only the file paths and exported names — not file contents
-- The LLM uses the names as a lookup table; it knows which fragments are relevant from context
+**Two-path execution:**
 
-This artifact is injected into the `cypress-automation-agent` prompt. **This single step has the
-largest quality impact on generated specs** — the LLM stops guessing fragment names and imports.
+*Local path (TAF clone ready):*
+- Resolves each area to its fragment directory (e.g. `check-in` → `checkin`, `fees-fines` → `users`,
+  `data-import` → `data_import`) via an explicit map; unmapped areas use the area name directly
+- Scores `.js` files: filename keyword match = +3/kw, content keyword match = +1/kw
+- Fetches top-2 scoring files in full; lists remaining filenames
+- Extracts matching `gui` permission strings from `permissions.js` using area-specific prefix list
 
-Configuration required:
-```yaml
-factory.taf-root: ${FACTORY_TAF_ROOT:}     # absolute path to stripes-testing checkout
-```
+*GitHub API fallback (clone not ready):*
+- Uses `GitHubConnector.listDirectory()` to list files; filename scoring only
+- Permissions section omitted (file too large to fetch via API)
 
-> **Parallel step opportunity:** `fragment-scanner` reads only `scope_manifest.md` — the same
-> input as `context-loader`. If the engine supports parallel steps, declare these two in parallel
-> to halve Phase 1 latency. Check the engine's YAML spec and the Flow A descriptor for the syntax.
+**`fragment_library.md` output (per area):**
+- Full source of top-2 scored fragment files under a `### path` heading
+- Bullet list of other fragment filenames in the area
+- `### Permissions` section: exact `gui` strings for use in test case preconditions
+
+This artifact feeds both `e2e-spec-agent` (permission names in preconditions) and
+`cypress-automation-agent` (fragment imports and method names).
+
+> **Fragment directory naming:** TAF uses mixed conventions — `bulk-edit` (hyphenated),
+> `checkin` (no separator), `data_import` (underscore), `marcAuthority` (camelCase).
+> The explicit `AREA_TO_DIR` map in `FragmentScannerWorker` handles all known mismatches.
 
 ---
 
@@ -490,7 +535,7 @@ inputs, record type, and output artifact name.
 2. **ECS rules from `.github/skills/ecs-user-setup/SKILL.md`** — embed the decision tree and
    code patterns. The factory LLM cannot invoke IDE skills; the guidance must be in the prompt.
 
-3. **Fragment index injection** — the `fragment_index.md` artifact from `FragmentScannerWorker`
+3. **Fragment library injection** — the `fragment_library.md` artifact from `FragmentScannerWorker`
    is included in the user-facing prompt template (not the system prompt, since it changes per run).
 
 4. **Few-shot examples** — 3-5 real `.cy.js` specs from the TAF (one per complexity level: simple
@@ -613,8 +658,7 @@ Warnings — log but don't fail:
 
 ### 8. `CypressExecutionWorker` — non-LLM worker (yaml id: `cypress-execution-agent`)
 
-**Advisory mode** (default when `FACTORY_TAF_ROOT` not set or `FACTORY_TAF_HAS_ENV_CONFIG` is
-not `true`): produces `test_results.md` with `mode: ADVISORY`, all cases `NOT_EXECUTED`.
+**Advisory mode** (default when `FACTORY_TAF_HAS_ENV_CONFIG` is not `true`): produces `test_results.md` with `mode: ADVISORY`, all cases `NOT_EXECUTED`.
 
 **Execution mode**: reads `test_scripts.md` (Cypress bundle with real C###### IDs) and
 `test_plan.md` (to know the `ecs_enabled` flag per case, used to split specs into regular vs ECS
@@ -669,7 +713,7 @@ via `npm install -g allure-commandline` or system package manager.
 
 The worker generates the HTML report to:
 ```
-{FACTORY_TAF_ROOT}/allure-report/
+{user.dir}/cypressTafClone/allure-report/
 ```
 
 After generation, the worker records the absolute path in `test_results.md` metadata:
@@ -783,7 +827,7 @@ Adapted from `TestFactoryFinalizerWorker`. Case creation is already done by
 | HITL gate mechanism | Core engine | Reuse unchanged |
 | HITL web console + review UI | `factory-app` | Reuse unchanged |
 | TestRail Java connector | `factory-connectors` | Reuse; add `getSection(sectionId)` method for hierarchy lookup |
-| GitHub connector | `factory-connectors` | Reuse; add `getFileContent(repo, branch, path)` method for context file loading; target = stripes-testing |
+| GitHub connector | `factory-connectors` | Reuse; added `getFileContent(repo, branch, path)` (context file loading) and `listDirectory(repo, branch, path)` (fragment fallback) |
 | `ArtifactStore`, `ExecutionEngine`, poller | `factory-core` | Reuse unchanged |
 | `FrontmatterCodec`, `ScriptBundleCodec` | `factory-agents` | Reuse unchanged; `CypressSanityPostProcessor` checks `.cy.js` extension (the codec itself supports any file type) |
 | `write-testrail-cases/SKILL.md` writing guidelines | MQA skill | Embed in `e2e-spec-agent` system prompt (source of truth for case authoring) |
@@ -799,7 +843,7 @@ Adapted from `TestFactoryFinalizerWorker`. Case creation is already done by
 
 | Variable | Purpose |
 |---|---|
-| `FACTORY_TAF_ROOT` | Absolute path to stripes-testing checkout (fragment scan + execution) |
+| TAF path | Auto-managed: `TafSyncService` clones to `{user.dir}/cypressTafClone` on startup — no env var needed |
 | `FACTORY_MQA_SKILL_REPO` | GitHub repo containing `write-testrail-cases` skill (e.g. `folio-org/folio-eureka-ai-dev`); used to fetch context files at runtime |
 | `FACTORY_MQA_SKILL_BRANCH` | Branch to fetch context files from (default: `main`) |
 | `FACTORY_TAF_HAS_ENV_CONFIG` | Set `true` to enable execution mode in `CypressExecutionWorker` |
@@ -820,7 +864,7 @@ are missing pieces that will block the flow from working correctly if left unadd
 
 ### TASK: Add `ecs_enabled` to `ScopeManifest`
 
-**Status:** Not started — blocker for ECS spec splitting in Phase 2/3.
+**Status:** DONE — `ecsEnabled` field present in `ScopeManifest.java`; triage prompt instructs detection from labels/description.
 
 **Problem:** The plan references `ecs_enabled` throughout (context loader, test-spec agent prompt,
 E2E spec agent, cypress-execution, YAML). However, the Java record
@@ -872,23 +916,29 @@ testing.
 
 **Goal: Gate 1 works end-to-end; cases published to TestRail with real IDs after approval.**
 
-1. Create `factory-flow-cypress` Maven module (skeleton only)
-2. Implement `ContextLoaderWorker` (area detection via keyword table + context file load)
-3. Implement `FragmentScannerWorker` (filesystem scan + export parsing)
-4. Write `e2e-spec-agent/system.md` (from `write-testrail-cases/SKILL.md` + embedded examples)
-5. Implement `TestRailSyncAgentWorker` (push cases → collect real IDs → write back to test_plan.md)
-6. Write `cypress-factory.yaml` with steps 1-6 (triage → context-loader → fragment-scanner → e2e-spec-agent → Gate 1 → testrail-sync)
-7. Wire `CypressFlowConfiguration`, add to `factory-app/pom.xml`
-8. End-to-end test: Jira story → triage → context-load → fragment-scan → test-spec → Gate 1 approval → TestRail cases created
+**Implemented steps:**
 
-**Milestone:** Gate 1 review works; `context.md` shows detected area; after approval, cases appear
-in TestRail and `test_plan.md` carries real `C######` IDs with `automatable` flags.
+1. ✅ Create `factory-flow-cypress` Maven module
+2. ✅ Implement `ContextLoaderWorker` (area detection + context file load + thin-context flag)
+3. ✅ Implement `TafSyncService` (auto-clone to `cypressTafClone/`) + `FragmentScannerWorker` (keyword scoring, GitHub API fallback, permissions matching → `fragment_library.md`)
+4. ✅ Implement `CypressExamplesLoaderWorker` (loads `references/examples.md` from classpath)
+5. ✅ Implement `ScenarioAnalysisAgentWorker` (LLM; categorized scenario proposals)
+6. ✅ Write `cypress-scenario-analysis/system.md` + `user.md`
+7. ✅ Write `cypress-e2e-spec-agent/system.md` (from SKILL.md + House Style + Step Patterns + self-review)
+8. ✅ Write `cypress-e2e-spec-agent/user.md` (with `{{examples}}` + `{{scenario_list}}` sections)
+9. ✅ Implement `TestRailSyncAgentWorker` (push cases → collect real IDs → write back)
+10. ✅ Write `cypress-factory.yaml`:
+    triage → context-load → fragment-scan → examples-load → scenario-analysis →
+    gate-0-scenarios → test-spec → gate-1-review → testrail-sync
+11. ✅ Wire `CypressFlowConfiguration`, add to `factory-app/pom.xml`
 
-**Verify:** Open `/executions/{id}` in the factory UI. The Gate 1 review panel should show
-`context.md` with a `detected_area: inventory` (or the correct area) frontmatter block, and
-`test_plan.md` with numbered cases each having `automatable: true` or `false`. After Gate 1
-approval: check TestRail — new cases should appear in the configured section with the AI label
-(67), and the updated `test_plan.md` artifact should carry `id: C######` per case.
+**Milestone:** Gate 0 confirms scenario coverage; Gate 1 reviews test cases; after approval,
+cases appear in TestRail and `test_plan.md` carries real `C######` IDs.
+
+**Verify:** Open `/executions/{id}`. Gate 0 shows `scenario_list.md` with categorized S-NN
+proposals. Gate 1 shows `context.md` with `detected_area` frontmatter and `test_plan.md` with
+cases matching the confirmed scenarios, each with `automatable: true/false`. After Gate 1
+approval: TestRail cases created with AI label (67) and `test_plan.md` carries `id: C######`.
 
 ---
 
@@ -973,11 +1023,10 @@ Remaining mitigations:
 - Non-automatable cases still go to TestRail; just skipped by the automation agent
 - The `test_scripts.md` bundle will have fewer specs than test cases in `test_plan.md`; this is expected (non-automatable cases are skipped) and noted in `sync_report.md`
 
-### `examples.md` gap
-The `write-testrail-cases` skill references `references/examples.md` (step 2: "read examples to
-match verification depth"). This file does not exist in the current local copy. Fill the gap by
-hand-picking 2–3 high-quality existing TestRail cases per complexity level (simple UI, capability
-boundary, ECS) and embedding them in the `e2e-spec-agent` system prompt as few-shot examples.
+### `examples.md` gap — RESOLVED
+`CypressExamplesLoaderWorker` reads `classpath:references/examples.md` (3 golden cases + anti-patterns
+section) and injects it into `e2e-spec-agent` via the `{{examples}}` placeholder in `user.md`.
+The file is checked into `factory-flow-cypress/src/main/resources/references/examples.md`.
 
 ---
 
@@ -1111,10 +1160,9 @@ public class ContextLoaderWorker implements AgentWorker {
 }
 ```
 
-`FragmentScannerWorker` follows the exact same shape: read `scope_manifest.md`, walk the
-`stripes-testing/cypress/support/fragments/` tree with `Files.walk(...)`, collect exported
-identifiers by line-scanning each `.js` file for `export ` / `export default `, build a
-Markdown table, return `AgentResult.of("fragment_index.md", output)`.
+`FragmentScannerWorker` follows the exact same shape: reads `context.md` (areas) and
+`scope_manifest.md` (keywords), uses `TafSyncService.tafRoot()` for local filesystem scoring
+or `GitHubConnector.listDirectory()` as fallback, returns `AgentResult.of("fragment_library.md", output)`.
 
 `TestRailSyncAgentWorker` also follows this shape but additionally calls the `TestRailConnector`
 — look at `TestFactoryFinalizerWorker.syncTestRail()` for the exact connector API. It writes real
@@ -1150,14 +1198,14 @@ public class CypressAutomationAgentWorker extends AbstractLlmAgentWorker {
 
         // 1. Read inputs
         String testPlan       = context.requireInput("test_plan.md").content();
-        String fragmentIndex  = context.requireInput("fragment_index.md").content();
+        String fragmentLibrary = context.requireInput("fragment_library.md").content();
 
         // 2. Call the LLM — vars map becomes {{placeholder}} substitutions in user.md
         //    callForEntity parses the LLM's JSON response into a ScriptBundle record
         ScriptBundle bundle = callForEntity(
             Map.of(
-                "test_plan",      testPlan,
-                "fragment_index", fragmentIndex
+                "test_plan",       testPlan,
+                "fragment_library", fragmentLibrary
             ),
             ScriptBundle.class   // ← the record the LLM must produce; defined in your model package
         );
@@ -1174,7 +1222,7 @@ public class CypressAutomationAgentWorker extends AbstractLlmAgentWorker {
 The prompt files live at:
 ```
 src/main/resources/prompts/cypress-automation-agent/system.md   ← static instructions
-src/main/resources/prompts/cypress-automation-agent/user.md     ← template with {{test_plan}}, {{fragment_index}}
+src/main/resources/prompts/cypress-automation-agent/user.md     ← template with {{test_plan}}, {{fragment_library}}
 ```
 
 The base class loads them by `workerId` automatically — the file names are the contract.
@@ -1190,7 +1238,7 @@ constructor pattern, same `callForEntity` call. Only three things differ:
 ```java
 public static final String ID = "e2e-spec-agent";
 
-// Inputs: scope_manifest + area context (not test_plan + fragment_index)
+// Inputs: scope_manifest + area context (not test_plan + fragment_library)
 String scopeManifest = context.requireInput("scope_manifest.md").content();
 String areaContext   = context.requireInput("context.md").content();
 
@@ -1435,8 +1483,8 @@ steps:
   - step_id: fragment-scan
     type: AGENT
     worker_id: fragment-scanner
-    inputs: [scope_manifest.md]
-    outputs: [fragment_index.md]
+    inputs: [context.md, scope_manifest.md]
+    outputs: [fragment_library.md]
 
   - step_id: test-spec
     type: AGENT
@@ -1457,7 +1505,7 @@ steps:
   - step_id: cypress-automation
     type: AGENT
     worker_id: cypress-automation-agent
-    inputs: [test_plan.md, fragment_index.md]   # test_plan.md now carries real C###### IDs
+    inputs: [test_plan.md, fragment_library.md]   # test_plan.md now carries real C###### IDs
     outputs: [test_scripts.md]
 
   - step_id: gate-2
@@ -1497,7 +1545,7 @@ ProcessBuilder pb = new ProcessBuilder(
     "--config", "baseUrl=" + config.baseUrl(),
     "-e", buildEnvString(config.env())   // "OKAPI_HOST=...,OKAPI_TENANT=..."
 );
-pb.directory(new File(properties.tafRoot()));
+pb.directory(tafSyncService.tafRoot().toFile());
 pb.redirectOutput(outputFile);   // write stdout+stderr to a temp file, not a pipe
 pb.redirectErrorStream(true);    // merge stderr into stdout
 Process process = pb.start();
@@ -1564,7 +1612,7 @@ produces a `failure_report.md` entry with:
 - The test's original intent (from `test_plan.md`)
 - A category tag:
   - `FIXABLE` — structural issues an LLM can reliably fix: import errors, unknown method names
-    (cross-referenced against `fragment_index.md`), assertion text mismatches where the actual
+    (cross-referenced against `fragment_library.md`), assertion text mismatches where the actual
     value is visible in the error, wrong path depth in imports
   - `ENV_ISSUE` — credential failures, network timeouts, missing test data, tenant not found —
     no code change can fix these; skip them
@@ -1581,7 +1629,7 @@ Key constraints the prompt must enforce explicitly:
 - Output a ScriptBundle containing **only the modified files** — a diff, not a full rewrite
 - Fixing a failure by removing or weakening an assertion is not a fix — flag it as `UNFIXABLE`
   instead
-- If a fix requires a new fragment method that doesn't exist in `fragment_index.md`, generate
+- If a fix requires a new fragment method that doesn't exist in `fragment_library.md`, generate
   a fragment stub and include it in the bundle (same pattern as the automation agent)
 
 Re-run command targets only failing specs:
@@ -1612,5 +1660,5 @@ prominently in the Jira comment so engineers know exactly what needs manual atte
 
 Before building Phase 4, consider expanding `CypressSanityPostProcessor` to catch more
 structural issues *before* execution: unknown fragment references (cross-check against
-`fragment_index.md`), wrong import depth (verify against bundle file path), tag format
+`fragment_library.md`), wrong import depth (verify against bundle file path), tag format
 violations. Better prevention means fewer failures reach the fix loop in the first place.

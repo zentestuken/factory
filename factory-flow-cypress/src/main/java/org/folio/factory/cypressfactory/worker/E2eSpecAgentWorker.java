@@ -43,9 +43,15 @@ public class E2eSpecAgentWorker extends AbstractLlmAgentWorker {
         String ctx = context.requireInput("context.md").content();
         ArtifactContent fragmentLib = context.inputs().get("fragment_library.md");
         String fragments = fragmentLib != null ? fragmentLib.content() : "";
+        ArtifactContent examplesArtifact = context.inputs().get("examples.md");
+        String examples = examplesArtifact != null ? examplesArtifact.content() : "";
+        ArtifactContent scenarioListArtifact = context.inputs().get("scenario_list.md");
+        String scenarioList = scenarioListArtifact != null ? scenarioListArtifact.content() : "";
 
         CypressTestPlan plan = callForEntity(
-                Map.of("scope_manifest", scopeManifest, "context", ctx, "fragment_library", fragments),
+                Map.of("scope_manifest", scopeManifest, "context", ctx,
+                        "fragment_library", fragments, "examples", examples,
+                        "scenario_list", scenarioList),
                 CypressTestPlan.class);
 
         if (plan.cases().isEmpty()) {

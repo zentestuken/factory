@@ -4,8 +4,11 @@ import org.folio.factory.agents.artifact.FrontmatterCodec;
 import org.folio.factory.connectors.github.GitHubConnector;
 import org.folio.factory.connectors.testrail.TestRailConnector;
 import org.folio.factory.cypressfactory.worker.ContextLoaderWorker;
+import org.folio.factory.cypressfactory.worker.CypressExamplesLoaderWorker;
 import org.folio.factory.cypressfactory.worker.E2eSpecAgentWorker;
 import org.folio.factory.cypressfactory.worker.FragmentScannerWorker;
+import org.folio.factory.cypressfactory.worker.ScenarioAnalysisAgentWorker;
+import org.folio.factory.cypressfactory.worker.TafSyncService;
 import org.folio.factory.cypressfactory.worker.TestRailSyncAgentWorker;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -29,8 +32,26 @@ public class CypressFlowConfiguration {
     }
 
     @Bean
-    public FragmentScannerWorker fragmentScannerWorker(CypressFlowProperties properties) {
-        return new FragmentScannerWorker(properties);
+    public TafSyncService tafSyncService() {
+        return new TafSyncService();
+    }
+
+    @Bean
+    public FragmentScannerWorker fragmentScannerWorker(TafSyncService tafSyncService,
+                                                        GitHubConnector gitHubConnector,
+                                                        FrontmatterCodec frontmatterCodec) {
+        return new FragmentScannerWorker(tafSyncService, gitHubConnector, frontmatterCodec);
+    }
+
+    @Bean
+    public CypressExamplesLoaderWorker cypressExamplesLoaderWorker(GitHubConnector gitHubConnector,
+                                                                    CypressFlowProperties properties) {
+        return new CypressExamplesLoaderWorker(gitHubConnector, properties);
+    }
+
+    @Bean
+    public ScenarioAnalysisAgentWorker scenarioAnalysisAgentWorker(ChatClient.Builder chatClientBuilder) {
+        return new ScenarioAnalysisAgentWorker(chatClientBuilder.build());
     }
 
     @Bean

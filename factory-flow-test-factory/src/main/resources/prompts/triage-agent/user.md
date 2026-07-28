@@ -1,5 +1,9 @@
 Analyse this Jira story and produce the scope manifest.
 
-Jira issue JSON:
+## Main issue
 
 {{issue_json}}
+
+## Linked issues
+
+{{linked_issues_json}}

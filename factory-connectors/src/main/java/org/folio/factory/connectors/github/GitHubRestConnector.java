@@ -8,8 +8,10 @@ import org.springframework.web.client.RestClient;
 import tools.jackson.databind.JsonNode;
 
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -83,6 +85,28 @@ public class GitHubRestConnector implements GitHubConnector, ConnectorHealth {
             if (e.getStatusCode() == HttpStatusCode.valueOf(404)) {
                 return "";
             }
+            throw e;
+        }
+    }
+
+    @Override
+    public List<String> listDirectory(String repo, String branch, String path) {
+        try {
+            JsonNode response = restClient.get()
+                    .uri("/repos/" + repo + "/contents/" + path + "?ref=" + branch)
+                    .retrieve()
+                    .body(JsonNode.class);
+            if (response == null || !response.isArray()) return List.of();
+            List<String> names = new ArrayList<>();
+            for (JsonNode entry : response) {
+                if ("file".equals(entry.path("type").asString(""))) {
+                    String name = entry.path("name").asString("");
+                    if (!name.isBlank()) names.add(name);
+                }
+            }
+            return names;
+        } catch (HttpClientErrorException e) {
+            if (e.getStatusCode() == HttpStatusCode.valueOf(404)) return List.of();
             throw e;
         }
     }

@@ -2,6 +2,8 @@ package org.folio.factory.connectors.github;
 
 import java.util.Map;
 
+import java.util.List;
+
 public interface GitHubConnector {
 
     /**
@@ -25,4 +27,10 @@ public interface GitHubConnector {
      * Returns the decoded text content of a file, or an empty string if the file does not exist.
      */
     String getFileContent(String repo, String branch, String path);
+
+    /**
+     * Returns the names of files (not subdirectories) in the directory at {@code path},
+     * or an empty list if the path does not exist or is not a directory.
+     */
+    List<String> listDirectory(String repo, String branch, String path);
 }

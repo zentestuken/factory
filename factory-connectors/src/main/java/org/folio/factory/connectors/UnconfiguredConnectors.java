@@ -32,6 +32,11 @@ public final class UnconfiguredConnectors {
         }
 
         @Override
+        public List<JiraIssue> getLinkedIssues(String issueKey) {
+            return List.of();
+        }
+
+        @Override
         public void addComment(String issueKey, String body) {
             throw notConfigured();
         }
@@ -78,6 +83,11 @@ public final class UnconfiguredConnectors {
 
         @Override
         public String getFileContent(String repo, String branch, String path) {
+            throw notConfigured();
+        }
+
+        @Override
+        public List<String> listDirectory(String repo, String branch, String path) {
             throw notConfigured();
         }
 

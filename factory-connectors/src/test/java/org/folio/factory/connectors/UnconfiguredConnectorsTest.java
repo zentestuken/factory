@@ -31,6 +31,12 @@ class UnconfiguredConnectorsTest {
     }
 
     @Test
+    void jiraGetLinkedIssuesReturnsEmptyWithoutThrowing() {
+        // advisory mode must not fail when Jira is unconfigured
+        assertThat(new UnconfiguredConnectors.Jira().getLinkedIssues("ERM-42")).isEmpty();
+    }
+
+    @Test
     void gitHubFailsWithEnvVarNames() {
         UnconfiguredConnectors.GitHub gitHub = new UnconfiguredConnectors.GitHub();
 
@@ -39,7 +45,9 @@ class UnconfiguredConnectorsTest {
         List<ThrowingCallable> calls = List.of(
                 () -> gitHub.createBranch("o/r", "main", "feature"),
                 () -> gitHub.commitFiles("o/r", "feature", Map.of(), "msg"),
-                () -> gitHub.createPullRequest("o/r", "feature", "main", "Title", "Body"));
+                () -> gitHub.createPullRequest("o/r", "feature", "main", "Title", "Body"),
+                () -> gitHub.getFileContent("o/r", "main", "file.txt"),
+                () -> gitHub.listDirectory("o/r", "main", "dir"));
         for (ThrowingCallable call : calls) {
             assertThatThrownBy(call)
                     .isInstanceOf(ConnectorNotConfiguredException.class)

@@ -44,6 +44,11 @@ class TriageAgentWorkerTest {
         }
 
         @Override
+        public List<JiraIssue> getLinkedIssues(String issueKey) {
+            throw new AssertionError("Jira must not be called when the payload carries an inline issue");
+        }
+
+        @Override
         public void addComment(String issueKey, String body) {
             throw new AssertionError("Triage must not comment on issues");
         }
@@ -66,6 +71,11 @@ class TriageAgentWorkerTest {
         public JiraIssue getIssue(String issueKey) {
             requestedKey = issueKey;
             return new JiraIssue(issueKey, "s", "d", "Open", "Story", List.of(), raw);
+        }
+
+        @Override
+        public List<JiraIssue> getLinkedIssues(String issueKey) {
+            return List.of();
         }
     }
 
@@ -112,6 +122,26 @@ class TriageAgentWorkerTest {
         assertThat(jira.requestedKey).isEqualTo("ERM-6");
         assertThat(model.receivedPrompts().getFirst().getContents())
                 .contains("Fetched from Jira");
+    }
+
+    @Test
+    void acceptanceCriteriaFromManifestAppearsInOutputFrontmatter() {
+        StubChatModel model = new StubChatModel().enqueue("""
+                {"issueKey": "ERM-5", "summary": "s", "components": [], "endpoints": [],
+                 "riskLevel": "low", "ambiguities": [],
+                 "acceptanceCriteria": ["ERM-5: User can create an agreement", "ERM-5: Name is validated"],
+                 "analysis": "## A", "ecsEnabled": false, "team": ""}
+                """);
+        JsonNode payload = jsonMapper.readTree("""
+                {"issueKey": "ERM-5", "issue": {"fields": {"summary": "x"}}}
+                """);
+
+        AgentResult result = worker(model, new UnusedJira()).execute(contextWith(payload));
+
+        Frontmatter parsed = frontmatterCodec.parse(result.outputs().get("scope_manifest.md"));
+        assertThat(parsed.metadata().path("acceptance_criteria").isArray()).isTrue();
+        assertThat(parsed.metadata().path("acceptance_criteria").get(0).asString(""))
+                .isEqualTo("ERM-5: User can create an agreement");
     }
 
     @Test

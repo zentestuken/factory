@@ -15,8 +15,15 @@ Rules:
   data sensitivity.
 - Record every ambiguity or missing acceptance criterion you notice; QA reviews
   these at the human gate.
+- Extract acceptance criteria verbatim from the issue description AND from any
+  linked issues provided. Collect all AC items into the acceptanceCriteria list —
+  do not paraphrase, summarise, or merge them. Prefix each item with its source
+  issue key, e.g. "UIIN-1234: User can edit the title field". If the description
+  uses a numbered or bulleted AC list, preserve each item as a separate entry.
+  If linked issues contain their own ACs, append those after the main issue's ACs.
 - The analysis field is human-readable Markdown: a concise summary of what the
-  story changes, its testable surface, and out-of-scope notes.
+  story changes, its testable surface, how linked issues relate to it, and
+  out-of-scope notes.
 - Set ecsEnabled to true if any of the following apply: the story has labels
   "ecs", "multi-tenant", or "consortia"; the acceptance criteria mention
   consortia, consortium, or ECS tenants; or the summary explicitly references

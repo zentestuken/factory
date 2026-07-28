@@ -95,6 +95,11 @@ class TestFactoryFinalizerWorkerTest {
         }
 
         @Override
+        public List<JiraIssue> getLinkedIssues(String issueKey) {
+            return List.of();
+        }
+
+        @Override
         public void addComment(String issueKey, String body) {
             lastComment = issueKey + ": " + body;
         }

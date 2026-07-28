@@ -19,3 +19,6 @@ target/
 # local AI agent tooling state (never shared)
 /.claude/
 /.superpowers/
+
+# auto-cloned stripes-testing TAF (managed at runtime by TafSyncService)
+/cypressTafClone/

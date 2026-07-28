@@ -3,6 +3,7 @@ package org.folio.factory.testfactory.worker;
 import org.folio.factory.agents.artifact.FrontmatterCodec;
 import org.folio.factory.agents.llm.AbstractLlmAgentWorker;
 import org.folio.factory.connectors.jira.JiraConnector;
+import org.folio.factory.connectors.jira.JiraIssue;
 import org.folio.factory.core.agent.AgentContext;
 import org.folio.factory.core.agent.AgentExecutionException;
 import org.folio.factory.core.agent.AgentResult;
@@ -11,7 +12,9 @@ import org.springframework.ai.chat.client.ChatClient;
 import tools.jackson.databind.JsonNode;
 
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 /**
  * Parses a Jira story (inline payload or fetched via the Jira connector) and
@@ -44,14 +47,23 @@ public class TriageAgentWorker extends AbstractLlmAgentWorker {
             throw new AgentExecutionException("Triage requires a trigger payload with an issueKey");
         }
         String issueKey = payload.path("issueKey").asString("");
-        JsonNode issue = payload.get("issue");
-        String issueJson = issue != null && !issue.isNull()
-                ? issue.toString()
-                // Data-critical connector call: no inline issue means Jira must be
-                // reachable; failures count against the retry budget.
-                : jiraConnector.getIssue(issueKey).raw().toString();
+        JsonNode inlineIssue = payload.get("issue");
+        String issueJson;
+        List<JiraIssue> linkedIssues;
+        if (inlineIssue != null && !inlineIssue.isNull()) {
+            issueJson = inlineIssue.toString();
+            linkedIssues = List.of();
+        } else {
+            // Data-critical connector call: failures count against the retry budget.
+            issueJson = jiraConnector.getIssue(issueKey).raw().toString();
+            linkedIssues = jiraConnector.getLinkedIssues(issueKey);
+        }
+        String linkedIssuesJson = linkedIssues.isEmpty() ? "none"
+                : linkedIssues.stream().map(i -> i.raw().toString()).collect(Collectors.joining("\n---\n"));
 
-        ScopeManifest manifest = callForEntity(Map.of("issue_json", issueJson), ScopeManifest.class);
+        ScopeManifest manifest = callForEntity(
+                Map.of("issue_json", issueJson, "linked_issues_json", linkedIssuesJson),
+                ScopeManifest.class);
 
         Map<String, Object> metadata = new LinkedHashMap<>();
         metadata.put("issue_key", manifest.issueKey() == null || manifest.issueKey().isBlank()
@@ -61,6 +73,7 @@ public class TriageAgentWorker extends AbstractLlmAgentWorker {
         metadata.put("endpoints", manifest.endpoints());
         metadata.put("risk_level", manifest.riskLevel());
         metadata.put("ambiguities", manifest.ambiguities());
+        metadata.put("acceptance_criteria", manifest.acceptanceCriteria());
         metadata.put("ecs_enabled", manifest.ecsEnabled());
         metadata.put("team", manifest.team());
         return resultWithUsage("scope_manifest.md",

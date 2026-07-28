@@ -131,11 +131,7 @@ factory:
   cypress:
     # GitHub repo ("owner/name") where generated Cypress specs will be committed.
     target-repo: ${FACTORY_CYPRESS_TARGET_REPO:}
-    base-branch: ${FACTORY_CYPRESS_BASE_BRANCH:main}
-    # Local filesystem path to a checked-out copy of the TAF (stripes-testing).
-    # Used by FragmentScannerWorker to discover available fragment helpers.
-    # Leave blank to skip fragment scanning.
-    taf-root: ${FACTORY_CYPRESS_TAF_ROOT:}
+    base-branch: ${FACTORY_CYPRESS_BASE_BRANCH:master}
     # GitHub repo (owner/repo) containing the FOLIO AI skills.
     # Context files are fetched from skills/write-testrail-cases/references/context/{area}.md on main.
     folio-ai-repo: ${FACTORY_CYPRESS_FOLIO_AI_REPO:}

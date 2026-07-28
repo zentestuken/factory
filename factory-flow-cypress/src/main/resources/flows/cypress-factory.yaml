@@ -26,13 +26,36 @@ agent_chain:
   - step_id: fragment-scan
     type: AGENT
     worker_id: cypress-fragment-scanner
-    inputs: [scope_manifest.md]
+    inputs: [context.md, scope_manifest.md]
     outputs: [fragment_library.md]
+
+  - step_id: examples-load
+    type: AGENT
+    worker_id: cypress-examples-loader
+    inputs: []
+    outputs: [examples.md]
+
+  - step_id: scenario-analysis
+    type: AGENT
+    worker_id: cypress-scenario-analysis
+    inputs: [scope_manifest.md, context.md]
+    outputs: [scenario_list.md]
+
+  - step_id: gate-0-scenarios
+    type: HITL_GATE
+    gate:
+      gate_id: gate-0-scenarios
+      title: "QA: confirm test scenario coverage"
+      review_instructions: >
+        Review proposed scenarios. Add missing coverage, remove out-of-scope items,
+        adjust journey vs atomic shape. Amend scenario_list.md — test-spec will generate
+        cases for exactly the scenarios confirmed here.
+      reviewed_artifacts: [scenario_list.md, scope_manifest.md, context.md]
 
   - step_id: test-spec
     type: AGENT
     worker_id: cypress-e2e-spec-agent
-    inputs: [scope_manifest.md, context.md, fragment_library.md]
+    inputs: [scope_manifest.md, context.md, fragment_library.md, examples.md, scenario_list.md]
     outputs: [test_plan.md]
 
   - step_id: gate-1-review
