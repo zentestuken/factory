@@ -38,6 +38,11 @@ public class E2eSpecAgentWorker extends AbstractLlmAgentWorker {
     }
 
     @Override
+    protected Integer maxTokens() {
+        return 16384;
+    }
+
+    @Override
     public AgentResult execute(AgentContext context) {
         String scopeManifest = context.requireInput("scope_manifest.md").content();
         String ctx = context.requireInput("context.md").content();

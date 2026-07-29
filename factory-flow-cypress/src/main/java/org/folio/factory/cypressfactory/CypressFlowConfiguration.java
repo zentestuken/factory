@@ -2,6 +2,7 @@ package org.folio.factory.cypressfactory;
 
 import org.folio.factory.agents.artifact.FrontmatterCodec;
 import org.folio.factory.connectors.github.GitHubConnector;
+import org.folio.factory.connectors.jira.JiraConnector;
 import org.folio.factory.connectors.testrail.TestRailConnector;
 import org.folio.factory.cypressfactory.worker.ContextLoaderWorker;
 import org.folio.factory.cypressfactory.worker.CypressExamplesLoaderWorker;
@@ -16,6 +17,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import tools.jackson.databind.json.JsonMapper;
 
+
 /**
  * Cypress Factory plugin wiring. The flow itself is data ({@code flows/cypress-factory.yaml});
  * this class only assembles the worker beans the descriptor references.
@@ -26,9 +28,11 @@ public class CypressFlowConfiguration {
 
     @Bean
     public ContextLoaderWorker contextLoaderWorker(GitHubConnector gitHubConnector,
+                                                   JiraConnector jiraConnector,
                                                    FrontmatterCodec frontmatterCodec,
+                                                   JsonMapper jsonMapper,
                                                    CypressFlowProperties properties) {
-        return new ContextLoaderWorker(gitHubConnector, frontmatterCodec, properties);
+        return new ContextLoaderWorker(gitHubConnector, jiraConnector, frontmatterCodec, jsonMapper, properties);
     }
 
     @Bean

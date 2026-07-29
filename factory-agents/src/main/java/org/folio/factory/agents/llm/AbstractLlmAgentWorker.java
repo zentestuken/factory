@@ -9,6 +9,7 @@ import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.ResponseEntity;
 import org.springframework.ai.chat.metadata.Usage;
 import org.springframework.ai.chat.model.ChatResponse;
+import org.springframework.ai.chat.prompt.ChatOptions;
 import tools.jackson.core.JacksonException;
 
 import java.util.Map;
@@ -49,6 +50,14 @@ public abstract class AbstractLlmAgentWorker implements AgentWorker {
     }
 
     /**
+     * Override to request a larger output window for workers that generate long structured output.
+     * Returns {@code null} by default (use the model's or global default).
+     */
+    protected Integer maxTokens() {
+        return null;
+    }
+
+    /**
      * Calls the model and binds the response to {@code type} via Spring AI's
      * structured output support, retrying once on unparseable output.
      */
@@ -57,7 +66,7 @@ public abstract class AbstractLlmAgentWorker implements AgentWorker {
         String system = systemPrompt(variables);
         String user = userPrompt(variables);
         try {
-            return captureUsage(chatClient.prompt().system(system).user(user).call().responseEntity(type));
+            return captureUsage(buildPrompt(system, user).call().responseEntity(type));
         } catch (JacksonException firstFailure) {
             // JacksonException is what BeanOutputConverter propagates on unparseable
             // output; transport/auth/rate-limit failures must fall through to the
@@ -65,9 +74,8 @@ public abstract class AbstractLlmAgentWorker implements AgentWorker {
             log.warn("Worker '{}' got unparseable structured output ({}); retrying once",
                     id(), firstFailure.getMessage());
             try {
-                return captureUsage(chatClient.prompt()
-                        .system(system)
-                        .user(user + "\n\nIMPORTANT: your previous response could not be parsed. "
+                return captureUsage(buildPrompt(system,
+                        user + "\n\nIMPORTANT: your previous response could not be parsed. "
                                 + "Respond with ONLY the requested JSON — no prose, no code fences.")
                         .call()
                         .responseEntity(type));
@@ -76,6 +84,15 @@ public abstract class AbstractLlmAgentWorker implements AgentWorker {
                         + secondFailure.getMessage(), secondFailure);
             }
         }
+    }
+
+    private ChatClient.ChatClientRequestSpec buildPrompt(String system, String user) {
+        ChatClient.ChatClientRequestSpec spec = chatClient.prompt();
+        Integer tokens = maxTokens();
+        if (tokens != null) {
+            spec = spec.options(ChatOptions.builder().maxTokens(tokens));
+        }
+        return spec.system(system).user(user);
     }
 
     private <T> T captureUsage(ResponseEntity<ChatResponse, T> result) {

@@ -1,11 +1,13 @@
 package org.folio.factory.cypressfactory.worker;
 
 import org.folio.factory.agents.artifact.FrontmatterCodec;
+import org.folio.factory.connectors.UnconfiguredConnectors;
 import org.folio.factory.connectors.github.GitHubConnector;
 import org.folio.factory.core.agent.AgentContext;
 import org.folio.factory.core.agent.AgentResult;
 import org.folio.factory.cypressfactory.CypressFlowProperties;
 import org.junit.jupiter.api.Test;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.util.List;
 import java.util.Map;
@@ -25,6 +27,16 @@ class ContextLoaderWorkerThinContextTest {
         return sb.toString();
     }
 
+    /** Passes all thin-context checks: 10+ KBRs, no DRAFT, Exact UI Texts with 3 toasts, no gaps. */
+    private static String richContextContent() {
+        StringBuilder sb = new StringBuilder(kbrContent(10));
+        sb.append("## Exact UI Texts\n\n");
+        sb.append("- Toast: \"Record successfully created\"\n");
+        sb.append("- Toast: \"Record successfully updated\"\n");
+        sb.append("- Toast: \"Record successfully deleted\"\n\n");
+        return sb.toString();
+    }
+
     private ContextLoaderWorker worker(String contextContent) {
         GitHubConnector github = new GitHubConnector() {
             @Override public void createBranch(String r, String b, String n) {}
@@ -34,7 +46,8 @@ class ContextLoaderWorkerThinContextTest {
             @Override public java.util.List<String> listDirectory(String r, String b, String p) { return java.util.List.of(); }
         };
         CypressFlowProperties props = new CypressFlowProperties("o/r", "main", "ai-repo", null);
-        return new ContextLoaderWorker(github, codec, props);
+        return new ContextLoaderWorker(github, new UnconfiguredConnectors.Jira(),
+                codec, JsonMapper.builder().build(), props);
     }
 
     private AgentContext contextFor(String issueKey) {
@@ -59,7 +72,7 @@ class ContextLoaderWorkerThinContextTest {
 
     @Test
     void noFlagWhenAtLeast10Kbrs() {
-        AgentResult result = worker(kbrContent(10)).execute(contextFor("UIIN-1"));
+        AgentResult result = worker(richContextContent()).execute(contextFor("UIIN-1"));
 
         String content = result.outputs().get("context.md");
         assertThat(content).startsWith("---");

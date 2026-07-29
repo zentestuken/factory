@@ -114,8 +114,12 @@ from different contexts. The factory uses the Java connector; the MCP server sta
      │  ── Provides: verbatim UI texts, business rules, capability sets/permissions for the area
      │  ── On ambiguity: record all matches; reviewer corrects inline at Gate 1
      │  ── On failure / unknown area: context.md with area: unknown; flow continues with empty context.md
-     │  ── Thin-context check: if < 10 Key Business Rules found → prepend context_quality: thin
-     │       frontmatter so downstream agents flag uncertain assertions as [verify on first execution]
+     │  ── Thin-context check (all 5 triggers): < 10 KBRs, DRAFT marker, missing "## Exact UI Texts",
+     │       < 3 toasts in UI Texts, > 5 known gaps → trigger lightweight enrichment:
+     │       (a) GitHub: package.json permissions + keyword-filtered en_US.json translations
+     │       (b) Jira: linked issue summaries and descriptions
+     │       Prepends context_quality: thin to frontmatter + enrichment note in body
+     │       Degrades gracefully — enrichment skipped silently when connectors unset
      ▼
 [context.md]
      │
@@ -131,9 +135,11 @@ from different contexts. The factory uses the Java connector; the MCP server sta
      │
      ▼
 [examples-loader]                                                 NEW · non-LLM
-     │  ── Reads classpath:references/examples.md — 3 golden TestRail cases
-     │       with style annotations (terse expected results, no named actors,
-     │       compact preconditions, symbolic values, journey flag rules)
+     │  ── Fetches examples.md from folio-eureka-ai-dev GitHub repo at runtime
+     │       (branch: master, path: skills/write-testrail-cases/references/examples.md)
+     │  ── Falls back to classpath:references/examples.md when GitHub unavailable
+     │  ── 3 golden TestRail cases with style annotations (terse expected results,
+     │       no named actors, compact preconditions, symbolic values, journey flag rules)
      ▼
 [examples.md]
      │
@@ -391,6 +397,15 @@ was detected. If the detection is wrong, the reviewer edits the `context.md` bod
 the HITL editor before approving — replacing the wrong area's content with the correct one.
 v1 does not re-run detection after Gate 1; any correction is made inline.
 
+**Thin-context enrichment** (triggers on any of 5 conditions: < 10 KBRs, DRAFT marker, missing
+`## Exact UI Texts` section, < 3 toasts listed, > 5 known gaps): the worker attempts lightweight
+enrichment before finalising `context.md`:
+1. GitHub: fetches `package.json` for the matched area's module (permissions) and keyword-filtered
+   entries from `en_US.json` (translation strings). 150KB file-size guard; max 15 keywords, 50 translation entries.
+2. Jira: fetches linked issues and appends their summaries/descriptions.
+All enrichment degrades gracefully when connectors are unconfigured. Appends an enrichment note to
+the body and sets `context_quality: thin` in frontmatter when triggered.
+
 **Configuration required:**
 ```yaml
 factory.mqa-skill-repo:   ${FACTORY_MQA_SKILL_REPO:}    # e.g. folio-org/folio-eureka-ai-dev
@@ -420,6 +435,7 @@ matching permissions from the stripes-testing TAF.
 **TAF is auto-cloned at startup by `TafSyncService`** to `{user.dir}/cypressTafClone` (shallow
 clone of `folio-org/stripes-testing`, branch `master`). No configuration required. When the clone
 is not yet ready, the worker falls back to the GitHub contents API automatically.
+Both `git clone` and `git pull` use `-c core.longpaths=true` to avoid Windows MAX_PATH failures.
 
 **Inputs:** `context.md` (areas from frontmatter) + `scope_manifest.md` (summary for keywords).
 
@@ -479,10 +495,9 @@ This artifact feeds both `e2e-spec-agent` (permission names in preconditions) an
    `ContextLoaderWorker`; the system prompt tells the LLM to treat it as authoritative for
    exact UI texts, capability set names, and business rule numbering.
 
-5. **`examples.md` gap** — the skill references `references/examples.md` in its step 2 ("read
-   examples to match verification depth"). This file does not exist in the current local copy.
-   The gap can be filled by hand-picking 2–3 high-quality existing TestRail cases as few-shot
-   examples and embedding them in the system prompt.
+5. **`examples.md`** — resolved by `CypressExamplesLoaderWorker`. Fetches from
+   `folio-eureka-ai-dev` GitHub repo at runtime (branch `master`); falls back to
+   `classpath:references/examples.md`. Injected into the user prompt via `{{examples}}`.
 
 **What the prompt must add beyond SKILL.md:**
 
@@ -921,7 +936,7 @@ testing.
 1. ✅ Create `factory-flow-cypress` Maven module
 2. ✅ Implement `ContextLoaderWorker` (area detection + context file load + thin-context flag)
 3. ✅ Implement `TafSyncService` (auto-clone to `cypressTafClone/`) + `FragmentScannerWorker` (keyword scoring, GitHub API fallback, permissions matching → `fragment_library.md`)
-4. ✅ Implement `CypressExamplesLoaderWorker` (loads `references/examples.md` from classpath)
+4. ✅ Implement `CypressExamplesLoaderWorker` (runtime GitHub fetch + classpath fallback)
 5. ✅ Implement `ScenarioAnalysisAgentWorker` (LLM; categorized scenario proposals)
 6. ✅ Write `cypress-scenario-analysis/system.md` + `user.md`
 7. ✅ Write `cypress-e2e-spec-agent/system.md` (from SKILL.md + House Style + Step Patterns + self-review)
@@ -1024,9 +1039,9 @@ Remaining mitigations:
 - The `test_scripts.md` bundle will have fewer specs than test cases in `test_plan.md`; this is expected (non-automatable cases are skipped) and noted in `sync_report.md`
 
 ### `examples.md` gap — RESOLVED
-`CypressExamplesLoaderWorker` reads `classpath:references/examples.md` (3 golden cases + anti-patterns
-section) and injects it into `e2e-spec-agent` via the `{{examples}}` placeholder in `user.md`.
-The file is checked into `factory-flow-cypress/src/main/resources/references/examples.md`.
+`CypressExamplesLoaderWorker` fetches `examples.md` from `folio-eureka-ai-dev` at runtime
+(branch `master`); classpath fallback when GitHub is unavailable. Injected via `{{examples}}`
+in `user.md`. Classpath copy at `src/main/resources/references/examples.md` is updated manually.
 
 ---
 

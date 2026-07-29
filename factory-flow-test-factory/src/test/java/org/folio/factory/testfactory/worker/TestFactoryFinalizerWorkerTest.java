@@ -68,6 +68,11 @@ class TestFactoryFinalizerWorkerTest {
         public String getFileContent(String repo, String branch, String path) {
             return "";
         }
+
+        @Override
+        public java.util.List<String> listDirectory(String repo, String branch, String path) {
+            return java.util.List.of();
+        }
     }
 
     static class FailingRunTestRail implements TestRailConnector {

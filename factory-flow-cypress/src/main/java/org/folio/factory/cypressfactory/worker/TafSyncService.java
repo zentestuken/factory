@@ -58,12 +58,12 @@ public class TafSyncService {
     private void cloneRepo() throws Exception {
         log.info("[TAF] Cloning {} (shallow) to {}", TAF_REPO_URL, tafRoot);
         Files.createDirectories(tafRoot.getParent());
-        run("git", "clone", "--depth=1", "--branch", TAF_BRANCH, TAF_REPO_URL, tafRoot.toString());
+        run("git", "-c", "core.longpaths=true", "clone", "--depth=1", "--branch", TAF_BRANCH, TAF_REPO_URL, tafRoot.toString());
     }
 
     private void pull() throws Exception {
         log.info("[TAF] Pulling latest {} in {}", TAF_BRANCH, tafRoot);
-        run("git", "-C", tafRoot.toString(), "pull", "--ff-only", "origin", TAF_BRANCH);
+        run("git", "-C", tafRoot.toString(), "-c", "core.longpaths=true", "pull", "--ff-only", "origin", TAF_BRANCH);
     }
 
     private boolean gitAvailable() {
