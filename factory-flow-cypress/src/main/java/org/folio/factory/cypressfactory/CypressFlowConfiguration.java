@@ -54,8 +54,9 @@ public class CypressFlowConfiguration {
     }
 
     @Bean
-    public ScenarioAnalysisAgentWorker scenarioAnalysisAgentWorker(ChatClient.Builder chatClientBuilder) {
-        return new ScenarioAnalysisAgentWorker(chatClientBuilder.build());
+    public ScenarioAnalysisAgentWorker scenarioAnalysisAgentWorker(ChatClient.Builder chatClientBuilder,
+                                                                    TestRailConnector testRailConnector) {
+        return new ScenarioAnalysisAgentWorker(chatClientBuilder.build(), testRailConnector);
     }
 
     @Bean

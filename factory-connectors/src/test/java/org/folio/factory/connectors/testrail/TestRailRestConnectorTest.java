@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.http.HttpMethod.GET;
 import static org.springframework.http.HttpMethod.POST;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.jsonPath;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.method;
@@ -26,7 +27,7 @@ class TestRailRestConnectorTest {
         RestClient.Builder builder = RestClient.builder();
         server = MockRestServiceServer.bindTo(builder).build();
         connector = new TestRailRestConnector(
-                new TestRailProperties("https://testrail.example.org", "bot", "key", 12L), builder);
+                new TestRailProperties("https://testrail.example.org", "bot", "key", 12L, null), builder);
     }
 
     @Test
@@ -72,5 +73,51 @@ class TestRailRestConnectorTest {
 
         connector.addResults(300, Map.of(991L, false), null);
         server.verify();
+    }
+
+    @Test
+    void listSectionPathsReturnsSortedPathsUpToDepth2() {
+        String sectionsJson = """
+                {"sections":[
+                  {"id":10,"name":"Inventory","parent_id":null,"depth":0},
+                  {"id":20,"name":"MARC","parent_id":null,"depth":0},
+                  {"id":11,"name":"Search","parent_id":10,"depth":1},
+                  {"id":21,"name":"MARC authority","parent_id":20,"depth":1},
+                  {"id":12,"name":"Browse results","parent_id":11,"depth":2},
+                  {"id":99,"name":"Deep leaf","parent_id":12,"depth":3}
+                ]}""";
+        server.expect(requestTo(
+                "https://testrail.example.org/index.php?/api/v2/get_sections/12&limit=250&offset=0"))
+                .andExpect(method(GET))
+                .andRespond(withSuccess(sectionsJson, MediaType.APPLICATION_JSON));
+
+        List<String> paths = connector.listSectionPaths();
+
+        assertThat(paths).containsExactly(
+                "Inventory",
+                "Inventory \u203a Search",
+                "Inventory \u203a Search \u203a Browse results",
+                "MARC",
+                "MARC \u203a MARC authority");
+    }
+
+    @Test
+    void listSectionPathsExcludesSectionsWhenDepthExceedsTwo() {
+        String sectionsJson = """
+                {"sections":[
+                  {"id":1,"name":"Root","parent_id":null,"depth":0},
+                  {"id":2,"name":"Child","parent_id":1,"depth":1},
+                  {"id":3,"name":"Grand","parent_id":2,"depth":2},
+                  {"id":4,"name":"Great","parent_id":3,"depth":3}
+                ]}""";
+        server.expect(requestTo(
+                "https://testrail.example.org/index.php?/api/v2/get_sections/12&limit=250&offset=0"))
+                .andExpect(method(GET))
+                .andRespond(withSuccess(sectionsJson, MediaType.APPLICATION_JSON));
+
+        List<String> paths = connector.listSectionPaths();
+
+        assertThat(paths).doesNotContain("Root \u203a Child \u203a Grand \u203a Great");
+        assertThat(paths).contains("Root \u203a Child \u203a Grand");
     }
 }

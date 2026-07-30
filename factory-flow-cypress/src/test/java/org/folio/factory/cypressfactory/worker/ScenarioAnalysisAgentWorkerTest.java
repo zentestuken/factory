@@ -1,6 +1,8 @@
 package org.folio.factory.cypressfactory.worker;
 
 import org.folio.factory.agents.llm.StubChatModel;
+import org.folio.factory.connectors.UnconfiguredConnectors;
+import org.folio.factory.connectors.testrail.TestRailConnector;
 import org.folio.factory.core.agent.AgentContext;
 import org.folio.factory.core.agent.AgentResult;
 import org.folio.factory.core.agent.ArtifactContent;
@@ -28,7 +30,7 @@ class ScenarioAnalysisAgentWorkerTest {
             """;
 
     private ScenarioAnalysisAgentWorker worker(StubChatModel model) {
-        return new ScenarioAnalysisAgentWorker(ChatClient.create(model));
+        return new ScenarioAnalysisAgentWorker(ChatClient.create(model), new UnconfiguredConnectors.TestRail());
     }
 
     private AgentContext contextWith(String scopeManifest, String context) {
@@ -58,6 +60,35 @@ class ScenarioAnalysisAgentWorkerTest {
         String prompt = model.receivedPrompts().getFirst().getContents();
         assertThat(prompt).contains("manifest-content");
         assertThat(prompt).contains("context-content");
+    }
+
+    @Test
+    void passesAvailableSectionsToPrompt() {
+        StubChatModel model = new StubChatModel().enqueue(SCENARIO_LIST_RESPONSE);
+        List<String> sections = List.of("Inventory", "Inventory \u203a Search", "MARC \u203a MARC authority");
+        TestRailConnector connector = new TestRailConnector() {
+            @Override public long addCase(long s, String t, String steps, String exp) { return 0; }
+            @Override public long addRun(String n, List<Long> ids) { return 0; }
+            @Override public void addResults(long r, Map<Long, Boolean> res, String c) {}
+            @Override public List<String> listSectionPaths() { return sections; }
+        };
+
+        new ScenarioAnalysisAgentWorker(ChatClient.create(model), connector)
+                .execute(contextWith("manifest", "context"));
+
+        String prompt = model.receivedPrompts().getFirst().getContents();
+        assertThat(prompt).contains("Inventory \u203a Search");
+        assertThat(prompt).contains("MARC \u203a MARC authority");
+    }
+
+    @Test
+    void usesFallbackMessageWhenConnectorHasNoSections() {
+        StubChatModel model = new StubChatModel().enqueue(SCENARIO_LIST_RESPONSE);
+
+        worker(model).execute(contextWith("manifest", "context")); // UnconfiguredConnectors returns List.of()
+
+        String prompt = model.receivedPrompts().getFirst().getContents();
+        assertThat(prompt).contains("not configured");
     }
 
     @Test

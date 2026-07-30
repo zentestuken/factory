@@ -50,6 +50,11 @@ agent_chain:
         Review proposed scenarios. Add missing coverage, remove out-of-scope items,
         adjust journey vs atomic shape. Amend scenario_list.md — test-spec will generate
         cases for exactly the scenarios confirmed here.
+
+        The frontmatter field `testrail_section` shows the suggested TestRail section for
+        these cases. Edit the path string if the suggestion is wrong. Accepted formats:
+        a path string using › | > → as separators, or a numeric section ID. Delete the
+        field to fall back to the configured default section.
       reviewed_artifacts: [scenario_list.md, scope_manifest.md, context.md]
 
   - step_id: test-spec
@@ -68,10 +73,15 @@ agent_chain:
         automatability. Verify that the automatable flag is accurate and that
         automation notes reference real helpers from the fragment library where
         applicable. Edit the test plan inline (AMEND) if cases need changes.
-      reviewed_artifacts: [test_plan.md, scope_manifest.md, context.md]
+
+        The `testrail_section` in scenario_list.md frontmatter controls which
+        TestRail folder receives the cases. Amend it here if the gate-0 suggestion
+        was wrong. Accepted formats: a path string using › | > → as separators,
+        or a numeric section ID. Delete the field to fall back to the configured default.
+      reviewed_artifacts: [test_plan.md, scenario_list.md, scope_manifest.md, context.md]
 
   - step_id: testrail-sync
     type: AGENT
     worker_id: cypress-testrail-sync
-    inputs: [test_plan.md, scope_manifest.md]
+    inputs: [test_plan.md, scope_manifest.md, scenario_list.md]
     outputs: [test_plan.md]

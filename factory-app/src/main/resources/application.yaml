@@ -118,6 +118,7 @@ factory:
       username: ${FACTORY_CONNECTORS_TESTRAIL_USERNAME:}
       api-key: ${FACTORY_CONNECTORS_TESTRAIL_API_KEY:}
       project-id: ${FACTORY_CONNECTORS_TESTRAIL_PROJECT_ID:0}
+      suite-id: ${FACTORY_CONNECTORS_TESTRAIL_SUITE_ID:}
   test-factory:
     execution:
       base-url: ${FACTORY_TEST_FACTORY_EXECUTION_BASE_URL:}
@@ -137,6 +138,12 @@ factory:
     folio-ai-repo: ${FACTORY_CYPRESS_FOLIO_AI_REPO:}
     # TestRail section id for Cypress test cases (long integer).
     testrail-section-id: ${FACTORY_CYPRESS_TESTRAIL_SECTION_ID:}
+    # TestRail case type id (e.g. 1=Functional). Optional; omit to leave type unset.
+    testrail-case-type-id: ${FACTORY_CYPRESS_TESTRAIL_CASE_TYPE_ID:}
+    # TestRail priority id. Default 3 (Medium).
+    testrail-priority-id: ${FACTORY_CYPRESS_TESTRAIL_PRIORITY_ID:}
+    # TestRail label applied to every generated case. Default "cypress-flow-delete-case".
+    testrail-label: ${FACTORY_CYPRESS_TESTRAIL_LABEL:}
 
 logging:
   # OBS-1: JSON logging is opt-in via env so local `mvn spring-boot:run` stays

@@ -75,4 +75,10 @@ class UnconfiguredConnectorsTest {
                     .hasMessageContaining("FACTORY_CONNECTORS_TESTRAIL_PROJECT_ID");
         }
     }
+
+    @Test
+    void testRailListSectionPathsReturnsEmptyListWithoutThrowing() {
+        // advisory mode: listSectionPaths must not throw when TestRail is unconfigured
+        assertThat(new UnconfiguredConnectors.TestRail().listSectionPaths()).isEmpty();
+    }
 }

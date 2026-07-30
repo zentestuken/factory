@@ -7,11 +7,18 @@ public record CypressFlowProperties(
         String targetRepo,
         String baseBranch,
         String folioAiRepo,
-        Long testrailSectionId) {
+        Long testrailSectionId,
+        Long testrailCaseTypeId,   // set FACTORY_CYPRESS_TESTRAIL_CASE_TYPE_ID (e.g. 1=Functional in foliotest)
+        Long testrailPriorityId,   // set FACTORY_CYPRESS_TESTRAIL_PRIORITY_ID; default 3 = Medium
+        String testrailLabel) {    // set FACTORY_CYPRESS_TESTRAIL_LABEL; default "cypress-flow-delete-case"
+
+    static final String DEFAULT_TESTRAIL_LABEL = "cypress-flow-delete-case";
 
     public CypressFlowProperties {
         baseBranch = baseBranch == null || baseBranch.isBlank() ? "main" : baseBranch;
         targetRepo = targetRepo == null ? "" : targetRepo;
         folioAiRepo = folioAiRepo == null ? "" : folioAiRepo;
+        if (testrailPriorityId == null) testrailPriorityId = 3L;
+        testrailLabel = (testrailLabel == null || testrailLabel.isBlank()) ? DEFAULT_TESTRAIL_LABEL : testrailLabel;
     }
 }

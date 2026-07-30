@@ -101,7 +101,9 @@ from different contexts. The factory uses the Java connector; the MCP server sta
      │  ── Fetch story + linked issues from Jira API
      │  ── Extract acceptance criteria verbatim → acceptance_criteria[] in scope_manifest
      │  ── Identify affected FOLIO modules; map to test scope boundaries
-     │  ── Map customfield_10057 → devTeam (used for TestRail custom_dev_team field)
+     │  ── Map "Team" / "Squad" / "Dev team" Jira field → devTeam
+     │  ──   Known teams: Firebird, Folijet, Spitfire, Thunderjet, Vega, Volaris,
+     │  ──                Citation, Corsair, Eureka, Promin (stored verbatim)
      │  ── Detect ECS context from labels/description → ecs_enabled flag
      ▼
 [scope_manifest.md]
@@ -146,19 +148,24 @@ from different contexts. The factory uses the Java connector; the MCP server sta
      ▼
 [scenario-analysis]                                                   NEW · LLM
      │  ── Reads scope_manifest.md + context.md
+     │  ── Fetches available TestRail section paths from TestRail API (depth ≤ 2)
      │  ── Maps acceptance criteria → scenario candidates
      │  ── Looks up area House Style (Type, step count, journey/atomic shape)
      │  ── Produces categorized scenario proposals: happy path, business-rule
      │       verification, capability boundaries, negative/edge, ECS variants
      │  ── Each scenario: S-NN | title | Type | Steps: ~N | Journey: Yes/No | Tier
+     │  ── Suggests best-matching TestRail section → testrail_section in frontmatter
+     │       (path string like "Inventory › Search", or best guess when TestRail unconfigured)
      ▼
-[scenario_list.md]
+[scenario_list.md]  — frontmatter: testrail_section; body: S-NN scenario proposals
      │
      ▼
 🛑 HITL Gate 0: Scenario Coverage Review
      │  ── QA confirms WHAT will be tested before any case is written
      │  ── Add missing coverage, remove out-of-scope items
      │  ── Adjust journey vs atomic shape per scenario
+     │  ── Edit testrail_section in scenario_list.md frontmatter if suggestion is wrong
+     │       (path string with › separators, or numeric ID; delete to use env default)
      │  ── test-spec generates exactly the confirmed scenarios
      ▼
 [e2e-spec-agent]                                                      NEW · LLM
@@ -178,6 +185,8 @@ from different contexts. The factory uses the Java connector; the MCP server sta
      │  ── QA reviews all cases against story acceptance criteria
      │  ── Override automatable flags; amend steps; reject cases
      │  ── Correct detected_area in context.md inline if wrong
+     │  ── scenario_list.md is a reviewed artifact — amend testrail_section here
+     │       to override the Gate-0 section before sync (path string or numeric ID)
      │  ── automatable flags are FINAL after approval
      ▼
 [testrail-sync-agent]                                             NEW · non-LLM
@@ -408,12 +417,11 @@ the body and sets `context_quality: thin` in frontmatter when triggered.
 
 **Configuration required:**
 ```yaml
-factory.mqa-skill-repo:   ${FACTORY_MQA_SKILL_REPO:}    # e.g. folio-org/folio-eureka-ai-dev
-factory.mqa-skill-branch: ${FACTORY_MQA_SKILL_BRANCH:main}
+factory.cypress.folio-ai-repo: ${FACTORY_CYPRESS_FOLIO_AI_REPO:}  # e.g. folio-org/folio-eureka-ai-dev
 ```
 
 The worker fetches the context file via the GitHub API (single file GET — no full clone):
-`GET /repos/{repo}/contents/skills/write-testrail-cases/references/context/{area}.md?ref={branch}`
+`GET /repos/{repo}/contents/skills/write-testrail-cases/references/context/{area}.md?ref=main`
 
 Uses the existing `GitHubConnector` (same credentials as the finalizer). If the repo is not
 configured or the fetch fails, the worker produces `context.md` with `area: unknown` and
@@ -618,9 +626,9 @@ reference for which TestRail fields to set and retrieve. The factory uses the Ja
 
 | TestRail field | Value source | Notes |
 |---|---|---|
-| `section_id` | `scope_manifest.md` → Jira component → configured section mapping | triage-agent should resolve this |
+| `section_id` | `testrail_section` from `scenario_list.md` frontmatter (Gate-0 confirmed); `scope_manifest.md` override takes priority if present; falls back to `FACTORY_CYPRESS_TESTRAIL_SECTION_ID` | Accepts path string (resolved via API) or numeric ID |
 | `custom_test_group` | tier from `test_plan.md` per case | 1=smoke, 2=criticalPath, 3=extendedPath |
-| `custom_dev_team` | Jira team field from `scope_manifest.md` → mapped via table (firebird=3, folijet=4, spitfire=6, thunderjet=8, vega=9, volaris=13, citation=18, corsair=19, eureka=21) | blank if no match |
+| `custom_dev_team` | `team` field from `scope_manifest.md` → mapped: Firebird=3, Folijet=4, Spitfire=6, Thunderjet=8, Vega=9, Volaris=13, Citation=18, Corsair=19, Eureka=21, Promin=27 | omitted if team absent or unknown |
 | `custom_ecs_enabled` | ECS flag from `scope_manifest.md` | |
 | `custom_automation_type` | `2` (Manual) for all cases | The Cypress spec is the automation artifact; the TestRail case is always a manual test case record |
 | `labels` | `[67]` | Always include the AI label (ID 67 on foliotest.testrail.io) per `write-testrail-cases` skill defaults |
@@ -859,14 +867,23 @@ Adapted from `TestFactoryFinalizerWorker`. Case creation is already done by
 | Variable | Purpose |
 |---|---|
 | TAF path | Auto-managed: `TafSyncService` clones to `{user.dir}/cypressTafClone` on startup — no env var needed |
-| `FACTORY_MQA_SKILL_REPO` | GitHub repo containing `write-testrail-cases` skill (e.g. `folio-org/folio-eureka-ai-dev`); used to fetch context files at runtime |
-| `FACTORY_MQA_SKILL_BRANCH` | Branch to fetch context files from (default: `main`) |
-| `FACTORY_TAF_HAS_ENV_CONFIG` | Set `true` to enable execution mode in `CypressExecutionWorker` |
+| `FACTORY_CYPRESS_FOLIO_AI_REPO` | GitHub repo (`owner/name`) containing the FOLIO AI skills (e.g. `folio-org/folio-eureka-ai-dev`); used by `ContextLoaderWorker` to fetch area context files and by `CypressExamplesLoaderWorker` to fetch `examples.md` at runtime |
+| `FACTORY_CYPRESS_TARGET_REPO` | GitHub repo (`owner/name`) where generated Cypress specs are committed (e.g. `folio-org/stripes-testing`) |
+| `FACTORY_CYPRESS_BASE_BRANCH` | Base branch in `TARGET_REPO` (default: `master`) |
+| `FACTORY_CYPRESS_TESTRAIL_SECTION_ID` | Fallback TestRail section ID (long integer); used when `testrail_section` is absent from both `scenario_list.md` and `scope_manifest.md` |
+| `FACTORY_CYPRESS_TESTRAIL_CASE_TYPE_ID` | TestRail case type ID (e.g. `1`=Functional on foliotest); optional — omit to leave type unset |
+| `FACTORY_CYPRESS_TESTRAIL_PRIORITY_ID` | TestRail priority ID (default: `3`=Medium) |
+| `FACTORY_CONNECTORS_TESTRAIL_BASE_URL` | TestRail instance base URL |
+| `FACTORY_CONNECTORS_TESTRAIL_USERNAME` | TestRail username (email) |
+| `FACTORY_CONNECTORS_TESTRAIL_API_KEY` | TestRail API key |
+| `FACTORY_CONNECTORS_TESTRAIL_PROJECT_ID` | TestRail project ID (integer) |
+| `FACTORY_CONNECTORS_TESTRAIL_SUITE_ID` | TestRail suite ID (integer; required on multi-suite projects) |
+| `FACTORY_CONNECTORS_GITHUB_TOKEN` | GitHub personal access token (read for context/examples fetch; write for finalizer PR) |
+| `FACTORY_CONNECTORS_GITHUB_BASE_URL` | GitHub API base URL (default: `https://api.github.com`; override for GHE) |
+| `FACTORY_TAF_HAS_ENV_CONFIG` | Set `true` to enable execution mode in `CypressExecutionWorker` (Phase 3+) |
 | `FACTORY_CYPRESS_EXEC_CONFIG` | Path to `cypress-exec.yaml`; defaults to bundled `src/main/resources/cypress-exec.yaml` |
 | `FACTORY_CYPRESS_REGULAR_ENV` | Deploy-time override for regular-test env params (`key=val,key=val`); merged on top of `cypress-exec.yaml` regular block |
 | `FACTORY_CYPRESS_ECS_ENV` | Deploy-time override for ECS-test env params (`key=val,key=val`); merged on top of `cypress-exec.yaml` ecs block |
-| `FACTORY_CONNECTORS_TESTRAIL_*` | Already defined; ensure section ID mapping is configured |
-| `FACTORY_CONNECTORS_GITHUB_*` | Already defined; set repo to `your-org/stripes-testing` |
 
 ---
 
@@ -945,6 +962,8 @@ testing.
 10. ✅ Write `cypress-factory.yaml`:
     triage → context-load → fragment-scan → examples-load → scenario-analysis →
     gate-0-scenarios → test-spec → gate-1-review → testrail-sync
+    Gate-0 reviewed: [scenario_list.md, scope_manifest.md, context.md]
+    Gate-1 reviewed: [test_plan.md, scenario_list.md, scope_manifest.md, context.md]
 11. ✅ Wire `CypressFlowConfiguration`, add to `factory-app/pom.xml`
 
 **Milestone:** Gate 0 confirms scenario coverage; Gate 1 reviews test cases; after approval,

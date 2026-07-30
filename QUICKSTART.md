@@ -194,9 +194,23 @@ FACTORY_CONNECTORS_JIRA_BASE_URL=https://issues.folio.org
 FACTORY_CONNECTORS_JIRA_EMAIL=your@email.com
 FACTORY_CONNECTORS_JIRA_API_TOKEN=your-token
 
-# GitHub (optional — for context file loading from MQA skill repo)
+# GitHub (required for context file fetch, examples fetch, and TAF clone)
 FACTORY_CONNECTORS_GITHUB_TOKEN=ghp_...
+# Repo containing FOLIO AI skills (context files + examples.md fetched at runtime)
 FACTORY_CYPRESS_FOLIO_AI_REPO=folio-org/folio-eureka-ai-dev
+# Repo where generated Cypress specs will be committed (Phase 3+)
+# FACTORY_CYPRESS_TARGET_REPO=folio-org/stripes-testing
+
+# TestRail (optional — flow runs in advisory mode without these)
+# FACTORY_CONNECTORS_TESTRAIL_BASE_URL=https://foliotest.testrail.io
+# FACTORY_CONNECTORS_TESTRAIL_USERNAME=your@email.com
+# FACTORY_CONNECTORS_TESTRAIL_API_KEY=your-key
+# FACTORY_CONNECTORS_TESTRAIL_PROJECT_ID=14
+# FACTORY_CONNECTORS_TESTRAIL_SUITE_ID=        # only for multi-suite projects
+# Default section fallback (used when LLM suggestion is absent or unresolvable)
+# FACTORY_CYPRESS_TESTRAIL_SECTION_ID=114774
+# FACTORY_CYPRESS_TESTRAIL_CASE_TYPE_ID=1      # 1=Functional on foliotest
+# FACTORY_CYPRESS_TESTRAIL_PRIORITY_ID=3       # 3=Medium (default)
 ```
 
 Then source it in Git Bash:
@@ -237,7 +251,7 @@ Flow: triage → context-load → fragment-scan → examples-load → scenario-a
 
 | Gate | URL | What to check |
 |---|---|---|
-| Gate 0 — scenario coverage | http://localhost:8080/reviews | `scenario_list.md`: S-NN proposals with shape notes; confirm/adjust scope |
-| Gate 1 — test cases | http://localhost:8080/reviews | `test_plan.md`: one case per confirmed scenario, `automatable` flags, step quality |
+| Gate 0 — scenario coverage | http://localhost:8080/reviews | `scenario_list.md`: S-NN proposals with shape notes; confirm/adjust scope; edit `testrail_section` frontmatter field if the suggested TestRail folder is wrong |
+| Gate 1 — test cases | http://localhost:8080/reviews | `test_plan.md`: one case per confirmed scenario, `automatable` flags, step quality; `scenario_list.md` is also reviewable — amend `testrail_section` here for a final override before sync |
 
 Watch execution progress: **http://localhost:8080/executions**

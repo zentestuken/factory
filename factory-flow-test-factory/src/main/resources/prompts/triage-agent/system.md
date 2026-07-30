@@ -29,7 +29,6 @@ Rules:
   consortia, consortium, or ECS tenants; or the summary explicitly references
   cross-tenant behaviour. Otherwise set it to false.
 - Set team to the Jira team or squad name if it appears in the story (fields
-  "Team", "Squad", or "Dev team"). Map to one of the known team names:
-  folio-core, folio-orders, folio-inventory, folio-erm, folio-users,
-  folio-finance, folio-circ, folio-marc, folio-platform. If no team is
-  identifiable, leave team empty.
+  "Team", "Squad", or "Dev team"). Use the exact team name as it appears in Jira.
+  Known teams: Firebird, Folijet, Spitfire, Thunderjet, Vega, Volaris, Citation,
+  Corsair, Eureka, Promin. If no team is identifiable, leave team empty.

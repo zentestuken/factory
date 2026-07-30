@@ -126,6 +126,26 @@ public final class UnconfiguredConnectors {
         }
 
         @Override
+        public long getOrCreateLabel(String title) {
+            throw notConfigured();
+        }
+
+        @Override
+        public void deleteCase(long caseId) {
+            throw notConfigured();
+        }
+
+        @Override
+        public long resolveSectionByPath(String path) {
+            throw notConfigured();
+        }
+
+        @Override
+        public List<String> listSectionPaths() {
+            return List.of();
+        }
+
+        @Override
         public String connectorName() {
             return "testrail";
         }
