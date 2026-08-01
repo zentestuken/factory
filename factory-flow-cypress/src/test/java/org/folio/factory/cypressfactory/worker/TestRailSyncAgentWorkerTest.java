@@ -31,15 +31,60 @@ class TestRailSyncAgentWorkerTest {
 
     private String testPlanWithOneCase() {
         return codec.render(
-                Map.of("cases", List.of(
-                        Map.of("id", "TC-1", "title", "Test login", "tier", "critical",
-                                "steps", List.of(Map.of("action", "click", "expected", "done")))
-                )),
-                "## Test Plan\n");
+                Map.of("issue_key", "ERM-1", "team", "", "ecs_enabled", false, "case_count", 1),
+                "## TC-1: Test login\n\n" +
+                "- **Tier:** critical\n" +
+                "- **Automatable:** Yes\n" +
+                "- **ECS:** No\n\n" +
+                "**Steps**\n" +
+                "1. **Action:** click\n" +
+                "   **Expected:** done\n");
+    }
+
+    private String testPlanWithAmendedBodyTitle() {
+        return codec.render(
+                Map.of("issue_key", "ERM-1", "team", "", "ecs_enabled", false, "case_count", 1),
+                "## TC-1: New Title\n\n" +
+                "- **Tier:** critical\n" +
+                "- **Automatable:** Yes\n" +
+                "- **ECS:** No\n\n" +
+                "**Steps**\n" +
+                "1. **Action:** click\n" +
+                "   **Expected:** done\n");
+    }
+
+    private String testPlanWithSpecialChars() {
+        return codec.render(
+                Map.of("issue_key", "ERM-1", "team", "", "ecs_enabled", false, "case_count", 1),
+                "## TC-1: Test case\n\n" +
+                "- **Tier:** critical\n" +
+                "- **Automatable:** Yes\n" +
+                "- **ECS:** No\n\n" +
+                "**Preconditions**\n" +
+                "- Role < Admin & Viewer\n\n" +
+                "**Steps**\n" +
+                "1. **Action:** Navigate to Orders > List\n" +
+                "   **Expected:** Count < 5 items\n");
+    }
+
+    private String testPlanWithMultiLineExpected() {
+        return codec.render(
+                Map.of("issue_key", "ERM-1", "team", "", "ecs_enabled", false, "case_count", 1),
+                "## TC-1: Test toolbar\n\n" +
+                "- **Tier:** critical\n" +
+                "- **Automatable:** Yes\n" +
+                "- **ECS:** No\n\n" +
+                "**Steps**\n" +
+                "1. **Action:** Save the record\n" +
+                "   **Expected:** Action bar shows:\n" +
+                "   - 'Cancel' button is enabled\n" +
+                "   - 'Save & keep editing' button is disabled\n");
     }
 
     private String testPlanNoCases() {
-        return codec.render(Map.of("cases", List.of()), "## Plan\n");
+        return codec.render(
+                Map.of("issue_key", "ERM-1", "team", "", "ecs_enabled", false, "case_count", 0),
+                "# Cypress Test Plan — ERM-1\n");
     }
 
     private String scopeManifest(String testrailSection) {
@@ -196,6 +241,74 @@ class TestRailSyncAgentWorkerTest {
     }
 
     // -------------------------------------------------------------------------
+    // Refs field (Jira issue key)
+    // -------------------------------------------------------------------------
+
+    @Test
+    void setsRefsToIssueKey() {
+        CapturingConnector connector = new CapturingConnector();
+        worker(connector, 114774L).execute(
+                contextWith(testPlanWithOneCase(), scopeManifest(null), scenarioList(null)));
+
+        assertThat(connector.capturedMetadata.get("refs")).isEqualTo("ERM-1");
+    }
+
+    // -------------------------------------------------------------------------
+    // Title read from body heading (user edits body at HITL gate)
+    // -------------------------------------------------------------------------
+
+    @Test
+    void titleIsReadFromBodyHeading() {
+        CapturingConnector connector = new CapturingConnector();
+        worker(connector, 114774L).execute(
+                contextWith(testPlanWithAmendedBodyTitle(), scopeManifest(null), scenarioList(null)));
+
+        assertThat(connector.capturedTitle).isEqualTo("New Title");
+    }
+
+    // -------------------------------------------------------------------------
+    // HTML escaping (Bug: < and > in step text produce malformed HTML in TestRail)
+    // -------------------------------------------------------------------------
+
+    @SuppressWarnings("unchecked")
+    @Test
+    void htmlEscapesSpecialCharsInStepsAndPreconditions() {
+        CapturingConnector connector = new CapturingConnector();
+        worker(connector, 114774L).execute(
+                contextWith(testPlanWithSpecialChars(), scopeManifest(null), scenarioList(null)));
+
+        assertThat(connector.capturedPreconds)
+                .contains("&lt;").contains("&amp;")
+                .doesNotContain("<li>Role < Admin");
+
+        List<Map<String, Object>> steps =
+                (List<Map<String, Object>>) connector.capturedMetadata.get("custom_steps_separated");
+        assertThat(steps).hasSize(1);
+        assertThat((String) steps.get(0).get("content")).isEqualTo("<p>Navigate to Orders &gt; List</p>");
+        assertThat((String) steps.get(0).get("expected")).isEqualTo("<p>Count &lt; 5 items</p>");
+    }
+
+    // -------------------------------------------------------------------------
+    // Multi-line expected/action text
+    // -------------------------------------------------------------------------
+
+    @SuppressWarnings("unchecked")
+    @Test
+    void parsesMultiLineExpectedResult() {
+        CapturingConnector connector = new CapturingConnector();
+        worker(connector, 114774L).execute(
+                contextWith(testPlanWithMultiLineExpected(), scopeManifest(null), scenarioList(null)));
+
+        List<Map<String, Object>> steps =
+                (List<Map<String, Object>>) connector.capturedMetadata.get("custom_steps_separated");
+        assertThat(steps).hasSize(1);
+        assertThat((String) steps.get(0).get("content")).isEqualTo("<p>Save the record</p>");
+        assertThat((String) steps.get(0).get("expected"))
+                .isEqualTo("<p>Action bar shows:</p><ul><li>'Cancel' button is enabled</li>" +
+                           "<li>'Save &amp; keep editing' button is disabled</li></ul>");
+    }
+
+    // -------------------------------------------------------------------------
     // Stub connector
     // -------------------------------------------------------------------------
 
@@ -203,6 +316,9 @@ class TestRailSyncAgentWorkerTest {
         long capturedSectionId = -1L;
         long resolvedSectionId = 0L;
         Integer capturedDevTeamId = null;
+        String capturedTitle = null;
+        String capturedPreconds = null;
+        Map<String, Object> capturedMetadata = null;
 
         @Override
         public long addCase(long sectionId, String title, String steps, String expected) {
@@ -222,8 +338,12 @@ class TestRailSyncAgentWorkerTest {
         public long addCaseWithMetadata(long sectionId, String title, String steps, String expected,
                                         Map<String, Object> metadata) {
             this.capturedSectionId = sectionId;
+            this.capturedTitle = title;
+            this.capturedMetadata = metadata;
             Object devTeam = metadata.get("custom_dev_team");
             this.capturedDevTeamId = devTeam instanceof Integer i ? i : null;
+            Object preconds = metadata.get("custom_preconds");
+            this.capturedPreconds = preconds instanceof String s ? s : null;
             return 999L;
         }
 

@@ -64,6 +64,8 @@ server:
   shutdown: graceful
 
 factory:
+  debug:
+    enabled: ${FACTORY_DEBUG_ENABLED:false}
   engine:
     poll-interval-ms: ${FACTORY_ENGINE_POLL_INTERVAL_MS:2000}
     batch-size: ${FACTORY_ENGINE_BATCH_SIZE:5}
@@ -136,13 +138,13 @@ factory:
     # GitHub repo (owner/repo) containing the FOLIO AI skills.
     # Context files are fetched from skills/write-testrail-cases/references/context/{area}.md on main.
     folio-ai-repo: ${FACTORY_CYPRESS_FOLIO_AI_REPO:}
-    # TestRail section id for Cypress test cases (long integer).
+    # TestRail section id for Cypress flow test cases (long integer).
     testrail-section-id: ${FACTORY_CYPRESS_TESTRAIL_SECTION_ID:}
     # TestRail case type id (e.g. 1=Functional). Optional; omit to leave type unset.
     testrail-case-type-id: ${FACTORY_CYPRESS_TESTRAIL_CASE_TYPE_ID:}
     # TestRail priority id. Default 3 (Medium).
     testrail-priority-id: ${FACTORY_CYPRESS_TESTRAIL_PRIORITY_ID:}
-    # TestRail label applied to every generated case. Default "cypress-flow-delete-case".
+    # TestRail label applied to every generated case. Default "cypressFlow-delete".
     testrail-label: ${FACTORY_CYPRESS_TESTRAIL_LABEL:}
 
 logging:

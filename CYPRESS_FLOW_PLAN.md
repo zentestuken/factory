@@ -178,7 +178,7 @@ from different contexts. The factory uses the Java connector; the MCP server sta
      │  ── automatable: true/false per case (no IDs yet — TestRail assigns them)
      │  ── Non-automatable: multi-tab flows, external auth, OS-level ops
      ▼
-[test_plan.md]  — all cases with automatable flags; no IDs yet
+[test_plan.md]  — lightweight frontmatter (issue_key, team, ecs_enabled, case_count) + body with one ## TC-X: Title section per case; no TestRail IDs yet
      │
      ▼
 🛑 HITL Gate 1: Test Case Review
@@ -192,10 +192,10 @@ from different contexts. The factory uses the Java connector; the MCP server sta
 [testrail-sync-agent]                                             NEW · non-LLM
      │  ── Push ALL cases from test_plan.md to TestRail API — automatable +
      │       non-automatable alike; collect real C###### IDs for each
-     │  ── Metadata: automation_type=Manual, labels=[67 AI], team, ecs_enabled
+     │  ── Metadata: automation_type=Manual, labels=[AI label], team, ecs_enabled, refs=issueKey
      │  ── Output updated test_plan.md with real C###### IDs per case
      ▼
-[test_plan.md]  — cases with real C###### IDs; automatable flags confirmed
+[test_plan.md]  — same format; TC-X tokens in body headings replaced with real C###### IDs
      │
      ▼
 [cypress-automation-agent]                                            NEW · LLM
@@ -380,26 +380,35 @@ a verbatim pass-through of the matched area context file, with a small frontmatt
 **`context.md` frontmatter (happy path):**
 ```markdown
 ---
-detected_area: inventory
-confidence: HIGH          # HIGH = unique keyword hit; MEDIUM = multiple areas matched
-all_matches: [inventory]
-context_file: inventory.md
+areas:
+  - inventory
 ---
 [verbatim content of inventory.md]
 ```
 
-**`context.md` when area is unknown (no match or fetch failure):**
+**`context.md` when thin context triggers enrichment:**
 ```markdown
 ---
-detected_area: unknown
-confidence: NONE
-all_matches: []
-context_file: ~
+areas:
+  - inventory
+context_quality: thin
 ---
+[context file content + ## Live Enrichment section]
 ```
-The e2e-spec-agent prompt reads `context.md` — an empty body is valid input. The Gate 1
-reviewer should notice `detected_area: unknown` and paste the correct context file content
-into the body before approving, or accept lower-quality test cases.
+
+**`context.md` when area is unknown (no keyword match):**
+```markdown
+---
+areas:
+  - generic
+---
+# Cypress Context: generic
+
+_No area-specific context available. Refer to the scope manifest for guidance._
+```
+The e2e-spec-agent prompt reads `context.md` — an empty/generic body is valid input. The Gate 1
+reviewer should notice `areas: [generic]` in the frontmatter and paste the correct context file
+content into the body before approving, or accept lower-quality test cases.
 
 `context.md` is included in the Gate 1 review artifacts so the QA reviewer can see which area
 was detected. If the detection is wrong, the reviewer edits the `context.md` body directly in
@@ -605,7 +614,7 @@ LLM to ignore non-automatable cases entirely rather than generating a stub or pl
 
 ---
 
-### 6. `TestRailSyncAgentWorker` — non-LLM worker (yaml id: `testrail-sync-agent`)
+### 6. `TestRailSyncAgentWorker` — non-LLM worker (yaml id: `cypress-testrail-sync`)
 
 > **Execution order note:** In the YAML this step runs between Gate 1 and `cypress-automation-agent`
 > (section 5). Sections here are numbered by implementation complexity, not pipeline order.
@@ -631,20 +640,24 @@ reference for which TestRail fields to set and retrieve. The factory uses the Ja
 | `custom_dev_team` | `team` field from `scope_manifest.md` → mapped: Firebird=3, Folijet=4, Spitfire=6, Thunderjet=8, Vega=9, Volaris=13, Citation=18, Corsair=19, Eureka=21, Promin=27 | omitted if team absent or unknown |
 | `custom_ecs_enabled` | ECS flag from `scope_manifest.md` | |
 | `custom_automation_type` | `2` (Manual) for all cases | The Cypress spec is the automation artifact; the TestRail case is always a manual test case record |
-| `labels` | `[67]` | Always include the AI label (ID 67 on foliotest.testrail.io) per `write-testrail-cases` skill defaults |
+| `labels` | `[id of testrailLabel]` | Label resolved at runtime via `getOrCreateLabel(testrailLabel)`; label title configured by `FACTORY_CYPRESS_TESTRAIL_LABEL` (default: `cypress-flow-delete-case`) |
+| `refs` | `issue_key` from `scope_manifest.md` | Jira issue key (e.g. `UIIN-2156`) linked on every created case; omitted when blank |
 
 #### Real ID writeback
 
-The worker maintains a mapping built during case creation:
+The worker maintains a `TC-X → C######` mapping built during case creation. After all cases
+are pushed it does a string replacement in the `test_plan.md` body — each heading changes from
+`## TC-1: Create order` to `## C627249: Create order`. The frontmatter is passed through
+unchanged (it carries only lightweight metadata: `issue_key`, `team`, `ecs_enabled`,
+`case_count`). The updated `test_plan.md` is the sole output; no spec bundle is read or modified here.
 
-```
-case title "Create order" → C627249
-case title "Edit order"   → C627250
-```
+The body is the single source of truth for case data. Downstream workers parse cases from body
+headings using the same `## ID: Title` pattern — after this step, `tc.id()` returns `C627249`.
 
-After all cases are pushed, the worker writes the real IDs back into `test_plan.md` — each case
-entry gets an `id: C627249` field. The updated `test_plan.md` is the sole output; no spec bundle
-is read or modified here.
+**Partial failure caveat:** if `addCaseWithMetadata` throws for one case, that `TC-X` token
+stays unreplaced in the body. The downstream `cypress-automation-agent` would then receive
+`TC-X` as a case ID instead of a real TestRail ID, silently breaking the spec-to-TestRail link
+for that case. See Phase 2 Risks below.
 
 #### Section hierarchy for `describeBlocks`
 
@@ -873,6 +886,7 @@ Adapted from `TestFactoryFinalizerWorker`. Case creation is already done by
 | `FACTORY_CYPRESS_TESTRAIL_SECTION_ID` | Fallback TestRail section ID (long integer); used when `testrail_section` is absent from both `scenario_list.md` and `scope_manifest.md` |
 | `FACTORY_CYPRESS_TESTRAIL_CASE_TYPE_ID` | TestRail case type ID (e.g. `1`=Functional on foliotest); optional — omit to leave type unset |
 | `FACTORY_CYPRESS_TESTRAIL_PRIORITY_ID` | TestRail priority ID (default: `3`=Medium) |
+| `FACTORY_CYPRESS_TESTRAIL_LABEL` | Label title applied to every created case (default: `cypress-flow-delete-case`); resolved to a label ID at runtime via `getOrCreateLabel` |
 | `FACTORY_CONNECTORS_TESTRAIL_BASE_URL` | TestRail instance base URL |
 | `FACTORY_CONNECTORS_TESTRAIL_USERNAME` | TestRail username (email) |
 | `FACTORY_CONNECTORS_TESTRAIL_API_KEY` | TestRail API key |
@@ -970,9 +984,10 @@ testing.
 cases appear in TestRail and `test_plan.md` carries real `C######` IDs.
 
 **Verify:** Open `/executions/{id}`. Gate 0 shows `scenario_list.md` with categorized S-NN
-proposals. Gate 1 shows `context.md` with `detected_area` frontmatter and `test_plan.md` with
-cases matching the confirmed scenarios, each with `automatable: true/false`. After Gate 1
-approval: TestRail cases created with AI label (67) and `test_plan.md` carries `id: C######`.
+proposals. Gate 1 shows `context.md` with `areas:` frontmatter and `test_plan.md` with body
+sections `## TC-X: Title` per case, each with automatable/tier/preconditions/steps. After Gate 1
+approval: TestRail cases created with the configured AI label and `refs` set to the Jira key;
+`test_plan.md` body headings updated to `## C######: Title`.
 
 ---
 
@@ -1045,6 +1060,21 @@ The LLM uses this rather than guessing or scanning the full dictionary.
 The `ecs-user-setup` skill content is detailed and correct. Embedding it verbatim in the system
 prompt is the right approach. In v1, consider flagging ECS tests at Gate 2 with a special warning
 note to the reviewer: "This test was classified as ECS — review user setup carefully."
+
+### TestRail partial failure — TC-X leaking to Phase 2 (Phase 2 prerequisite)
+
+If `addCaseWithMetadata` succeeds for some cases but throws for others, the failed cases keep
+their `TC-X` placeholder in `test_plan.md`. `cypress-automation-agent` reads those IDs and
+embeds them verbatim in spec tags (`['TC-1']`), variable names (`AT_TC-1_...`), and filenames.
+The TestRail link for those specs is silently broken.
+
+Retrying the step (via the bounded retry policy) would re-create the successful cases again —
+duplicate TestRail entries.
+
+**Mitigation before Phase 2:** distinguish failure types in `TestRailSyncAgentWorker`:
+- All cases fail → almost certainly credentials/config → throw immediately (no duplicates)
+- Some cases fail → write a `testrail_failures` list into `test_plan.md` frontmatter so
+  `cypress-automation-agent` can skip or flag those cases rather than treating `TC-X` as real.
 
 ### `e2e-spec-agent` quality
 The `write-testrail-cases/SKILL.md` writing guidelines and area context files are a significant
@@ -1346,7 +1376,7 @@ Copy the shape of `ContextLoaderWorker` (non-LLM), but also inject `TestRailConn
 
 public class TestRailSyncAgentWorker implements AgentWorker {
 
-    public static final String ID = "testrail-sync-agent";
+    public static final String ID = "cypress-testrail-sync";
 
     private final TestRailConnector testRail;
     private final FrontmatterCodec frontmatterCodec;
@@ -1532,7 +1562,7 @@ steps:
 
   - step_id: testrail-sync
     type: AGENT
-    worker_id: testrail-sync-agent
+    worker_id: cypress-testrail-sync
     inputs: [test_plan.md]
     outputs: [test_plan.md]      # same artifact name, now with real C###### IDs written in
 

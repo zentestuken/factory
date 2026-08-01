@@ -8,7 +8,6 @@ import org.folio.factory.core.agent.AgentResult;
 import org.folio.factory.core.agent.ArtifactContent;
 import org.folio.factory.cypressfactory.model.CypressTestPlan;
 import org.springframework.ai.chat.client.ChatClient;
-import tools.jackson.databind.json.JsonMapper;
 
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -16,20 +15,18 @@ import java.util.Map;
 
 /**
  * Generates a Cypress E2E test plan from the approved scope manifest plus area context.
- * Outputs {@code test_plan.md} with YAML frontmatter (case list) and a human-readable body.
+ * Outputs {@code test_plan.md} with lightweight YAML frontmatter and a human-readable body
+ * that is the single source of truth for case data (title, steps, tier, etc.).
  */
 public class E2eSpecAgentWorker extends AbstractLlmAgentWorker {
 
     public static final String ID = "cypress-e2e-spec-agent";
 
     private final FrontmatterCodec frontmatterCodec;
-    private final JsonMapper jsonMapper;
 
-    public E2eSpecAgentWorker(ChatClient chatClient, FrontmatterCodec frontmatterCodec,
-                              JsonMapper jsonMapper) {
+    public E2eSpecAgentWorker(ChatClient chatClient, FrontmatterCodec frontmatterCodec) {
         super(chatClient);
         this.frontmatterCodec = frontmatterCodec;
-        this.jsonMapper = jsonMapper;
     }
 
     @Override
@@ -68,7 +65,6 @@ public class E2eSpecAgentWorker extends AbstractLlmAgentWorker {
         metadata.put("team", plan.team());
         metadata.put("ecs_enabled", plan.ecsEnabled());
         metadata.put("case_count", plan.cases().size());
-        metadata.put("cases", jsonMapper.convertValue(plan.cases(), Object.class));
 
         return resultWithUsage("test_plan.md", frontmatterCodec.render(metadata, renderBody(plan)));
     }

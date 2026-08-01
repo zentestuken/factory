@@ -12,7 +12,7 @@
 
   <artifactId>factory-flow-cypress</artifactId>
   <name>Factory Cypress Flow</name>
-  <description>Cypress E2E Factory plugin: story to Cypress test cases with HITL review</description>
+  <description>Cypress E2E Factory plugin: story to TestRail test cases to Cypress specs with HITL reviews</description>
 
   <dependencies>
     <dependency>

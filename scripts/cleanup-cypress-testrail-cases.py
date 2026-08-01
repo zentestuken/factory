@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Delete all TestRail cases tagged with the 'cypress-flow-delete-case' label.
+Delete all TestRail cases tagged with the dedicated label.
 
 Required env vars:
   FACTORY_CONNECTORS_TESTRAIL_BASE_URL    e.g. https://yourorg.testrail.io
@@ -9,7 +9,7 @@ Required env vars:
   FACTORY_CONNECTORS_TESTRAIL_PROJECT_ID  numeric project id
   FACTORY_CONNECTORS_TESTRAIL_SUITE_ID    (optional) required for multi-suite projects
   FACTORY_CYPRESS_TESTRAIL_SECTION_ID     (optional) restrict search to one section; omit to scan whole project
-  FACTORY_CYPRESS_TESTRAIL_LABEL          (optional) label to filter by; default "cypress-flow-delete-case"
+  FACTORY_CYPRESS_TESTRAIL_LABEL          (optional) label to filter by; default "cypressFlow-delete"
 
 Usage:
   python scripts/cleanup-cypress-testrail-cases.py [--dry-run]
@@ -28,7 +28,7 @@ USERNAME = os.environ["FACTORY_CONNECTORS_TESTRAIL_USERNAME"]
 API_KEY = os.environ["FACTORY_CONNECTORS_TESTRAIL_API_KEY"]
 PROJECT_ID = int(os.environ["FACTORY_CONNECTORS_TESTRAIL_PROJECT_ID"])
 SUITE_ID = os.environ.get("FACTORY_CONNECTORS_TESTRAIL_SUITE_ID")
-LABEL_TITLE = os.environ.get("FACTORY_CYPRESS_TESTRAIL_LABEL", "cypress-flow-delete-case")
+LABEL_TITLE = os.environ.get("FACTORY_CYPRESS_TESTRAIL_LABEL") or "cypressFlow-delete"
 
 _auth = base64.b64encode(f"{USERNAME}:{API_KEY}".encode()).decode()
 _headers = {"Authorization": f"Basic {_auth}", "Content-Type": "application/json"}

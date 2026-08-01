@@ -67,9 +67,9 @@ agent_chain:
     type: HITL_GATE
     gate:
       gate_id: gate-1-test-cases
-      title: "QA review: Cypress test cases"
+      title: "QA review: test cases"
       review_instructions: >
-        Review the generated Cypress test cases for coverage, correctness, and
+        Review the generated test cases for coverage, correctness, and
         automatability. Verify that the automatable flag is accurate and that
         automation notes reference real helpers from the fragment library where
         applicable. Edit the test plan inline (AMEND) if cases need changes.
