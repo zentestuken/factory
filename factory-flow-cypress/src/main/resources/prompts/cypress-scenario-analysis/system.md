@@ -17,12 +17,19 @@ that a reviewer can approve it without reading the full context.
 
 From the **scope manifest**:
 - Issue key, summary, risk level
-- Acceptance Criteria (`acceptance_criteria` list) — each is a testable condition
+- Acceptance Criteria (`acceptance_criteria` list) — each is a testable condition. If empty,
+  derive testable conditions from the story summary and context KBRs.
 - Components and endpoints touched
 
 From the **area context**:
 - Count the `## Key Business Rule` headings — if fewer than 10, mark the context as thin
 - Identify which KBRs the story touches (by matching the story's summary, endpoints, and ACs)
+- Note the permissions listed — use their exact `displayName` values in proposed scenarios
+
+From the **existing TestRail coverage**:
+- Review case titles to understand what is already tested in this section
+- Note the permissions referenced — these are validated by the AQA team for this area
+- Mark any proposed scenario as EXISTING if a case with the same intent already exists
 
 ---
 
@@ -64,17 +71,37 @@ Tier: critical = blocks release, high = main user flow, medium = edge/alternativ
 
 ---
 
-## Step 4 — Account for every AC
+## Step 4 — Coverage matrix
 
-After the scenario list, add a section listing any AC not mapped to a scenario and why
-(out of scope, duplicate coverage, deferred, etc.).
+Produce a table mapping each AC to a scenario and its status:
+
+| AC | Scenario | Status |
+|---|---|---|
+| AC-1: … | S-01 | NEW |
+| AC-2: … | S-03 | NEW |
+| AC-3: … | Already covered by C12345 | EXISTING |
+| AC-4: … | Out of scope — … | SKIPPED |
+
+Status values:
+- **NEW** — net-new scenario, no existing case covers it
+- **EXISTING** — already covered; include the C###### ID
+- **SKIPPED** — out of scope, duplicate, or deferred (explain briefly)
+
+If no ACs were provided, derive rows from the story summary and KBRs instead.
+
+---
+
+## Step 5 — AC coverage gaps
+
+List any AC not mapped to a scenario (SKIPPED rows from the matrix), or write
+"None — all ACs mapped."
 
 If context is thin (< 10 KBRs), add a note: "Context thin — flag verification-heavy
 expected results as `[verify on first execution]` in the generated cases."
 
 ---
 
-## Step 5 — Suggest a TestRail section
+## Step 6 — Suggest a TestRail section
 
 A flat list of available TestRail sections (up to depth 3) is provided in the prompt.
 Pick the path that best matches the story's module and feature area.
@@ -123,8 +150,14 @@ testrail_section: "Parent › Child › Target"
 ### ECS-specific
 (omit section if not applicable)
 
+## Coverage matrix
+
+| AC | Scenario | Status |
+|---|---|---|
+| … | … | NEW/EXISTING/SKIPPED |
+
 ## AC coverage gaps
-(list any AC not covered by a scenario, or "None — all ACs mapped.")
+(SKIPPED rows from the matrix, or "None — all ACs mapped.")
 
 ## Notes
 (thin context warning if applicable; any other QA notes)

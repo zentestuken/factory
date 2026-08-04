@@ -5,6 +5,7 @@ import org.folio.factory.connectors.github.GitHubConnector;
 import org.folio.factory.connectors.jira.JiraConnector;
 import org.folio.factory.connectors.testrail.TestRailConnector;
 import org.folio.factory.cypressfactory.worker.ContextLoaderWorker;
+import org.folio.factory.cypressfactory.worker.CoverageLoaderWorker;
 import org.folio.factory.cypressfactory.worker.CypressExamplesLoaderWorker;
 import org.folio.factory.cypressfactory.worker.E2eSpecAgentWorker;
 import org.folio.factory.cypressfactory.worker.FragmentScannerWorker;
@@ -51,6 +52,12 @@ public class CypressFlowConfiguration {
     public CypressExamplesLoaderWorker cypressExamplesLoaderWorker(GitHubConnector gitHubConnector,
                                                                     CypressFlowProperties properties) {
         return new CypressExamplesLoaderWorker(gitHubConnector, properties);
+    }
+
+    @Bean
+    public CoverageLoaderWorker coverageLoaderWorker(TestRailConnector testRailConnector,
+                                                      CypressFlowProperties properties) {
+        return new CoverageLoaderWorker(testRailConnector, properties);
     }
 
     @Bean

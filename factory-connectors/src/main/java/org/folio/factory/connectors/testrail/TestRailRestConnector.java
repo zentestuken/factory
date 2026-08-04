@@ -92,6 +92,34 @@ public class TestRailRestConnector implements TestRailConnector, ConnectorHealth
     }
 
     @Override
+    public List<TestRailCase> getCases(long sectionId) {
+        List<TestRailCase> all = new ArrayList<>();
+        int offset = 0;
+        int limit = 250;
+        while (true) {
+            JsonNode resp = properties.suiteId() != null
+                    ? restClient.get()
+                            .uri("/index.php?/api/v2/get_cases/{projectId}&suite_id={suiteId}&section_id={sectionId}&limit={limit}&offset={offset}",
+                                    properties.projectId(), properties.suiteId(), sectionId, limit, offset)
+                            .retrieve().body(JsonNode.class)
+                    : restClient.get()
+                            .uri("/index.php?/api/v2/get_cases/{projectId}&section_id={sectionId}&limit={limit}&offset={offset}",
+                                    properties.projectId(), sectionId, limit, offset)
+                            .retrieve().body(JsonNode.class);
+            JsonNode cases = resp.path("cases");
+            for (JsonNode c : cases) {
+                all.add(new TestRailCase(
+                        c.path("id").asLong(),
+                        c.path("title").asString(""),
+                        c.path("custom_preconds").asString("")));
+            }
+            if (cases.size() < limit) break;
+            offset += limit;
+        }
+        return all;
+    }
+
+    @Override
     public long getOrCreateLabel(String title) {
         JsonNode response = restClient.get()
                 .uri("/index.php?/api/v2/get_labels/{projectId}", properties.projectId())

@@ -140,10 +140,18 @@ from different contexts. The factory uses the Java connector; the MCP server sta
      │  ── Fetches examples.md from folio-eureka-ai-dev GitHub repo at runtime
      │       (branch: master, path: skills/write-testrail-cases/references/examples.md)
      │  ── Falls back to classpath:references/examples.md when GitHub unavailable
-     │  ── 3 golden TestRail cases with style annotations (terse expected results,
-     │       no named actors, compact preconditions, symbolic values, journey flag rules)
+     │  ── 4 golden TestRail cases with style annotations (Check-in, AU filter journey,
+     │       Check-in lifecycle journey, ECS cross-tenant enforcement); anti-pattern section
      ▼
 [examples.md]
+     │
+     ▼
+[coverage-loader]                                                 NEW · non-LLM
+     │  ── Fetches existing TestRail cases from configured section via getCases API
+     │  ── Extracts case titles (coverage summary) + permission names from preconditions
+     │  ── Max 150 cases; degrades gracefully when testrailSectionId null or TestRail unconfigured
+     ▼
+[existing_coverage.md]
      │
      ▼
 [scenario-analysis]                                                   NEW · LLM
@@ -170,7 +178,7 @@ from different contexts. The factory uses the Java connector; the MCP server sta
      ▼
 [e2e-spec-agent]                                                      NEW · LLM
      │  ── Reads scope_manifest.md + context.md + fragment_library.md
-     │        + examples.md + scenario_list.md
+     │        + examples.md + scenario_list.md + existing_coverage.md (area style reference)
      │  ── System prompt: write-testrail-cases/SKILL.md guidelines (embedded)
      │       + House Style by Area table + Journey vs Atomic guidance
      │       + Step Patterns + Entry Point Exhaustion rule
@@ -967,18 +975,19 @@ testing.
 1. ✅ Create `factory-flow-cypress` Maven module
 2. ✅ Implement `ContextLoaderWorker` (area detection + context file load + thin-context flag)
 3. ✅ Implement `TafSyncService` (auto-clone to `cypressTafClone/`) + `FragmentScannerWorker` (keyword scoring, GitHub API fallback, permissions matching → `fragment_library.md`)
-4. ✅ Implement `CypressExamplesLoaderWorker` (runtime GitHub fetch + classpath fallback)
-5. ✅ Implement `ScenarioAnalysisAgentWorker` (LLM; categorized scenario proposals)
-6. ✅ Write `cypress-scenario-analysis/system.md` + `user.md`
-7. ✅ Write `cypress-e2e-spec-agent/system.md` (from SKILL.md + House Style + Step Patterns + self-review)
-8. ✅ Write `cypress-e2e-spec-agent/user.md` (with `{{examples}}` + `{{scenario_list}}` sections)
-9. ✅ Implement `TestRailSyncAgentWorker` (push cases → collect real IDs → write back)
-10. ✅ Write `cypress-factory.yaml`:
-    triage → context-load → fragment-scan → examples-load → scenario-analysis →
+4. ✅ Implement `CypressExamplesLoaderWorker` (runtime GitHub fetch + classpath fallback; 4 golden cases incl. ECS)
+5. ✅ Implement `CoverageLoaderWorker` (getCases API; title summary + permission extraction from preconditions; graceful degradation → `existing_coverage.md`)
+6. ✅ Implement `ScenarioAnalysisAgentWorker` (LLM; categorized scenario proposals + coverage matrix; reads `existing_coverage.md`)
+7. ✅ Write `cypress-scenario-analysis/system.md` + `user.md` (incl. coverage matrix AC→Scenario→Status, EXISTING flagging)
+8. ✅ Write `cypress-e2e-spec-agent/system.md` (House Style + Step Patterns + active-extraction pre-generation step 4 + extended self-review gate)
+9. ✅ Write `cypress-e2e-spec-agent/user.md` (with `{{examples}}` + `{{scenario_list}}` + `{{existing_coverage}}` sections)
+10. ✅ Implement `TestRailSyncAgentWorker` (push cases → collect real IDs → write back)
+11. ✅ Write `cypress-factory.yaml`:
+    triage → context-load → fragment-scan → examples-load → coverage-load → scenario-analysis →
     gate-0-scenarios → test-spec → gate-1-review → testrail-sync
-    Gate-0 reviewed: [scenario_list.md, scope_manifest.md, context.md]
+    Gate-0 reviewed: [scenario_list.md, scope_manifest.md, context.md, existing_coverage.md]
     Gate-1 reviewed: [test_plan.md, scenario_list.md, scope_manifest.md, context.md]
-11. ✅ Wire `CypressFlowConfiguration`, add to `factory-app/pom.xml`
+12. ✅ Wire `CypressFlowConfiguration`, add to `factory-app/pom.xml`
 
 **Milestone:** Gate 0 confirms scenario coverage; Gate 1 reviews test cases; after approval,
 cases appear in TestRail and `test_plan.md` carries real `C######` IDs.

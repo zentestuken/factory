@@ -35,10 +35,16 @@ agent_chain:
     inputs: []
     outputs: [examples.md]
 
+  - step_id: coverage-load
+    type: AGENT
+    worker_id: cypress-coverage-loader
+    inputs: []
+    outputs: [existing_coverage.md]
+
   - step_id: scenario-analysis
     type: AGENT
     worker_id: cypress-scenario-analysis
-    inputs: [scope_manifest.md, context.md]
+    inputs: [scope_manifest.md, context.md, existing_coverage.md]
     outputs: [scenario_list.md]
 
   - step_id: gate-0-scenarios
@@ -51,16 +57,20 @@ agent_chain:
         adjust journey vs atomic shape. Amend scenario_list.md — test-spec will generate
         cases for exactly the scenarios confirmed here.
 
+        The coverage matrix shows AC → scenario mapping and flags EXISTING cases.
+        Remove EXISTING rows unless the story changes that behaviour — new cases for
+        already-covered scenarios create duplicates in TestRail.
+
         The frontmatter field `testrail_section` shows the suggested TestRail section for
         these cases. Edit the path string if the suggestion is wrong. Accepted formats:
         a path string using › | > → as separators, or a numeric section ID. Delete the
         field to fall back to the configured default section.
-      reviewed_artifacts: [scenario_list.md, scope_manifest.md, context.md]
+      reviewed_artifacts: [scenario_list.md, scope_manifest.md, context.md, existing_coverage.md]
 
   - step_id: test-spec
     type: AGENT
     worker_id: cypress-e2e-spec-agent
-    inputs: [scope_manifest.md, context.md, fragment_library.md, examples.md, scenario_list.md]
+    inputs: [scope_manifest.md, context.md, fragment_library.md, examples.md, scenario_list.md, existing_coverage.md]
     outputs: [test_plan.md]
 
   - step_id: gate-1-review

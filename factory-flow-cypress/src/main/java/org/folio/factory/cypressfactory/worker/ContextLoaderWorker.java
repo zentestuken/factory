@@ -311,6 +311,12 @@ public class ContextLoaderWorker implements AgentWorker {
         Map<String, Object> meta = new LinkedHashMap<>();
         meta.put("areas", areas);
 
+        // Always fetch permissions — not gated on thin context
+        String permissionsBlock = buildPermissionsBlock(areas);
+        if (permissionsBlock != null) {
+            contextContent = contextContent + "\n\n" + permissionsBlock;
+        }
+
         if (isThinContext(contextContent)) {
             log.info("Context for areas {} is thin — running lightweight enrichment", areas);
             meta.put("context_quality", "thin");
@@ -422,17 +428,23 @@ public class ContextLoaderWorker implements AgentWorker {
         return sb.toString();
     }
 
+    private String buildPermissionsBlock(List<String> areas) {
+        StringBuilder result = new StringBuilder();
+        for (String area : areas) {
+            String repo = AREA_GITHUB_REPOS.get(area);
+            if (repo == null || properties.folioAiRepo().isBlank()) continue;
+            String moduleName = repo.substring(repo.lastIndexOf('/') + 1);
+            String permissions = fetchPermissions(repo, moduleName);
+            if (permissions != null) result.append(permissions);
+        }
+        return result.isEmpty() ? null : result.toString();
+    }
+
     private void enrichGitHub(String area, List<String> keywords,
                                StringBuilder out, Set<String> sources) {
         String repo = AREA_GITHUB_REPOS.get(area);
         if (repo == null || properties.folioAiRepo().isBlank()) return;
         String moduleName = repo.substring(repo.lastIndexOf('/') + 1);
-
-        String permissions = fetchPermissions(repo, moduleName);
-        if (permissions != null) {
-            out.append(permissions);
-            sources.add("GitHub (permissions)");
-        }
 
         String translations = fetchTranslations(repo, moduleName, keywords);
         if (translations != null) {

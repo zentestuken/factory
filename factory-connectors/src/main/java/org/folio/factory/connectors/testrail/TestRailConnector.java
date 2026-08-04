@@ -64,6 +64,13 @@ public interface TestRailConnector {
     }
 
     /**
+     * Returns all cases in a section. Empty list when connector is not configured.
+     */
+    default List<TestRailCase> getCases(long sectionId) {
+        throw new UnsupportedOperationException("getCases not supported by this TestRail connector");
+    }
+
+    /**
      * Returns all section paths up to depth 2 as human-readable strings
      * (e.g. {@code "MARC › MARC authority › Edit"}), sorted alphabetically.
      * Intended for LLM context — the flat list lets the model identify the right

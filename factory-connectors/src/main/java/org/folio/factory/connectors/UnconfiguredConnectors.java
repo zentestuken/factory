@@ -141,6 +141,11 @@ public final class UnconfiguredConnectors {
         }
 
         @Override
+        public List<org.folio.factory.connectors.testrail.TestRailCase> getCases(long sectionId) {
+            return List.of();
+        }
+
+        @Override
         public List<String> listSectionPaths() {
             return List.of();
         }

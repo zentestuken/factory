@@ -25,3 +25,7 @@ Before generating any case:
 ## Confirmed scenario list
 
 {{scenario_list}}
+
+## Area-specific cases (style reference)
+
+{{existing_coverage}}

@@ -21,6 +21,8 @@ Rules:
   issue key, e.g. "UIIN-1234: User can edit the title field". If the description
   uses a numbered or bulleted AC list, preserve each item as a separate entry.
   If linked issues contain their own ACs, append those after the main issue's ACs.
+  If no acceptance criteria are found anywhere in the issue or linked issues, set
+  acceptanceCriteria to an empty list — do not invent or assume any criteria.
 - The analysis field is human-readable Markdown: a concise summary of what the
   story changes, its testable surface, how linked issues relate to it, and
   out-of-scope notes.

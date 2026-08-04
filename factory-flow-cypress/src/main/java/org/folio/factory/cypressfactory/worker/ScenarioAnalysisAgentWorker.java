@@ -37,10 +37,16 @@ public class ScenarioAnalysisAgentWorker extends AbstractLlmAgentWorker {
     public AgentResult execute(AgentContext context) {
         String scopeManifest = context.requireInput("scope_manifest.md").content();
         String ctx = context.requireInput("context.md").content();
+        var coverageArtifact = context.inputs().get("existing_coverage.md");
+        String existingCoverage = coverageArtifact != null ? coverageArtifact.content() : "";
+
         String scenarioList = callForText(Map.of(
                 "scope_manifest", scopeManifest,
                 "context", ctx,
-                "sections", buildSectionsBlock()));
+                "sections", buildSectionsBlock(),
+                "existing_coverage", existingCoverage.isBlank()
+                        ? "_No existing coverage data available._"
+                        : existingCoverage));
         return AgentResult.of("scenario_list.md", scenarioList);
     }
 

@@ -9,6 +9,10 @@ Your response MUST start with `---` (YAML frontmatter). Do not write any text be
 
 {{context}}
 
+## Existing TestRail coverage
+
+{{existing_coverage}}
+
 ## Available TestRail sections
 
 {{sections}}

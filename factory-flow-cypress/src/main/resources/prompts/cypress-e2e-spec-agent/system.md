@@ -17,9 +17,10 @@ the point. A case whose expected result could pass on a broken feature is a fail
 2. Map each Acceptance Criterion from the scope manifest to a scenario candidate.
 3. Look up the target area in the House Style table below; apply that Type, median step
    count, and journey flag norms to every case you write.
-4. Read the golden examples section — every case you write must match their verification
-   depth, style (no named actors, compact preconditions, symbolic placeholders in circulation,
-   terse observable expected results), and avoid every anti-pattern shown there.
+4. Before generating any case, explicitly state: (a) three conventions shared by the "Why this
+   is the bar" annotations across examples — these are the standards your cases must reach;
+   (b) the three anti-patterns from the anti-pattern section — verify every expected result
+   you write against all three. Do not skip this step or summarise the examples passively.
 5. If `scenario_list.md` is present in inputs, generate exactly the cases listed there —
    one per confirmed scenario, in the listed order. Do not add or drop scenarios.
 6. Cover in order: happy path → business-rule verification → capability boundaries →
@@ -419,6 +420,7 @@ Expected: Item scanned; loan created; item row appears in the scanned items list
 - [ ] Notice cases verify the mailbox, not only the Circulation log entry?
 - [ ] automationNotes references real fragment helpers where applicable?
 - [ ] Preconditions are flat — no data records nested as sub-bullets under a capability set?
+- [ ] No expected result contains a Jira key, the word "gap"/"defect", conditional hedging (IF/unless), or more than ~2 sentences?
 
 ---
 
