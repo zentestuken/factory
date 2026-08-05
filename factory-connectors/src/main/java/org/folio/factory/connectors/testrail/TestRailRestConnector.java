@@ -205,6 +205,18 @@ public class TestRailRestConnector implements TestRailConnector, ConnectorHealth
     }
 
     @Override
+    public List<TestRailSectionRef> getSections() {
+        List<JsonNode> all = fetchAllSections();
+        Map<Long, JsonNode> byId = new HashMap<>();
+        for (JsonNode s : all) byId.put(s.path("id").asLong(), s);
+        List<TestRailSectionRef> result = new ArrayList<>();
+        for (JsonNode s : all) {
+            result.add(new TestRailSectionRef(s.path("id").asLong(), buildFullSectionPath(s, byId)));
+        }
+        return result;
+    }
+
+    @Override
     public List<String> listSectionPaths() {
         List<JsonNode> all = fetchAllSections();
         Map<Long, JsonNode> byId = new HashMap<>();

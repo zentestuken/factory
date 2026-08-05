@@ -11,16 +11,17 @@ the point. A case whose expected result could pass on a broken feature is a fail
 
 ---
 
-## Pre-generation (run before writing any case)
+## Pre-generation (internal reasoning only — do not output)
 
-1. List the Key Business Rules from context.md that this story touches.
+Work through these steps silently before producing the JSON. None of this reasoning appears in your response.
+
+1. Identify the Key Business Rules from context.md that this story touches.
 2. Map each Acceptance Criterion from the scope manifest to a scenario candidate.
 3. Look up the target area in the House Style table below; apply that Type, median step
    count, and journey flag norms to every case you write.
-4. Before generating any case, explicitly state: (a) three conventions shared by the "Why this
-   is the bar" annotations across examples — these are the standards your cases must reach;
-   (b) the three anti-patterns from the anti-pattern section — verify every expected result
-   you write against all three. Do not skip this step or summarise the examples passively.
+4. Internally identify: (a) three conventions shared by the "Why this is the bar" annotations
+   across examples — apply these as the bar each case must reach; (b) the three anti-patterns
+   — verify every expected result you write against all three before including it.
 5. If `scenario_list.md` is present in inputs, generate exactly the cases listed there —
    one per confirmed scenario, in the listed order. Do not add or drop scenarios.
 6. Cover in order: happy path → business-rule verification → capability boundaries →
@@ -29,6 +30,9 @@ the point. A case whose expected result could pass on a broken feature is a fail
 ---
 
 ## Output format
+
+**Your entire response must be the JSON object only — no preamble, no analysis, no code fences.**
+The pre-generation steps above are internal reasoning; they do not appear in your response.
 
 Produce a JSON object matching this schema exactly. The `steps` field is a list of
 objects — every step has both an `action` and an `expected`. Never a flat string list.
@@ -44,7 +48,8 @@ Never a single top-level `expectedResult`.
       "id": "TC001",
       "title": "<plain sentence — see Title rules>",
       "automatable": <bool>,
-      "tier": "<critical|high|medium|low>",
+      "testGroup": "<smoke|critical|extended>",
+      "userJourney": <bool>,
       "ecsEnabled": <bool>,
       "preconditions": ["<numbered-entry text>", ...],
       "steps": [
@@ -70,6 +75,10 @@ Format: `[Actor] [verb] [object] [condition]`
 ✓ `Delete confirmation modal shows correct instance title before deletion`
 ✗ Never start with "Verify that", "Test that", "Negative:", "ECS |", or a bare verb with no actor.
 ✗ Never use `|` as a separator.
+✓ ECS exception — `[ECS <Area>]` bracket prefix is allowed only when the case is
+  exclusively ECS-specific and the area label adds essential disambiguation, e.g.
+  `[ECS Loans] User can check out requested item in Central tenant`. Use sparingly;
+  prefer embedding the tenant context in the title sentence itself.
 
 ---
 
@@ -133,13 +142,18 @@ all of them rather than an atomic case for just one branch.
 ## Preconditions
 
 - Numbered flat list. Sub-bullets only for Capability Sets under a user entry.
-- Data and system state only — no in-test UI actions.
+- Data and system state only — no in-test UI actions. ("User is on the page with all
+  3 members selected" is wrong — member selection is a step with its own expected result.)
 - Last item is always the starting page: "User is on Inventory app > search results".
-- Group closely related facts into one item ("Instance exists with title 'Test Record 001',
-  HRID 'in00000000001', status Available"). Split only when a step must reference one
-  fact independently.
+- Grouping closely related facts into one numbered item is the team's norm, not just a
+  tolerance — real cases pack several facts into one item (e.g. "Fund A-FY-current:
+  Allocated = 200.00, Encumbered = 50.00, Available = 150.00"). Split only when sub-facts
+  belong to genuinely different records/entities, or when a step must reference one
+  specific fact by number independently of the others.
 - List Capability Sets for the logged-in user (Eureka format):
   `Data - UI-Inventory Instance - Edit`
+  If `existing_coverage.md` shows the section uses a dual Okapi+Eureka two-column permission
+  table, match that format. For new sections, Eureka format alone is correct.
 - For quantitative cases (Finance, Orders, Invoices): include exact starting values for
   every number a step will later assert ("Fund A: Allocated = 200.00, Encumbered = 50.00").
 - For circulation/inventory flows: use symbolic placeholders (`<barcode>`, `service point S`,
@@ -160,7 +174,30 @@ all of them rather than an atomic case for just one branch.
 - Navigation uses `>` separator: "Navigate to Settings > Inventory > Identifier types".
 - Group multiple sub-actions into one step only when they share a single verification
   point and none of the sub-actions is itself an assertion target.
+- **When a step fills multiple form fields or sets multiple options**, use a lead-in clause
+  ending in a colon + one bullet per field or sub-action — not a run-on sentence:
+  ```
+  Action:
+  Navigate to Settings > Data Import > Match profiles, click "New":
+  - Existing record type = MARC Authority
+  - Existing record field = "Authority: 001"
+  - Incoming record field = "MARC Authority: 001"
+  - Click "Save as profile & Close"
+  ```
+  Apply the same lead-in + bullets to an expected result that confirms several field values.
 - Reference preconditions by number: "Click on the instance from Preconditions #2".
+
+---
+
+## Steps — Business-Logic Verification
+
+Every case must verify the business rule outcome, not just the UI mechanics of triggering it. The trigger flow (menus, modals, Submit) is compressed; the state verification is detailed.
+
+- **Absolute values where the exact number is the assertion**: write `Encumbered = 0.00`, `Available = 200.00`, never "increased by" or "decreased accordingly". Finance/Orders/Invoices cases include exact starting values in preconditions too.
+- **Symbolic values where only the boundary matters**: if a test just needs "any amount exceeding the allocation", write that — an invented specific figure adds noise the executor has to ignore.
+- **Symbolic placeholders for circulation/inventory**: use `service point S`, `<barcode>`, `<title>` — the team's norm. Do not invent concrete values unless the exact value is under test.
+- **Verify all entities the action touches**, per the context file: closing a PO must assert encumbrance status, budget values, PO status/reason, and POL statuses.
+- **Column-level verification for business-critical tables**: never "transaction is displayed" — assert exact values: `Type = "Encumbrance"`, `Amount = $50.00`, `Status = "Released"`.
 
 ---
 
@@ -183,6 +220,7 @@ all of them rather than an atomic case for just one branch.
 - Keep expected results terse and observable. No rationale, no ticket references,
   no hedging. One short NOTE sentence is acceptable for a genuine execution caveat only.
 - Vague results that always pass: ✗ "works correctly", "is successful", "record is displayed".
+- When a step has a genuine execution caveat, add **one short `NOTE:` sentence** inside the expected result — only for a real pass/fail caveat (e.g. `NOTE: known display bug MODX-123 may show "Updated" — verify at the record`). Never use NOTE to explain ticket scope, hedge about unshipped work, or justify the assertion.
 
 ### Verify effects at their real destination
 
@@ -379,6 +417,44 @@ Action:   Enter item barcode on "Scan items" pane and click "Enter"
 Expected: Item scanned; loan created; item row appears in the scanned items list with status "Checked out"
 ```
 
+**Accordion expansion:**
+```
+Action:   Expand "[Name]" accordion on the [page]
+Expected: "[Name]" accordion expands and displays [links / fields / content relevant to scenario]
+
+Action:   Click the "[hyperlink]" hyperlink inside the accordion
+Expected: [Target page or tab] opens; [relevant context — loan list, record detail, etc.]
+```
+
+**Date range filter:**
+```
+Action:   Expand "[Date field]" accordion in the "Search & filter" pane
+Expected: "[Date field]" accordion expands and displays "From" and "To" date/time fields
+
+Action:   Fill in "From" and "To" date fields, then click "Apply"
+Expected: Results table shows only records within the specified date range; records count
+          updates accordingly
+```
+
+---
+
+## Don'ts ✗
+
+- Don't write vague expected results: "works correctly", "is successful", "confirming X is displayed"
+- Don't pad expected results with rationale, ticket-scope reasoning, or hedging about unshipped work — state the observable result tersely and stop
+- Don't write relative value assertions: "increased by", "reduced accordingly"
+- Don't skip expected results for intermediate steps
+- Don't bundle multiple user roles into one case — one role per case unless two roles are genuinely required simultaneously
+- Don't omit capability boundary scenarios when the story involves roles or restrictions
+- Don't use legacy Okapi permission names — always use Capability Sets
+- Don't group assertion steps — grouping is for navigation/setup clicks only
+- Don't use `→` inside a single step to chain actions across separate verification points
+- Don't invent UI labels, statuses, or toast texts that contradict the context file or examples
+- Don't attach status adjectives to records that have no status concept — write "A MARC
+  Authority record exists", not "An Active MARC Authority record". Reserve status words
+  for records where the status is a real named field value (Active Budget/Fund/Ledger,
+  Open PO, Available item).
+
 ---
 
 ## automatable flag and automationNotes
@@ -393,6 +469,18 @@ Expected: Item scanned; loan created; item row appears in the scanned items list
 
 ---
 
+## Test Group
+
+Assign `testGroup` based on business impact:
+
+- `smoke` — single most critical happy path; ~1 per feature area. If it fails, the feature is broken for all users.
+- `critical` — essential functionality users depend on daily: create, edit, delete, key capability boundaries, status transitions, business-rule verifications, export/import flows.
+- `extended` — less frequent but important: search and filtering, UI element verification, edge cases, negative cases, load/performance.
+
+Most cases are `critical` or `extended`. `smoke` is rare — 1–2 per feature area maximum.
+
+---
+
 ## ECS cases
 
 - `ecsEnabled: true` only when the case explicitly tests cross-tenant ECS behaviour.
@@ -404,11 +492,17 @@ Expected: Item scanned; loan created; item row appears in the scanned items list
 ## Self-review (apply before finalising output)
 
 - [ ] No automation framework code in any action or expected field?
+- [ ] Case has a navigation/entry step, business assertion step(s), and (if state changes) a re-verification step? A 2–3 step case is a failure by default unless the scenario is genuinely trivial.
 - [ ] Every step has a non-empty expected result?
 - [ ] At least one step asserts the business-rule outcome with concrete values?
+- [ ] All entities the action touches (per context file) are verified — not just the trigger flow?
 - [ ] No vague expected results ("works", "is correct", "is successful")?
 - [ ] All toast messages verbatim (or flagged for first-run verification)?
+- [ ] All numbers absolute in quantitative cases (Finance/Orders/Invoices)?
+- [ ] No invented concrete values where symbolic placeholders are the area norm (circulation/inventory)?
+- [ ] Business-critical tables (transactions, budgets) verified column-by-column, not just "is displayed"?
 - [ ] Field lists use bullets, not semicolons? (2+ `field = value` pairs always bulleted)
+- [ ] Multi-part action steps broken into a lead-in line + bullets — not a run-on sentence?
 - [ ] Preconditions are data/state only — no hidden UI actions?
 - [ ] Preconditions numbered, flat, starting page last, all assertion values present?
 - [ ] Steps reference "Preconditions #N" where data is used?
@@ -421,6 +515,7 @@ Expected: Item scanned; loan created; item row appears in the scanned items list
 - [ ] automationNotes references real fragment helpers where applicable?
 - [ ] Preconditions are flat — no data records nested as sub-bullets under a capability set?
 - [ ] No expected result contains a Jira key, the word "gap"/"defect", conditional hedging (IF/unless), or more than ~2 sentences?
+- [ ] Verification density comparable to references/examples.md golden cases?
 
 ---
 

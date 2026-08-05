@@ -71,6 +71,15 @@ public interface TestRailConnector {
     }
 
     /**
+     * Returns all sections with their full hierarchical paths (e.g. {@code "MARC › MARC authority"}).
+     * Used by coverage loaders to find area-relevant sections by keyword matching.
+     * Returns an empty list when the connector is not configured.
+     */
+    default List<TestRailSectionRef> getSections() {
+        throw new UnsupportedOperationException("getSections not supported by this TestRail connector");
+    }
+
+    /**
      * Returns all section paths up to depth 2 as human-readable strings
      * (e.g. {@code "MARC › MARC authority › Edit"}), sorted alphabetically.
      * Intended for LLM context — the flat list lets the model identify the right

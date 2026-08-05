@@ -111,8 +111,8 @@ from different contexts. The factory uses the Java connector; the MCP server sta
      ▼
 [context-loader]                                                  NEW · non-LLM
      │  ── Keyword-match story summary + components to one of 19 FOLIO areas
-     │  ── Fetch context/{area}.md from FACTORY_MQA_SKILL_REPO via GitHub API
-     │       (branch: FACTORY_MQA_SKILL_BRANCH · always reflects latest MQA edits)
+     │  ── Fetch context/{area}.md from FACTORY_CYPRESS_FOLIO_AI_REPO via GitHub API
+     │       (branch: master · always reflects latest MQA edits)
      │  ── Provides: verbatim UI texts, business rules, capability sets/permissions for the area
      │  ── On ambiguity: record all matches; reviewer corrects inline at Gate 1
      │  ── On failure / unknown area: context.md with area: unknown; flow continues with empty context.md
@@ -147,9 +147,14 @@ from different contexts. The factory uses the Java connector; the MCP server sta
      │
      ▼
 [coverage-loader]                                                 NEW · non-LLM
-     │  ── Fetches existing TestRail cases from configured section via getCases API
-     │  ── Extracts case titles (coverage summary) + permission names from preconditions
-     │  ── Max 150 cases; degrades gracefully when testrailSectionId null or TestRail unconfigured
+     │  ── Reads detected area(s) from context.md frontmatter
+     │  ── Calls getSections() → keyword-matches area name against all section full-paths
+     │       (split area by hyphens, require all tokens ≥3 chars to appear in path)
+     │  ── Explicitly excludes FACTORY_CYPRESS_TESTRAIL_SECTION_ID (placement fallback,
+     │       non-thematic — e.g. "test_ai"); named by its actual TestRail name in skip message
+     │  ── Loads cases from matched sections; deduplicates by case ID; max 150 total
+     │  ── Degrades gracefully: empty coverage when TestRail unconfigured, area unknown,
+     │       or no area-specific section found
      ▼
 [existing_coverage.md]
      │
@@ -551,8 +556,8 @@ only the system prompt needs updating — the YAML descriptor and all downstream
 Extends `AbstractLlmAgentWorker`. Reads `scope_manifest.md` and `context.md`, calls
 `callForEntity(vars, TestPlan.class)`, and returns `AgentResult.of("test_plan.md", ...)`.
 You need a `TestPlan` record in the model package — same idea as Flow A's `TestPlan` but
-fields match the Cypress flow's case structure (`id`, `title`, `automatable`, `tier`,
-`ecs_enabled`, `steps`, etc.). See the Implementation Reference section for the LLM worker
+fields match the Cypress flow's case structure (`id`, `title`, `automatable`, `testGroup`,
+`userJourney`, `ecs_enabled`, `steps`, etc.). See the Implementation Reference section for the LLM worker
 pattern; the Java shape is identical to `CypressAutomationAgentWorker` — just different
 inputs, record type, and output artifact name.
 
@@ -644,7 +649,7 @@ reference for which TestRail fields to set and retrieve. The factory uses the Ja
 | TestRail field | Value source | Notes |
 |---|---|---|
 | `section_id` | `testrail_section` from `scenario_list.md` frontmatter (Gate-0 confirmed); `scope_manifest.md` override takes priority if present; falls back to `FACTORY_CYPRESS_TESTRAIL_SECTION_ID` | Accepts path string (resolved via API) or numeric ID |
-| `custom_test_group` | tier from `test_plan.md` per case | 1=smoke, 2=criticalPath, 3=extendedPath |
+| `custom_test_group` | `testGroup` from `test_plan.md` per case | 1=smoke, 2=criticalPath, 3=extendedPath |
 | `custom_dev_team` | `team` field from `scope_manifest.md` → mapped: Firebird=3, Folijet=4, Spitfire=6, Thunderjet=8, Vega=9, Volaris=13, Citation=18, Corsair=19, Eureka=21, Promin=27 | omitted if team absent or unknown |
 | `custom_ecs_enabled` | ECS flag from `scope_manifest.md` | |
 | `custom_automation_type` | `2` (Manual) for all cases | The Cypress spec is the automation artifact; the TestRail case is always a manual test case record |
@@ -892,7 +897,7 @@ Adapted from `TestFactoryFinalizerWorker`. Case creation is already done by
 | `FACTORY_CYPRESS_TARGET_REPO` | GitHub repo (`owner/name`) where generated Cypress specs are committed (e.g. `folio-org/stripes-testing`) |
 | `FACTORY_CYPRESS_BASE_BRANCH` | Base branch in `TARGET_REPO` (default: `master`) |
 | `FACTORY_CYPRESS_TESTRAIL_SECTION_ID` | Fallback TestRail section ID (long integer); used when `testrail_section` is absent from both `scenario_list.md` and `scope_manifest.md` |
-| `FACTORY_CYPRESS_TESTRAIL_CASE_TYPE_ID` | TestRail case type ID (e.g. `1`=Functional on foliotest); optional — omit to leave type unset |
+| `FACTORY_CYPRESS_TESTRAIL_CASE_TYPE_ID` | TestRail case type ID (e.g. `1`=Functional on foliotest); code default `1`=Functional — override to change |
 | `FACTORY_CYPRESS_TESTRAIL_PRIORITY_ID` | TestRail priority ID (default: `3`=Medium) |
 | `FACTORY_CYPRESS_TESTRAIL_LABEL` | Label title applied to every created case (default: `cypress-flow-delete-case`); resolved to a label ID at runtime via `getOrCreateLabel` |
 | `FACTORY_CONNECTORS_TESTRAIL_BASE_URL` | TestRail instance base URL |
@@ -994,7 +999,7 @@ cases appear in TestRail and `test_plan.md` carries real `C######` IDs.
 
 **Verify:** Open `/executions/{id}`. Gate 0 shows `scenario_list.md` with categorized S-NN
 proposals. Gate 1 shows `context.md` with `areas:` frontmatter and `test_plan.md` with body
-sections `## TC-X: Title` per case, each with automatable/tier/preconditions/steps. After Gate 1
+sections `## TC-X: Title` per case, each with automatable/testGroup/userJourney/preconditions/steps. After Gate 1
 approval: TestRail cases created with the configured AI label and `refs` set to the Jira key;
 `test_plan.md` body headings updated to `## C######: Title`.
 
@@ -1176,7 +1181,7 @@ public class ContextLoaderWorker implements AgentWorker {
 
     public static final String ID = "context-loader";
 
-    private final CypressFlowProperties properties;   // holds FACTORY_MQA_SKILL_REPO + branch
+    private final CypressFlowProperties properties;   // holds FACTORY_CYPRESS_FOLIO_AI_REPO
     private final GitHubConnector gitHub;             // reused — same connector as finalizer
     private final FrontmatterCodec frontmatterCodec;  // shared codec from factory-agents
 
@@ -1222,8 +1227,8 @@ public class ContextLoaderWorker implements AgentWorker {
         // fetch single file from GitHub — no local checkout needed
         String path = "skills/write-testrail-cases/references/context/" + area + ".md";
         try {
-            return gitHub.getFileContent(properties.mqaSkillRepo(),
-                                         properties.mqaSkillBranch(), path);
+            return gitHub.getFileContent(properties.folioAiRepo(),
+                                         "master", path);
         } catch (NotFoundException e) {
             return "";   // produce context.md with empty body; log a warning
         } catch (Exception e) {
@@ -1318,7 +1323,7 @@ String areaContext   = context.requireInput("context.md").content();
 // Different record type and output artifact
 TestPlan plan = callForEntity(
     Map.of("scope_manifest", scopeManifest, "context", areaContext),
-    TestPlan.class   // ← your model record; fields: id, title, automatable, tier, ecs_enabled, steps…
+    TestPlan.class   // ← your model record; fields: id, title, automatable, testGroup, userJourney, ecs_enabled, steps…
 );
 return AgentResult.of("test_plan.md", frontmatterCodec.render(metadata, renderBody(plan)));
 ```

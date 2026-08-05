@@ -33,7 +33,8 @@ class TestRailSyncAgentWorkerTest {
         return codec.render(
                 Map.of("issue_key", "ERM-1", "team", "", "ecs_enabled", false, "case_count", 1),
                 "## TC-1: Test login\n\n" +
-                "- **Tier:** critical\n" +
+                "- **Test Group:** critical\n" +
+                "- **User Journey:** No\n" +
                 "- **Automatable:** Yes\n" +
                 "- **ECS:** No\n\n" +
                 "**Steps**\n" +
@@ -45,7 +46,8 @@ class TestRailSyncAgentWorkerTest {
         return codec.render(
                 Map.of("issue_key", "ERM-1", "team", "", "ecs_enabled", false, "case_count", 1),
                 "## TC-1: New Title\n\n" +
-                "- **Tier:** critical\n" +
+                "- **Test Group:** critical\n" +
+                "- **User Journey:** No\n" +
                 "- **Automatable:** Yes\n" +
                 "- **ECS:** No\n\n" +
                 "**Steps**\n" +
@@ -57,7 +59,8 @@ class TestRailSyncAgentWorkerTest {
         return codec.render(
                 Map.of("issue_key", "ERM-1", "team", "", "ecs_enabled", false, "case_count", 1),
                 "## TC-1: Test case\n\n" +
-                "- **Tier:** critical\n" +
+                "- **Test Group:** critical\n" +
+                "- **User Journey:** No\n" +
                 "- **Automatable:** Yes\n" +
                 "- **ECS:** No\n\n" +
                 "**Preconditions**\n" +
@@ -71,7 +74,8 @@ class TestRailSyncAgentWorkerTest {
         return codec.render(
                 Map.of("issue_key", "ERM-1", "team", "", "ecs_enabled", false, "case_count", 1),
                 "## TC-1: Test toolbar\n\n" +
-                "- **Tier:** critical\n" +
+                "- **Test Group:** critical\n" +
+                "- **User Journey:** No\n" +
                 "- **Automatable:** Yes\n" +
                 "- **ECS:** No\n\n" +
                 "**Steps**\n" +
@@ -79,6 +83,32 @@ class TestRailSyncAgentWorkerTest {
                 "   **Expected:** Action bar shows:\n" +
                 "   - 'Cancel' button is enabled\n" +
                 "   - 'Save & keep editing' button is disabled\n");
+    }
+
+    private String testPlanWithTestGroup(String testGroup) {
+        return codec.render(
+                Map.of("issue_key", "ERM-1", "team", "", "ecs_enabled", false, "case_count", 1),
+                "## TC-1: Test case\n\n" +
+                "- **Test Group:** " + testGroup + "\n" +
+                "- **User Journey:** No\n" +
+                "- **Automatable:** No\n" +
+                "- **ECS:** No\n\n" +
+                "**Steps**\n" +
+                "1. **Action:** click\n" +
+                "   **Expected:** done\n");
+    }
+
+    private String testPlanWithUserJourney(boolean journey) {
+        return codec.render(
+                Map.of("issue_key", "ERM-1", "team", "", "ecs_enabled", false, "case_count", 1),
+                "## TC-1: Test case\n\n" +
+                "- **Test Group:** critical\n" +
+                "- **User Journey:** " + (journey ? "Yes" : "No") + "\n" +
+                "- **Automatable:** No\n" +
+                "- **ECS:** No\n\n" +
+                "**Steps**\n" +
+                "1. **Action:** click\n" +
+                "   **Expected:** done\n");
     }
 
     private String testPlanNoCases() {
@@ -306,6 +336,100 @@ class TestRailSyncAgentWorkerTest {
         assertThat((String) steps.get(0).get("expected"))
                 .isEqualTo("<p>Action bar shows:</p><ul><li>'Cancel' button is enabled</li>" +
                            "<li>'Save &amp; keep editing' button is disabled</li></ul>");
+    }
+
+    // -------------------------------------------------------------------------
+    // testGroup → custom_test_group mapping
+    // -------------------------------------------------------------------------
+
+    @Test
+    void mapsTestGroupSmokeToId1() {
+        CapturingConnector connector = new CapturingConnector();
+        worker(connector, 114774L).execute(
+                contextWith(testPlanWithTestGroup("smoke"), scopeManifest(null), scenarioList(null)));
+
+        assertThat(connector.capturedMetadata.get("custom_test_group")).isEqualTo(1);
+    }
+
+    @Test
+    void mapsTestGroupCriticalToId2() {
+        CapturingConnector connector = new CapturingConnector();
+        worker(connector, 114774L).execute(
+                contextWith(testPlanWithTestGroup("critical"), scopeManifest(null), scenarioList(null)));
+
+        assertThat(connector.capturedMetadata.get("custom_test_group")).isEqualTo(2);
+    }
+
+    @Test
+    void mapsTestGroupExtendedToId3() {
+        CapturingConnector connector = new CapturingConnector();
+        worker(connector, 114774L).execute(
+                contextWith(testPlanWithTestGroup("extended"), scopeManifest(null), scenarioList(null)));
+
+        assertThat(connector.capturedMetadata.get("custom_test_group")).isEqualTo(3);
+    }
+
+    @Test
+    void unknownTestGroupDefaultsToCriticalPath() {
+        CapturingConnector connector = new CapturingConnector();
+        worker(connector, 114774L).execute(
+                contextWith(testPlanWithTestGroup("unknown-value"), scopeManifest(null), scenarioList(null)));
+
+        assertThat(connector.capturedMetadata.get("custom_test_group")).isEqualTo(2);
+    }
+
+    // -------------------------------------------------------------------------
+    // userJourney → custom_user_journey
+    // -------------------------------------------------------------------------
+
+    @Test
+    void setsUserJourneyTrueWhenYes() {
+        CapturingConnector connector = new CapturingConnector();
+        worker(connector, 114774L).execute(
+                contextWith(testPlanWithUserJourney(true), scopeManifest(null), scenarioList(null)));
+
+        assertThat(connector.capturedMetadata.get("custom_user_journey")).isEqualTo(true);
+    }
+
+    @Test
+    void setsUserJourneyFalseWhenNo() {
+        CapturingConnector connector = new CapturingConnector();
+        worker(connector, 114774L).execute(
+                contextWith(testPlanWithUserJourney(false), scopeManifest(null), scenarioList(null)));
+
+        assertThat(connector.capturedMetadata.get("custom_user_journey")).isEqualTo(false);
+    }
+
+    @Test
+    void defaultsUserJourneyToFalseWhenFieldAbsent() {
+        CapturingConnector connector = new CapturingConnector();
+        // fixture has no User Journey line at all — use testPlanWithTestGroup which omits it
+        // (actually it includes "No", but we test the default via the old Tier-style plan)
+        String planNoJourneyLine = codec.render(
+                Map.of("issue_key", "ERM-1", "team", "", "ecs_enabled", false, "case_count", 1),
+                "## TC-1: Test\n\n" +
+                "- **Test Group:** critical\n" +
+                "- **Automatable:** No\n" +
+                "- **ECS:** No\n\n" +
+                "**Steps**\n1. **Action:** click\n   **Expected:** done\n");
+        worker(connector, 114774L).execute(
+                contextWith(planNoJourneyLine, scopeManifest(null), scenarioList(null)));
+
+        assertThat(connector.capturedMetadata.get("custom_user_journey")).isEqualTo(false);
+    }
+
+    // -------------------------------------------------------------------------
+    // type_id default
+    // -------------------------------------------------------------------------
+
+    @Test
+    void setsTypeIdDefaultFunctional() {
+        CapturingConnector connector = new CapturingConnector();
+        // props constructed with null typeId — CypressFlowProperties defaults it to 1L
+        worker(connector, 114774L).execute(
+                contextWith(testPlanWithOneCase(), scopeManifest(null), scenarioList(null)));
+
+        assertThat(connector.capturedMetadata.get("type_id")).isEqualTo(1L);
     }
 
     // -------------------------------------------------------------------------

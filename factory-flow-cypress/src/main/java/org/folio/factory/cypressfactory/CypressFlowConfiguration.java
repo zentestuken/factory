@@ -56,8 +56,9 @@ public class CypressFlowConfiguration {
 
     @Bean
     public CoverageLoaderWorker coverageLoaderWorker(TestRailConnector testRailConnector,
+                                                      FrontmatterCodec frontmatterCodec,
                                                       CypressFlowProperties properties) {
-        return new CoverageLoaderWorker(testRailConnector, properties);
+        return new CoverageLoaderWorker(testRailConnector, frontmatterCodec, properties);
     }
 
     @Bean

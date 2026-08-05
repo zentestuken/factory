@@ -77,6 +77,12 @@ class UnconfiguredConnectorsTest {
     }
 
     @Test
+    void testRailGetSectionsReturnsEmptyListWithoutThrowing() {
+        // advisory mode: getSections must not throw when TestRail is unconfigured
+        assertThat(new UnconfiguredConnectors.TestRail().getSections()).isEmpty();
+    }
+
+    @Test
     void testRailListSectionPathsReturnsEmptyListWithoutThrowing() {
         // advisory mode: listSectionPaths must not throw when TestRail is unconfigured
         assertThat(new UnconfiguredConnectors.TestRail().listSectionPaths()).isEmpty();

@@ -18,6 +18,7 @@ public record CypressFlowProperties(
         baseBranch = baseBranch == null || baseBranch.isBlank() ? "main" : baseBranch;
         targetRepo = targetRepo == null ? "" : targetRepo;
         folioAiRepo = folioAiRepo == null ? "" : folioAiRepo;
+        if (testrailCaseTypeId == null) testrailCaseTypeId = 1L;
         if (testrailPriorityId == null) testrailPriorityId = 3L;
         testrailLabel = (testrailLabel == null || testrailLabel.isBlank()) ? DEFAULT_TESTRAIL_LABEL : testrailLabel;
     }

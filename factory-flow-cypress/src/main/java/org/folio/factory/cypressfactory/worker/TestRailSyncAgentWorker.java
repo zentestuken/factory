@@ -53,7 +53,7 @@ public class TestRailSyncAgentWorker implements AgentWorker {
     }
 
     private record ParsedCase(
-            String id, String title, String tier, boolean automatable,
+            String id, String title, String testGroup, boolean userJourney, boolean automatable,
             boolean ecsEnabled, List<String> preconditions, List<StepRow> steps, String automationNotes) {
         private record StepRow(String action, String expected) {}
     }
@@ -159,9 +159,7 @@ public class TestRailSyncAgentWorker implements AgentWorker {
         meta.put("custom_automation_type", 2);
         meta.put("custom_ecs_enabled", ecsEnabled);
         meta.put("priority_id", properties.testrailPriorityId());
-        if (properties.testrailCaseTypeId() != null) {
-            meta.put("type_id", properties.testrailCaseTypeId());
-        }
+        meta.put("type_id", properties.testrailCaseTypeId());
         meta.put("labels", List.of(cypressLabelId));
         if (devTeamId != null) {
             meta.put("custom_dev_team", devTeamId);
@@ -173,7 +171,8 @@ public class TestRailSyncAgentWorker implements AgentWorker {
             meta.put("custom_preconds", toHtmlList(tc.preconditions()));
         }
         meta.put("custom_steps_separated", buildSteps(tc.steps()));
-        meta.put("custom_test_group", mapTier(tc.tier()));
+        meta.put("custom_test_group", mapTestGroup(tc.testGroup()));
+        meta.put("custom_user_journey", tc.userJourney());
         return meta;
     }
 
@@ -191,8 +190,8 @@ public class TestRailSyncAgentWorker implements AgentWorker {
         return result;
     }
 
-    private int mapTier(String tier) {
-        return TIER_TO_TEST_GROUP.getOrDefault(tier.toLowerCase().replace(" ", ""), 2);
+    private int mapTestGroup(String testGroup) {
+        return TIER_TO_TEST_GROUP.getOrDefault(testGroup.toLowerCase().replace(" ", ""), 2);
     }
 
     private String toHtmlList(List<String> items) {
@@ -260,7 +259,8 @@ public class TestRailSyncAgentWorker implements AgentWorker {
 
             String caseId = heading.group(1).strip();
             String title = heading.group(2).strip();
-            String tier = "medium";
+            String testGroup = "critical";
+            boolean userJourney = false;
             boolean automatable = false;
             boolean ecsEnabled = false;
             List<String> preconditions = new ArrayList<>();
@@ -284,7 +284,8 @@ public class TestRailSyncAgentWorker implements AgentWorker {
                             Matcher attr = ATTR_LINE.matcher(stripped);
                             if (attr.matches()) {
                                 switch (attr.group(1).toLowerCase()) {
-                                    case "tier" -> tier = attr.group(2).strip();
+                                    case "test group" -> testGroup = attr.group(2).strip();
+                                    case "user journey" -> userJourney = attr.group(2).strip().equalsIgnoreCase("yes");
                                     case "automatable" -> automatable = attr.group(2).strip().equalsIgnoreCase("yes");
                                     case "ecs" -> ecsEnabled = attr.group(2).strip().equalsIgnoreCase("yes");
                                 }
@@ -325,7 +326,7 @@ public class TestRailSyncAgentWorker implements AgentWorker {
             }
             flushPendingStep(steps, pendingAction, pendingExpected);
             pendingAction = null; pendingExpected = null;
-            result.add(new ParsedCase(caseId, title, tier, automatable, ecsEnabled,
+            result.add(new ParsedCase(caseId, title, testGroup, userJourney, automatable, ecsEnabled,
                     preconditions, steps, automationNotes));
         }
         return result;

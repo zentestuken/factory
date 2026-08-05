@@ -21,7 +21,8 @@ public record CypressTestPlan(
             String id,
             String title,
             Boolean automatable,
-            String tier,
+            String testGroup,
+            Boolean userJourney,
             Boolean ecsEnabled,
             List<String> preconditions,
             List<Step> steps,
@@ -31,7 +32,8 @@ public record CypressTestPlan(
             preconditions = preconditions == null ? List.of() : preconditions;
             steps = steps == null ? List.of() : steps;
             automationNotes = automationNotes == null ? "" : automationNotes;
-            tier = tier == null ? "medium" : tier;
+            testGroup = testGroup == null ? "critical" : testGroup;
+            userJourney = userJourney == null ? Boolean.FALSE : userJourney;
             automatable = automatable == null ? Boolean.FALSE : automatable;
             ecsEnabled = ecsEnabled == null ? Boolean.FALSE : ecsEnabled;
         }

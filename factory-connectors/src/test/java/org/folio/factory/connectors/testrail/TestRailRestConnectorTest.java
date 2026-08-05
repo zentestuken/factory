@@ -76,6 +76,55 @@ class TestRailRestConnectorTest {
     }
 
     @Test
+    void getSectionsReturnsAllSectionsWithFullPaths() {
+        String sectionsJson = """
+                {"sections":[
+                  {"id":10,"name":"Inventory","parent_id":null,"depth":0},
+                  {"id":20,"name":"MARC","parent_id":null,"depth":0},
+                  {"id":11,"name":"Search","parent_id":10,"depth":1},
+                  {"id":21,"name":"MARC authority","parent_id":20,"depth":1}
+                ]}""";
+        server.expect(requestTo(
+                "https://testrail.example.org/index.php?/api/v2/get_sections/12&limit=250&offset=0"))
+                .andExpect(method(GET))
+                .andRespond(withSuccess(sectionsJson, MediaType.APPLICATION_JSON));
+
+        var sections = connector.getSections();
+
+        assertThat(sections).hasSize(4);
+        assertThat(sections).extracting(s -> s.fullPath())
+                .containsExactlyInAnyOrder(
+                        "Inventory",
+                        "MARC",
+                        "Inventory › Search",
+                        "MARC › MARC authority");
+        assertThat(sections).extracting(s -> s.id())
+                .containsExactlyInAnyOrder(10L, 20L, 11L, 21L);
+    }
+
+    @Test
+    void getSectionsIncludesDeepSectionsUnlikeListSectionPaths() {
+        String sectionsJson = """
+                {"sections":[
+                  {"id":1,"name":"Root","parent_id":null,"depth":0},
+                  {"id":2,"name":"Child","parent_id":1,"depth":1},
+                  {"id":3,"name":"Grand","parent_id":2,"depth":2},
+                  {"id":4,"name":"Deep","parent_id":3,"depth":3}
+                ]}""";
+        server.expect(requestTo(
+                "https://testrail.example.org/index.php?/api/v2/get_sections/12&limit=250&offset=0"))
+                .andExpect(method(GET))
+                .andRespond(withSuccess(sectionsJson, MediaType.APPLICATION_JSON));
+
+        var sections = connector.getSections();
+
+        // getSections has no depth filter — all 4 are returned
+        assertThat(sections).hasSize(4);
+        assertThat(sections).extracting(s -> s.fullPath())
+                .contains("Root › Child › Grand › Deep");
+    }
+
+    @Test
     void listSectionPathsReturnsSortedPathsUpToDepth2() {
         String sectionsJson = """
                 {"sections":[

@@ -38,7 +38,7 @@ agent_chain:
   - step_id: coverage-load
     type: AGENT
     worker_id: cypress-coverage-loader
-    inputs: []
+    inputs: [context.md]
     outputs: [existing_coverage.md]
 
   - step_id: scenario-analysis

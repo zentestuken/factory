@@ -76,7 +76,8 @@ public class E2eSpecAgentWorker extends AbstractLlmAgentWorker {
         StringBuilder body = new StringBuilder("# Cypress Test Plan — ").append(plan.issueKey()).append("\n");
         for (CypressTestPlan.TestCase tc : plan.cases()) {
             body.append("\n## ").append(tc.id()).append(": ").append(tc.title()).append("\n\n")
-                    .append("- **Tier:** ").append(tc.tier()).append("\n")
+                    .append("- **Test Group:** ").append(tc.testGroup()).append("\n")
+                    .append("- **User Journey:** ").append(tc.userJourney() ? "Yes" : "No").append("\n")
                     .append("- **Automatable:** ").append(tc.automatable() ? "Yes" : "No").append("\n")
                     .append("- **ECS:** ").append(tc.ecsEnabled() ? "Yes" : "No").append("\n");
             if (!tc.preconditions().isEmpty()) {

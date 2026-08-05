@@ -249,9 +249,11 @@ curl -s -X POST http://localhost:8080/api/triggers/manual \
 
 Flow: triage → context-load → fragment-scan → examples-load → **coverage-load** → scenario-analysis → **Gate 0** → test-spec → **Gate 1** → testrail-sync
 
+`coverage-load` reads the detected area from `context.md`, keyword-matches it against all TestRail sections, and loads cases only from area-specific sections. The placement-fallback section (`FACTORY_CYPRESS_TESTRAIL_SECTION_ID`) is never scanned for coverage — it is non-thematic and excluded by design. If no area-specific section is found, `existing_coverage.md` is empty (safe for the LLM).
+
 | Gate | URL | What to check |
 |---|---|---|
 | Gate 0 — scenario coverage | http://localhost:8080/reviews | `scenario_list.md`: S-NN proposals with shape notes and coverage matrix (AC → Scenario → NEW/EXISTING/SKIPPED); confirm/adjust scope; remove EXISTING rows unless the story changes that behaviour; edit `testrail_section` frontmatter field if the suggested TestRail folder is wrong; `existing_coverage.md` shows what's already in TestRail for this section |
-| Gate 1 — test cases | http://localhost:8080/reviews | `test_plan.md`: one case per confirmed scenario, `automatable` flags, step quality; `scenario_list.md` is also reviewable — amend `testrail_section` here for a final override before sync |
+| Gate 1 — test cases | http://localhost:8080/reviews | `test_plan.md`: one case per confirmed scenario; check `testGroup` (smoke/critical/extended), `userJourney` flag, `automatable` flag, and step quality; `scenario_list.md` is also reviewable — amend `testrail_section` here for a final override before sync |
 
 Watch execution progress: **http://localhost:8080/executions**

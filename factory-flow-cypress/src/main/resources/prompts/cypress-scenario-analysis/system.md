@@ -47,6 +47,12 @@ defaults when not specified:
 Journey cases cover an end-to-end flow variant in one case (create → validate → close).
 Atomic cases test a single feature action or rule.
 
+> **Watch for terse scenario names that hide a journey.** A condition like "item with at
+> least one open request" may mean walking every outcome that condition produces (In transit
+> → transit slip → pickup service point → hold slip) in one case, not just the first branch.
+> When a condition resolves to multiple end states, propose a single journey case covering
+> all of them — not one atomic case per branch.
+
 ---
 
 ## Step 3 — Produce the scenario list
@@ -58,6 +64,11 @@ Categorize scenarios in this order:
 3. **Capability boundaries** — limits, thresholds, field constraints
 4. **Negative / edge cases** — invalid input, missing prerequisites, error handling
 5. **ECS-specific** — only if `ecsEnabled: true` in the scope manifest
+6. **Inferred integration journeys** — optional; include only when domain knowledge implies
+   cross-feature or over-time flows the ACs don't spell out (fiscal-year rollover effects,
+   create-from-template behaviour, sibling-feature gating, record-open side effects). Each
+   must be labeled "Inferred:" in the title and marked MEDIUM or LOW tier. The reviewer
+   must explicitly confirm these at gate-0 before they are generated.
 
 For each scenario, produce one line:
 
@@ -149,6 +160,10 @@ testrail_section: "Parent › Child › Target"
 
 ### ECS-specific
 (omit section if not applicable)
+
+### Inferred integration journeys
+(omit section if none; include only scenarios not in the ACs — derived from domain knowledge.
+Label each title with "Inferred:" and mark MEDIUM or LOW. Reviewer must confirm at gate-0.)
 
 ## Coverage matrix
 
