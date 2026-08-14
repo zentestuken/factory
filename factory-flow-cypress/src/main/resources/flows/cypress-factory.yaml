@@ -71,7 +71,7 @@ agent_chain:
     type: AGENT
     worker_id: cypress-e2e-spec-agent
     inputs: [scope_manifest.md, context.md, fragment_library.md, examples.md, scenario_list.md, existing_coverage.md]
-    outputs: [test_plan.md]
+    outputs: [test_plan.md, testcase_review.md]
 
   - step_id: gate-1-review
     type: HITL_GATE
@@ -84,11 +84,14 @@ agent_chain:
         automation notes reference real helpers from the fragment library where
         applicable. Edit the test plan inline (AMEND) if cases need changes.
 
+        testcase_review.md shows the automated quality review result — how many
+        iterations were needed and any remaining issues the reviewer flagged.
+
         The `testrail_section` in scenario_list.md frontmatter controls which
         TestRail folder receives the cases. Amend it here if the gate-0 suggestion
         was wrong. Accepted formats: a path string using › | > → as separators,
         or a numeric section ID. Delete the field to fall back to the configured default.
-      reviewed_artifacts: [test_plan.md, scenario_list.md, scope_manifest.md, context.md]
+      reviewed_artifacts: [test_plan.md, testcase_review.md, scenario_list.md, scope_manifest.md, context.md]
 
   - step_id: testrail-sync
     type: AGENT

@@ -10,9 +10,11 @@ public record CypressFlowProperties(
         Long testrailSectionId,
         Long testrailCaseTypeId,   // set FACTORY_CYPRESS_TESTRAIL_CASE_TYPE_ID (e.g. 1=Functional in foliotest)
         Long testrailPriorityId,   // set FACTORY_CYPRESS_TESTRAIL_PRIORITY_ID; default 3 = Medium
-        String testrailLabel) {    // set FACTORY_CYPRESS_TESTRAIL_LABEL; default "cypressFlow-delete"
+        String testrailLabel,      // set FACTORY_CYPRESS_TESTRAIL_LABEL; default "cypressFlow-delete"
+        Integer maxReviewIterations) { // set FACTORY_CYPRESS_MAX_REVIEW_ITERATIONS; default 3; 0 = skip agent review
 
     static final String DEFAULT_TESTRAIL_LABEL = "cypressFlow-delete";
+    static final int DEFAULT_MAX_REVIEW_ITERATIONS = 3;
 
     public CypressFlowProperties {
         baseBranch = baseBranch == null || baseBranch.isBlank() ? "main" : baseBranch;
@@ -21,5 +23,6 @@ public record CypressFlowProperties(
         if (testrailCaseTypeId == null) testrailCaseTypeId = 1L;
         if (testrailPriorityId == null) testrailPriorityId = 3L;
         testrailLabel = (testrailLabel == null || testrailLabel.isBlank()) ? DEFAULT_TESTRAIL_LABEL : testrailLabel;
+        if (maxReviewIterations == null || maxReviewIterations < 0) maxReviewIterations = DEFAULT_MAX_REVIEW_ITERATIONS;
     }
 }

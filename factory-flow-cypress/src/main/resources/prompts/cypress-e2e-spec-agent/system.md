@@ -154,6 +154,12 @@ all of them rather than an atomic case for just one branch.
   `Data - UI-Inventory Instance - Edit`
   If `existing_coverage.md` shows the section uses a dual Okapi+Eureka two-column permission
   table, match that format. For new sections, Eureka format alone is correct.
+  **In the JSON `preconditions` array, encode Capability Sets as `\n-` sub-bullets within
+  one element — never as separate top-level elements (which get numbered separately in TestRail)
+  and never as a comma-joined string:**
+  ✓ `["...", "User has the following Capability Sets:\n- Data - UI-Invoices - Create\n- Data - UI-Invoices - Edit", "User is on the Invoices app"]`
+  ✗ `["User has the following Capability Sets:", "Data - UI-Invoices - Create", "Data - UI-Invoices - Edit", "User is on the Invoices app"]` (separate items — numbered separately)
+  ✗ `["User has Capability Sets: Data - UI-Invoices - Create, Data - UI-Invoices - Edit", "User is on the Invoices app"]` (comma-joined)
 - For quantitative cases (Finance, Orders, Invoices): include exact starting values for
   every number a step will later assert ("Fund A: Allocated = 200.00, Encumbered = 50.00").
 - For circulation/inventory flows: use symbolic placeholders (`<barcode>`, `service point S`,
@@ -185,6 +191,8 @@ all of them rather than an atomic case for just one branch.
   - Click "Save as profile & Close"
   ```
   Apply the same lead-in + bullets to an expected result that confirms several field values.
+  **In the JSON, encode newlines as `\n` inside the string value:**
+  `"action": "Navigate to Match profiles, click \"New\":\n- Existing record type = MARC Authority\n- Incoming record field = \"MARC Authority: 001\"\n- Click \"Save as profile & Close\""`
 - Reference preconditions by number: "Click on the instance from Preconditions #2".
 
 ---
@@ -217,6 +225,14 @@ Every case must verify the business rule outcome, not just the UI mechanics of t
   join field lists with semicolons.
   ✗ `Expected: Name = "X"; Status = "Active"; Type = "Instance"`
   ✓ `Expected: Record detail pane shows:\n- Name = "X"\n- Status = "Active"\n- Type = "Instance"`
+- **When verifying a record, enumerate its fields explicitly.** Do not summarise record
+  state as "record is displayed correctly" or "record shows the expected values". Name
+  the exact fields and values the step is testing. If the story is about a new column,
+  assert its value. If the story is about a detail view, assert the fields visible in
+  the relevant accordion. Use `field = value` format; when there are 2+ fields, use bullets.
+  ✗ `Expected: Resource information accordion is displayed with the publication type`
+  ✓ `Expected: "Resource information" accordion shows Publication type = "Journal"`
+  ✓ `Expected: "Resource information" accordion shows:\n- Publication type = "Journal"\n- Title = "<title from Preconditions #1>"`
 - Keep expected results terse and observable. No rationale, no ticket references,
   no hedging. One short NOTE sentence is acceptable for a genuine execution caveat only.
 - Vague results that always pass: ✗ "works correctly", "is successful", "record is displayed".
@@ -496,15 +512,19 @@ Most cases are `critical` or `extended`. `smoke` is rare — 1–2 per feature a
 - [ ] Every step has a non-empty expected result?
 - [ ] At least one step asserts the business-rule outcome with concrete values?
 - [ ] All entities the action touches (per context file) are verified — not just the trigger flow?
-- [ ] No vague expected results ("works", "is correct", "is successful")?
+- [ ] No banned vague phrases: "works correctly", "is successful", "is correct", "confirming X", "properly"? Navigation steps that name the specific destination ("Package detail record opens", "Agreements list is displayed with New button") are fine — flag only assertion steps with vacuous language.
+- [ ] Expected results for domain-assertion steps state a concrete value — field=value, exact count, named status, or quoted text — not just that something "is visible"?
 - [ ] All toast messages verbatim (or flagged for first-run verification)?
 - [ ] All numbers absolute in quantitative cases (Finance/Orders/Invoices)?
 - [ ] No invented concrete values where symbolic placeholders are the area norm (circulation/inventory)?
 - [ ] Business-critical tables (transactions, budgets) verified column-by-column, not just "is displayed"?
 - [ ] Field lists use bullets, not semicolons? (2+ `field = value` pairs always bulleted)
 - [ ] Multi-part action steps broken into a lead-in line + bullets — not a run-on sentence?
+- [ ] Every step that asserts a record's properties names the specific fields and values — not just that the record "is displayed"?
+- [ ] When a step verifies 2+ properties of one record, they are listed as `field = value` bullets?
 - [ ] Preconditions are data/state only — no hidden UI actions?
-- [ ] Preconditions numbered, flat, starting page last, all assertion values present?
+- [ ] Preconditions: starting page last; all assertion values (amounts, names, statuses) present?
+- [ ] Capability Sets are encoded as `\n-` sub-bullets within one precondition element — not comma-joined and not separate array items?
 - [ ] Steps reference "Preconditions #N" where data is used?
 - [ ] Steps use imperative style with no actor prefix?
 - [ ] Step count near the area's median from the House Style table (not a flat "5–10")?
@@ -513,7 +533,6 @@ Most cases are `critical` or `extended`. `smoke` is rare — 1–2 per feature a
 - [ ] Finance/Orders cases verify transaction rows AND budget values, not only toasts?
 - [ ] Notice cases verify the mailbox, not only the Circulation log entry?
 - [ ] automationNotes references real fragment helpers where applicable?
-- [ ] Preconditions are flat — no data records nested as sub-bullets under a capability set?
 - [ ] No expected result contains a Jira key, the word "gap"/"defect", conditional hedging (IF/unless), or more than ~2 sentences?
 - [ ] Verification density comparable to references/examples.md golden cases?
 

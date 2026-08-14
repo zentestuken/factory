@@ -15,7 +15,7 @@ class CypressExamplesLoaderWorkerTest {
 
     // folioAiRepo blank → GitHub path skipped → classpath fallback exercised; connector is never called
     private final CypressExamplesLoaderWorker worker = new CypressExamplesLoaderWorker(
-            null, new CypressFlowProperties("", "main", "", null, null, null, null));
+            null, new CypressFlowProperties("", "main", "", null, null, null, null, null));
 
     private AgentContext emptyContext() {
         return new AgentContext(UUID.randomUUID(), "examples-load", Map.of(),

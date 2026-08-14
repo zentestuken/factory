@@ -29,3 +29,6 @@ Work through these steps internally before writing any case:
 ## Area-specific cases (style reference)
 
 {{existing_coverage}}
+
+{{review_feedback}}
+{{previous_attempt}}

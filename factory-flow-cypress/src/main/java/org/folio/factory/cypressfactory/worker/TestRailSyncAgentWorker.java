@@ -197,9 +197,19 @@ public class TestRailSyncAgentWorker implements AgentWorker {
     private String toHtmlList(List<String> items) {
         StringBuilder sb = new StringBuilder("<ol>");
         for (String item : items) {
-            sb.append("<li>").append(htmlEscape(item)).append("</li>");
+            sb.append("<li>").append(toHtmlListItem(item)).append("</li>");
         }
         sb.append("</ol>");
+        return sb.toString();
+    }
+
+    private String toHtmlListItem(String item) {
+        if (!item.contains("\n")) return htmlEscape(item);
+        String[] lines = item.split("\n", -1);
+        StringBuilder sb = new StringBuilder(htmlEscape(lines[0]));
+        for (int i = 1; i < lines.length; i++) {
+            sb.append("<br>").append(htmlEscape(lines[i]));
+        }
         return sb.toString();
     }
 
@@ -295,6 +305,11 @@ public class TestRailSyncAgentWorker implements AgentWorker {
                     case PRECONDITIONS -> {
                         if (stripped.startsWith("**Steps**")) {
                             state = ParseState.STEPS;
+                        } else if (lines[i].startsWith("  - ")) {
+                            if (!preconditions.isEmpty()) {
+                                String last = preconditions.remove(preconditions.size() - 1);
+                                preconditions.add(last + "\n- " + stripped.substring(2).strip());
+                            }
                         } else if (stripped.startsWith("- ")) {
                             preconditions.add(stripped.substring(2).strip());
                         }

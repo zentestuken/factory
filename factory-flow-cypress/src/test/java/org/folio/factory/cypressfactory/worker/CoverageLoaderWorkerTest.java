@@ -27,7 +27,7 @@ class CoverageLoaderWorkerTest {
 
     private CoverageLoaderWorker worker(TestRailConnector connector, Long fallbackSectionId) {
         CypressFlowProperties props = new CypressFlowProperties(
-                "", "main", "", fallbackSectionId, null, null, null);
+                "", "main", "", fallbackSectionId, null, null, null, null);
         return new CoverageLoaderWorker(connector, codec, props);
     }
 

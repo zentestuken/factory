@@ -146,6 +146,8 @@ factory:
     testrail-priority-id: ${FACTORY_CYPRESS_TESTRAIL_PRIORITY_ID:}
     # TestRail label applied to every generated case. Default "cypressFlow-delete".
     testrail-label: ${FACTORY_CYPRESS_TESTRAIL_LABEL:}
+    # Max agent review iterations per test-spec run. Default 3. Set to 0 to skip agent review.
+    max-review-iterations: ${FACTORY_CYPRESS_MAX_REVIEW_ITERATIONS:}
 
 logging:
   # OBS-1: JSON logging is opt-in via env so local `mvn spring-boot:run` stays

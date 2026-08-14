@@ -96,13 +96,29 @@ public abstract class AbstractLlmAgentWorker implements AgentWorker {
     }
 
     private <T> T captureUsage(ResponseEntity<ChatResponse, T> result) {
-        Usage usage = result.response() == null ? null : result.response().getMetadata().getUsage();
+        captureUsageFromResponse(result.response());
+        return result.entity();
+    }
+
+    private void captureUsageFromResponse(ChatResponse response) {
+        if (response == null) return;
+        Usage usage = response.getMetadata().getUsage();
         if (usage != null) {
             USAGE.set(new long[]{
                     usage.getPromptTokens() == null ? 0 : usage.getPromptTokens(),
                     usage.getCompletionTokens() == null ? 0 : usage.getCompletionTokens()});
         }
-        return result.entity();
+    }
+
+    /**
+     * Reads and clears the current call's token usage. Workers making multiple LLM
+     * calls per {@code execute()} call this after each call to bank tokens before
+     * the next {@code callForEntity} entry resets the ThreadLocal.
+     */
+    protected long[] drainUsage() {
+        long[] u = USAGE.get();
+        USAGE.remove();
+        return u == null ? new long[]{0, 0} : u;
     }
 
     /**
@@ -127,5 +143,21 @@ public abstract class AbstractLlmAgentWorker implements AgentWorker {
                 .user(userPrompt(variables))
                 .call()
                 .content();
+    }
+
+    /**
+     * Calls the model using prompts from {@code prompts/{promptId}/system.md} and
+     * {@code user.md}, captures token usage to the {@link #USAGE} ThreadLocal so
+     * the caller can bank it with {@link #drainUsage()}.
+     */
+    protected String callForText(String promptId, Map<String, Object> variables) {
+        USAGE.remove();
+        String system = PromptLoader.render(PromptLoader.load(promptId, "system"), variables);
+        String user = PromptLoader.render(PromptLoader.load(promptId, "user"), variables);
+        ChatResponse response = buildPrompt(system, user).call().chatResponse();
+        captureUsageFromResponse(response);
+        return response != null && response.getResult() != null
+                ? response.getResult().getOutput().getText()
+                : "";
     }
 }

@@ -553,13 +553,16 @@ only the system prompt needs updating — the YAML descriptor and all downstream
 
 **The worker class — `E2eSpecAgentWorker`:**
 
-Extends `AbstractLlmAgentWorker`. Reads `scope_manifest.md` and `context.md`, calls
-`callForEntity(vars, TestPlan.class)`, and returns `AgentResult.of("test_plan.md", ...)`.
-You need a `TestPlan` record in the model package — same idea as Flow A's `TestPlan` but
-fields match the Cypress flow's case structure (`id`, `title`, `automatable`, `testGroup`,
-`userJourney`, `ecs_enabled`, `steps`, etc.). See the Implementation Reference section for the LLM worker
-pattern; the Java shape is identical to `CypressAutomationAgentWorker` — just different
-inputs, record type, and output artifact name.
+Extends `AbstractLlmAgentWorker`. Reads inputs, runs a **generate → review loop** (up to `FACTORY_CYPRESS_MAX_REVIEW_ITERATIONS` attempts, default 3), and outputs two artifacts:
+
+- `test_plan.md` — the final test plan (YAML frontmatter + markdown body, real `C######` IDs after `testrail-sync`)
+- `testcase_review.md` — automated quality review result (frontmatter: `review_passed`, `iterations`; body: PASS/FAIL summary and any remaining issues)
+
+The review loop calls a second LLM prompt (`cypress-testcase-reviewer`) after each generation. On `FAIL`, the issues block is accumulated into `review_feedback` and the previous rendered plan is passed as `previous_attempt` — the generator edits rather than regenerating from scratch. After `maxReviewIterations` attempts the best effort is forwarded to gate-1 regardless of review result, so the human sees both artifacts and can amend `test_plan.md` directly.
+
+Set `FACTORY_CYPRESS_MAX_REVIEW_ITERATIONS=0` to skip automated review entirely (both reviewer calls and `testcase_review.md` still written, noting review disabled).
+
+SLF4J logging at each loop iteration gives console visibility during what can be a multi-minute loop.
 
 ---
 
@@ -655,6 +658,10 @@ reference for which TestRail fields to set and retrieve. The factory uses the Ja
 | `custom_automation_type` | `2` (Manual) for all cases | The Cypress spec is the automation artifact; the TestRail case is always a manual test case record |
 | `labels` | `[id of testrailLabel]` | Label resolved at runtime via `getOrCreateLabel(testrailLabel)`; label title configured by `FACTORY_CYPRESS_TESTRAIL_LABEL` (default: `cypress-flow-delete-case`) |
 | `refs` | `issue_key` from `scope_manifest.md` | Jira issue key (e.g. `UIIN-2156`) linked on every created case; omitted when blank |
+
+#### Precondition format
+
+Preconditions are stored as a flat string list. Capability sets and permission lists are encoded as `\n-` sub-bullets within one precondition element (e.g., `"User has capability sets\n- CapabilitySet A\n- CapabilitySet B"`). `renderBody()` in `E2eSpecAgentWorker` emits them as indented `  - ` markdown lines; `parseCasesFromBody()` re-groups them back onto the parent precondition element. `toHtmlListItem()` renders `\n` as `<br>` in the TestRail HTML `<li>`.
 
 #### Real ID writeback
 
@@ -900,6 +907,7 @@ Adapted from `TestFactoryFinalizerWorker`. Case creation is already done by
 | `FACTORY_CYPRESS_TESTRAIL_CASE_TYPE_ID` | TestRail case type ID (e.g. `1`=Functional on foliotest); code default `1`=Functional — override to change |
 | `FACTORY_CYPRESS_TESTRAIL_PRIORITY_ID` | TestRail priority ID (default: `3`=Medium) |
 | `FACTORY_CYPRESS_TESTRAIL_LABEL` | Label title applied to every created case (default: `cypress-flow-delete-case`); resolved to a label ID at runtime via `getOrCreateLabel` |
+| `FACTORY_CYPRESS_MAX_REVIEW_ITERATIONS` | Max agent review iterations inside `E2eSpecAgentWorker` per run (default `3`). Set to `0` to skip automated review entirely. |
 | `FACTORY_CONNECTORS_TESTRAIL_BASE_URL` | TestRail instance base URL |
 | `FACTORY_CONNECTORS_TESTRAIL_USERNAME` | TestRail username (email) |
 | `FACTORY_CONNECTORS_TESTRAIL_API_KEY` | TestRail API key |

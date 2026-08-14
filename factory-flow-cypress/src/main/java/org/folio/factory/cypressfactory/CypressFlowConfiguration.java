@@ -69,8 +69,9 @@ public class CypressFlowConfiguration {
 
     @Bean
     public E2eSpecAgentWorker e2eSpecAgentWorker(ChatClient.Builder chatClientBuilder,
-                                                  FrontmatterCodec frontmatterCodec) {
-        return new E2eSpecAgentWorker(chatClientBuilder.build(), frontmatterCodec);
+                                                  FrontmatterCodec frontmatterCodec,
+                                                  CypressFlowProperties properties) {
+        return new E2eSpecAgentWorker(chatClientBuilder.build(), frontmatterCodec, properties.maxReviewIterations());
     }
 
     @Bean

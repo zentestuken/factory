@@ -45,7 +45,7 @@ class ContextLoaderWorkerThinContextTest {
             @Override public String getFileContent(String r, String b, String p) { return contextContent; }
             @Override public java.util.List<String> listDirectory(String r, String b, String p) { return java.util.List.of(); }
         };
-        CypressFlowProperties props = new CypressFlowProperties("o/r", "main", "ai-repo", null, null, null, null);
+        CypressFlowProperties props = new CypressFlowProperties("o/r", "main", "ai-repo", null, null, null, null, null);
         return new ContextLoaderWorker(github, new UnconfiguredConnectors.Jira(),
                 codec, JsonMapper.builder().build(), props);
     }

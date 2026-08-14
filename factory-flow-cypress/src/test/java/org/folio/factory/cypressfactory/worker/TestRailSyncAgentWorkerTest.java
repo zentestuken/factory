@@ -25,7 +25,7 @@ class TestRailSyncAgentWorkerTest {
     // -------------------------------------------------------------------------
 
     private TestRailSyncAgentWorker worker(CapturingConnector connector, Long defaultSectionId) {
-        CypressFlowProperties props = new CypressFlowProperties("", "main", "", defaultSectionId, null, null, null);
+        CypressFlowProperties props = new CypressFlowProperties("", "main", "", defaultSectionId, null, null, null, null);
         return new TestRailSyncAgentWorker(connector, codec, props, jsonMapper);
     }
 
@@ -83,6 +83,25 @@ class TestRailSyncAgentWorkerTest {
                 "   **Expected:** Action bar shows:\n" +
                 "   - 'Cancel' button is enabled\n" +
                 "   - 'Save & keep editing' button is disabled\n");
+    }
+
+    private String testPlanWithNestedPreconditions() {
+        return codec.render(
+                Map.of("issue_key", "ERM-1", "team", "", "ecs_enabled", false, "case_count", 1),
+                "## TC-1: Test case\n\n" +
+                "- **Test Group:** critical\n" +
+                "- **User Journey:** No\n" +
+                "- **Automatable:** Yes\n" +
+                "- **ECS:** No\n\n" +
+                "**Preconditions**\n" +
+                "- A package record exists\n" +
+                "- User has the following Capability Sets:\n" +
+                "  - Data - UI-Eholdings Records - Edit\n" +
+                "  - Data - UI-Eholdings Records - View\n" +
+                "- User is on the eHoldings app\n\n" +
+                "**Steps**\n" +
+                "1. **Action:** click\n" +
+                "   **Expected:** done\n");
     }
 
     private String testPlanWithTestGroup(String testGroup) {
@@ -336,6 +355,24 @@ class TestRailSyncAgentWorkerTest {
         assertThat((String) steps.get(0).get("expected"))
                 .isEqualTo("<p>Action bar shows:</p><ul><li>'Cancel' button is enabled</li>" +
                            "<li>'Save &amp; keep editing' button is disabled</li></ul>");
+    }
+
+    // -------------------------------------------------------------------------
+    // Nested preconditions (capability set sub-bullets → <br>- in HTML)
+    // -------------------------------------------------------------------------
+
+    @Test
+    void rendersNestedCapabilitySetsAsHtmlBrList() {
+        CapturingConnector connector = new CapturingConnector();
+        worker(connector, 114774L).execute(
+                contextWith(testPlanWithNestedPreconditions(), scopeManifest(null), scenarioList(null)));
+
+        assertThat(connector.capturedPreconds)
+                .isEqualTo("<ol>" +
+                           "<li>A package record exists</li>" +
+                           "<li>User has the following Capability Sets:<br>- Data - UI-Eholdings Records - Edit<br>- Data - UI-Eholdings Records - View</li>" +
+                           "<li>User is on the eHoldings app</li>" +
+                           "</ol>");
     }
 
     // -------------------------------------------------------------------------

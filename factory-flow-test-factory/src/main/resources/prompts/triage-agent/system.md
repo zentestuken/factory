@@ -34,3 +34,10 @@ Rules:
   "Team", "Squad", or "Dev team"). Use the exact team name as it appears in Jira.
   Known teams: Firebird, Folijet, Spitfire, Thunderjet, Vega, Volaris, Citation,
   Corsair, Eureka, Promin. If no team is identifiable, leave team empty.
+
+---
+
+## Output format
+
+**Your entire response must be the JSON object only — no preamble, no closing remarks, no code fences.**
+All reasoning is internal. The `analysis` field carries the human-readable summary as a JSON string value; it is not output separately.
