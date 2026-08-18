@@ -386,11 +386,11 @@ class ExecutionUiControllerTest {
 
     private static FlowDescriptor descriptor() {
         StepDescriptor triage = new StepDescriptor("triage", StepType.AGENT, "triage-worker",
-                null, null, null, null, null);
+                null, null, null, null, null, null);
         StepDescriptor gate = new StepDescriptor("gate-1", StepType.HITL_GATE, null,
-                new HitlGateSpec("qa-1", "QA gate 1", "instructions", null), null, null, null, null);
+                new HitlGateSpec("qa-1", "QA gate 1", "instructions", null), null, null, null, null, null);
         StepDescriptor finalizer = new StepDescriptor("finalizer", StepType.AGENT, "finalizer-worker",
-                null, null, null, null, null);
+                null, null, null, null, null, null);
         return new FlowDescriptor("test-factory", "Test Factory", "1", null, null, null,
                 List.of(triage, gate, finalizer), null);
     }

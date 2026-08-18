@@ -53,6 +53,10 @@ public class E2eSpecAgentWorker extends AbstractLlmAgentWorker {
         String scenarioList = scenarioListArtifact != null ? scenarioListArtifact.content() : "";
         ArtifactContent coverageArtifact = context.inputs().get("existing_coverage.md");
         String existingCoverage = coverageArtifact != null ? coverageArtifact.content() : "";
+        ArtifactContent hitlFeedbackArtifact = context.inputs().get("hitl_feedback.md");
+        String hitlFeedback = hitlFeedbackArtifact != null ? hitlFeedbackArtifact.content() : "";
+        ArtifactContent previousTestPlanArtifact = context.inputs().get("previous_test_plan.md");
+        String previousTestPlan = previousTestPlanArtifact != null ? previousTestPlanArtifact.content() : "";
 
         Map<String, Object> vars = new HashMap<>(Map.of(
                 "scope_manifest", scopeManifest,
@@ -63,6 +67,8 @@ public class E2eSpecAgentWorker extends AbstractLlmAgentWorker {
                 "existing_coverage", existingCoverage,
                 "review_feedback", ""));
         vars.put("previous_attempt", "");
+        vars.put("hitl_feedback_block", buildHitlFeedbackBlock(hitlFeedback));
+        vars.put("previous_test_plan_block", buildPreviousTestPlanBlock(previousTestPlan));
 
         long[] totalUsage = {0, 0};
         CypressTestPlan plan;
@@ -79,7 +85,7 @@ public class E2eSpecAgentWorker extends AbstractLlmAgentWorker {
         } else {
             do {
                 attempt++;
-                log.info("[{}] Generating test cases — attempt {}/{}", ID, attempt, maxReviewIterations);
+                log.info("[{}] Generating test cases - attempt {}/{}", ID, attempt, maxReviewIterations);
                 plan = callForEntity(vars, CypressTestPlan.class);
                 accumulate(totalUsage, drainUsage());
                 if (plan.cases().isEmpty()) throw new AgentExecutionException("E2E spec agent produced no test cases");
@@ -92,7 +98,7 @@ public class E2eSpecAgentWorker extends AbstractLlmAgentWorker {
                 }
                 long issueCount = feedback.issuesBlock().lines()
                         .filter(l -> l.strip().startsWith("-")).count();
-                log.info("[{}] Quality review FAILED on attempt {}/{} ({} issue(s)) — retrying",
+                log.info("[{}] Quality review FAILED on attempt {}/{} ({} issue(s)) - retrying",
                         ID, attempt, maxReviewIterations, issueCount);
                 String prior = (String) vars.get("review_feedback");
                 String block = buildFeedbackBlock(feedback.issuesBlock(), attempt);
@@ -100,7 +106,7 @@ public class E2eSpecAgentWorker extends AbstractLlmAgentWorker {
                 vars.put("previous_attempt", buildPreviousAttemptSection(renderBody(plan), attempt));
             } while (attempt < maxReviewIterations);
             if (!feedback.passed()) {
-                log.warn("[{}] Quality gate exhausted after {}/{} attempt(s) — passing to HITL gate with remaining issues",
+                log.warn("[{}] Quality gate exhausted after {}/{} attempt(s) - passing to HITL gate with remaining issues",
                         ID, attempt, maxReviewIterations);
             }
         }
@@ -145,6 +151,7 @@ public class E2eSpecAgentWorker extends AbstractLlmAgentWorker {
                 + "- R2: Toast/message/notification → exact quoted text or \"(verify exact wording on first execution)\"\n"
                 + "- R3: Numeric assertions → absolute final value, never \"decreased accordingly\" or \"updated accordingly\"\n"
                 + "- R4: Two or more Field = value pairs → `\\n- Field = value` bullet list, never joined inline\n"
+                + "- R11: Three or more named items (columns, options, fields) listed inline → lead-in line + bullet list\n"
                 + "- R6: Step actions → imperative style, never \"User clicks\"\n"
                 + "- R7: Every step must have a non-empty expected result\n"
                 + "- R10: At least one step per case must assert a concrete domain value, not only navigation\n";
@@ -221,6 +228,22 @@ public class E2eSpecAgentWorker extends AbstractLlmAgentWorker {
             }
         }
         return body.toString();
+    }
+
+    private static String buildHitlFeedbackBlock(String hitlFeedback) {
+        if (hitlFeedback.isBlank()) return "";
+        return "\n## QA rejection feedback (PRIORITY — address before anything else)\n\n"
+                + "A QA reviewer rejected the previous test cases. Every point below must be "
+                + "addressed in the new generation:\n\n"
+                + hitlFeedback + "\n";
+    }
+
+    private static String buildPreviousTestPlanBlock(String previousTestPlan) {
+        if (previousTestPlan.isBlank()) return "";
+        return "\n## Rejected test cases (previous version — use as structural reference only)\n\n"
+                + "The cases below were rejected by QA. Keep their structure and scope where "
+                + "the feedback does not require changes. Fix only what the feedback calls out.\n\n"
+                + previousTestPlan + "\n";
     }
 
     private record ReviewFeedback(boolean passed, String issuesBlock, String fullText) {}

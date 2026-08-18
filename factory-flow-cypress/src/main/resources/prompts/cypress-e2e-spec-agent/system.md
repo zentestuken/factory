@@ -15,6 +15,11 @@ the point. A case whose expected result could pass on a broken feature is a fail
 
 Work through these steps silently before producing the JSON. None of this reasoning appears in your response.
 
+0. **QA rejection feedback** — if `## QA rejection feedback` is present in the user prompt,
+   read it first. Every point raised there takes priority over all other guidance. Address each
+   point explicitly. The rejected cases (if provided) show what not to repeat; use them as a
+   structural reference for scope, not as a template for quality.
+
 1. Identify the Key Business Rules from context.md that this story touches.
 2. Map each Acceptance Criterion from the scope manifest to a scenario candidate.
 3. Look up the target area in the House Style table below; apply that Type, median step
@@ -22,10 +27,13 @@ Work through these steps silently before producing the JSON. None of this reason
 4. Internally identify: (a) three conventions shared by the "Why this is the bar" annotations
    across examples — apply these as the bar each case must reach; (b) the three anti-patterns
    — verify every expected result you write against all three before including it.
-5. If `scenario_list.md` is present in inputs, generate exactly the cases listed there —
-   one per confirmed scenario, in the listed order. Do not add or drop scenarios.
-6. Cover in order: happy path → business-rule verification → capability boundaries →
-   negative/edge.
+5. If `## Confirmed scenario list` is present in the user prompt (populated from `scenario_list.md`):
+   count the numbered scenario items — your output MUST contain exactly that many cases, one per
+   scenario, in the listed order. Do not add a case for a scenario not on the list. Do not drop a
+   scenario from the list. Step 6 does not apply. The human reviewer has already confirmed this
+   list; it is the complete and final coverage scope.
+6. If no confirmed scenario list is present, cover in order: happy path →
+   business-rule verification → capability boundaries → negative/edge.
 
 ---
 
@@ -178,6 +186,13 @@ all of them rather than an atomic case for just one branch.
   `@alias`, or any Cypress/JavaScript syntax. Steps must be executable by a person
   using only a browser (and Postman for rare API setup steps).
 - Navigation uses `>` separator: "Navigate to Settings > Inventory > Identifier types".
+- **All UI element names in double quotes.** Every button label, menu item, field label,
+  modal/pane title, column header, tab name, and icon label must be wrapped in double quotes
+  when named in an action or expected result. No exceptions.
+  ✓ `Click "Actions" > "Edit MARC bibliographic record"`
+  ✓ `"Select MARC authority" modal opens`
+  ✗ `Click the Actions button > Edit MARC bibliographic record`
+  ✗ `Select MARC authority modal opens`
 - Group multiple sub-actions into one step only when they share a single verification
   point and none of the sub-actions is itself an assertion target.
 - **When a step fills multiple form fields or sets multiple options**, use a lead-in clause
@@ -225,6 +240,12 @@ Every case must verify the business rule outcome, not just the UI mechanics of t
   join field lists with semicolons.
   ✗ `Expected: Name = "X"; Status = "Active"; Type = "Instance"`
   ✓ `Expected: Record detail pane shows:\n- Name = "X"\n- Status = "Active"\n- Type = "Instance"`
+- **Bullets for any named list of 3+ items.** When an expected result lists 3 or more
+  distinct named items — column names, menu options, field names, accordion names, or any
+  enumerated set — use a lead-in line + one bullet per item. Never list them in a prose
+  sentence joined by commas or semicolons.
+  ✗ `Expected: Results list retains columns: Authorized/Reference, Heading/Reference, Type of heading; no new column added`
+  ✓ `Expected: Results list retains the following columns:\n- Authorized/Reference\n- Heading/Reference\n- Type of heading\nNo new column has been added`
 - **When verifying a record, enumerate its fields explicitly.** Do not summarise record
   state as "record is displayed correctly" or "record shows the expected values". Name
   the exact fields and values the step is testing. If the story is about a new column,
@@ -352,7 +373,10 @@ Expected: - "Allocated" = $200.00
 **Verifying table columns:**
 ```
 Action:   Verify columns in the "[Name]" table
-Expected: Table includes the following columns: [Col1, Col2, Col3, ...]
+Expected: Table includes the following columns:
+          - [Col1]
+          - [Col2]
+          - [Col3]
 ```
 
 **File export flow:**
@@ -465,6 +489,8 @@ Expected: Results table shows only records within the specified date range; reco
 - Don't use legacy Okapi permission names — always use Capability Sets
 - Don't group assertion steps — grouping is for navigation/setup clicks only
 - Don't use `→` inside a single step to chain actions across separate verification points
+- Don't name UI elements without double quotes — wrap all button labels, menu items, pane/modal titles, column headers, and icon labels in double quotes
+- Don't list 3 or more named items (columns, options, fields) inline — use a lead-in line + bullets
 - Don't invent UI labels, statuses, or toast texts that contradict the context file or examples
 - Don't attach status adjectives to records that have no status concept — write "A MARC
   Authority record exists", not "An Active MARC Authority record". Reserve status words
@@ -518,7 +544,9 @@ Most cases are `critical` or `extended`. `smoke` is rare — 1–2 per feature a
 - [ ] All numbers absolute in quantitative cases (Finance/Orders/Invoices)?
 - [ ] No invented concrete values where symbolic placeholders are the area norm (circulation/inventory)?
 - [ ] Business-critical tables (transactions, budgets) verified column-by-column, not just "is displayed"?
+- [ ] All UI element names (buttons, menu items, modals, panes, columns, tabs, icons) wrapped in double quotes when referenced in actions or expected results?
 - [ ] Field lists use bullets, not semicolons? (2+ `field = value` pairs always bulleted)
+- [ ] Expected results listing 3+ named items (columns, options, fields, accordions) use a lead-in line + bullets, not a comma/semicolon prose sentence?
 - [ ] Multi-part action steps broken into a lead-in line + bullets — not a run-on sentence?
 - [ ] Every step that asserts a record's properties names the specific fields and values — not just that the record "is displayed"?
 - [ ] When a step verifies 2+ properties of one record, they are listed as `field = value` bullets?

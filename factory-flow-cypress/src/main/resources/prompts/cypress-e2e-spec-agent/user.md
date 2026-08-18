@@ -4,7 +4,8 @@ Work through these steps internally before writing any case:
 1. Identify which Key Business Rules from the area context the story touches.
 2. Map each AC from the scope manifest to a scenario candidate.
 3. Look up the target area in the House Style table; apply that Type, step count, and journey flag.
-4. Then generate cases only for the mapped scenarios.
+4. If a Confirmed scenario list is provided below: count its items (N). Generate exactly N cases -
+   one per listed scenario, in order. Do not add extras. Do not omit any. Stop at N.
 
 ## Scope manifest
 
@@ -30,5 +31,7 @@ Work through these steps internally before writing any case:
 
 {{existing_coverage}}
 
+{{hitl_feedback_block}}
+{{previous_test_plan_block}}
 {{review_feedback}}
 {{previous_attempt}}

@@ -80,13 +80,13 @@ public class TestRailSyncAgentWorker implements AgentWorker {
 
         List<ParsedCase> cases = parseCasesFromBody(fm.body());
         if (cases.isEmpty()) {
-            log.info("No cases found in test_plan.md body — skipping TestRail sync");
+            log.info("No cases found in test_plan.md body - skipping TestRail sync");
             return AgentResult.of("test_plan.md", testPlan);
         }
 
         long sectionId = resolveSectionId(scopeFm, scenarioFm);
         if (sectionId == 0L) {
-            log.info("TestRail section not configured (set FACTORY_CYPRESS_TESTRAIL_SECTION_ID or add testrail_section to scope_manifest.md frontmatter) — skipping TestRail sync");
+            log.info("TestRail section not configured (set FACTORY_CYPRESS_TESTRAIL_SECTION_ID or add testrail_section to scope_manifest.md frontmatter) - skipping TestRail sync");
             return AgentResult.of("test_plan.md", testPlan);
         }
 

@@ -179,6 +179,11 @@ public class ExecutionEngine {
             inputs.put(inputName, new ArtifactContent(artifact.getName(), artifact.getVersion(),
                     artifact.getContentType(), artifact.getContent()));
         }
+        for (String inputName : step.optionalInputs()) {
+            artifactStore.getLatest(execution.getId(), inputName).ifPresent(artifact ->
+                    inputs.put(inputName, new ArtifactContent(artifact.getName(), artifact.getVersion(),
+                            artifact.getContentType(), artifact.getContent())));
+        }
         JsonNode triggerPayload = null;
         if (step.wantsTriggerPayload() && execution.getTriggerPayload() != null) {
             triggerPayload = jsonMapper.readTree(execution.getTriggerPayload());

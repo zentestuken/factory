@@ -71,7 +71,7 @@ public class CoverageLoaderWorker implements AgentWorker {
 
         List<String> meaningful = areas.stream().filter(a -> !"generic".equals(a)).toList();
         if (meaningful.isEmpty()) {
-            log.info("Area not detected in context.md — skipping coverage scan");
+            log.info("Area not detected in context.md - skipping coverage scan");
             return AgentResult.of("existing_coverage.md",
                     empty("Area not detected — coverage scan skipped"));
         }
@@ -86,7 +86,7 @@ public class CoverageLoaderWorker implements AgentWorker {
         }
 
         if (allSections.isEmpty()) {
-            log.info("TestRail not configured or project has no sections — skipping coverage scan");
+            log.info("TestRail not configured or project has no sections - skipping coverage scan");
             return AgentResult.of("existing_coverage.md",
                     empty("TestRail not configured or no sections available — coverage scan skipped"));
         }
@@ -114,7 +114,7 @@ public class CoverageLoaderWorker implements AgentWorker {
         }
 
         log.info("Coverage scan: area(s) {} matched {} section(s): {}", meaningful, matched.size(),
-                matched.stream().map(TestRailSectionRef::fullPath).toList());
+                matched.stream().map(s -> safeLog(s.fullPath())).toList());
 
         // Load cases from all matched sections; deduplicate by case ID
         Map<Long, TestRailCase> caseMap = new LinkedHashMap<>();
@@ -130,7 +130,7 @@ public class CoverageLoaderWorker implements AgentWorker {
                     }
                 }
             } catch (Exception e) {
-                log.warn("Could not fetch cases from section '{}' ({}): {}", sec.fullPath(), sec.id(), e.getMessage());
+                log.warn("Could not fetch cases from section '{}' ({}): {}", safeLog(sec.fullPath()), sec.id(), e.getMessage());
             }
         }
 
@@ -213,6 +213,10 @@ public class CoverageLoaderWorker implements AgentWorker {
             }
         }
         return found;
+    }
+
+    private static String safeLog(String s) {
+        return s.replace("›", ">");
     }
 
     private String empty(String reason) {

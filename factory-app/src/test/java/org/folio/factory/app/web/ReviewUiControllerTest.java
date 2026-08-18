@@ -54,6 +54,9 @@ class ReviewUiControllerTest {
     @Mock
     private HitlDecisionService decisionService;
 
+    @Mock
+    private org.folio.factory.app.hitl.HitlRetryService hitlRetryService;
+
     @Captor
     private ArgumentCaptor<Map<String, String>> amendmentsCaptor;
 
@@ -62,7 +65,7 @@ class ReviewUiControllerTest {
     @BeforeEach
     void setUp() {
         mvc = MockMvcBuilders
-                .standaloneSetup(new ReviewUiController(reviews, decisionService, json))
+                .standaloneSetup(new ReviewUiController(reviews, decisionService, hitlRetryService, json))
                 .setViewResolvers(new InternalResourceViewResolver("/templates/", ".html"))
                 .build();
     }

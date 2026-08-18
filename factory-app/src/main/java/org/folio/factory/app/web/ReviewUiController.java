@@ -1,5 +1,6 @@
 package org.folio.factory.app.web;
 
+import org.folio.factory.app.hitl.HitlRetryService;
 import org.folio.factory.core.domain.HitlReview;
 import org.folio.factory.core.domain.HitlReviewStatus;
 import org.folio.factory.core.hitl.HitlDecision;
@@ -38,12 +39,14 @@ public class ReviewUiController {
 
     private final HitlReviewRepository reviews;
     private final HitlDecisionService decisionService;
+    private final HitlRetryService hitlRetryService;
     private final JsonMapper jsonMapper;
 
     public ReviewUiController(HitlReviewRepository reviews, HitlDecisionService decisionService,
-                              JsonMapper jsonMapper) {
+                              HitlRetryService hitlRetryService, JsonMapper jsonMapper) {
         this.reviews = reviews;
         this.decisionService = decisionService;
+        this.hitlRetryService = hitlRetryService;
         this.jsonMapper = jsonMapper;
     }
 
@@ -91,9 +94,21 @@ public class ReviewUiController {
         HitlReview review = reviews.findById(id)
                 .orElseThrow(() -> new NoSuchElementException("No HITL review " + id));
         JsonNode reviewPackage = jsonMapper.readTree(review.getReviewPackage());
+        boolean isRetry = false;
+        for (JsonNode artifact : reviewPackage.path("artifacts")) {
+            if ("hitl_feedback.md".equals(artifact.path("name").asString())) {
+                isRetry = true;
+                break;
+            }
+        }
         model.addAttribute("review", review);
         model.addAttribute("pkg", reviewPackage);
         model.addAttribute("error", error);
+        model.addAttribute("isRetry", isRetry);
+        model.addAttribute("retryEnabled",
+                review.getStatus() == HitlReviewStatus.PENDING
+                && "gate-1-test-cases".equals(review.getGateId())
+                && "cypress-factory".equals(reviewPackage.path("flowId").asString()));
         return "review";
     }
 
@@ -109,6 +124,12 @@ public class ReviewUiController {
         // REST API's JSON exception handler. Unchanged-artifact filtering happens
         // in HitlDecisionService so REST callers get the same behavior.
         try {
+            if ("REJECT_AND_RETRY".equals(decision)) {
+                UUID retryId = hitlRetryService.rejectAndRetry(id, reviewer, comments);
+                redirect.addFlashAttribute("message",
+                        "Rejected and re-generation started — execution " + retryId);
+                return "redirect:/executions/" + retryId;
+            }
             HitlDecision hitlDecision = HitlDecision.valueOf(decision);
             Map<String, String> amendments = new LinkedHashMap<>();
             if (hitlDecision == HitlDecision.AMEND) {

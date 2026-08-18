@@ -131,7 +131,7 @@ public class FragmentScannerWorker implements AgentWorker {
         Frontmatter contextFm = frontmatterCodec.parse(context.requireInput("context.md").content());
         List<String> areas = readAreas(contextFm.metadata());
         if (areas.isEmpty()) {
-            log.info("No areas in context.md — skipping fragment scan");
+            log.info("No areas in context.md - skipping fragment scan");
             return emptyResult();
         }
 
@@ -148,9 +148,9 @@ public class FragmentScannerWorker implements AgentWorker {
                 appendAreaSectionLocal(md, area, keywords);
             }
         } else {
-            log.info("TAF clone not ready — using GitHub API fallback");
+            log.info("TAF clone not ready - using GitHub API fallback");
             if (gitHub instanceof ConnectorHealth ch && !ch.isConfigured()) {
-                log.info("GitHub connector also not configured — fragment library will be empty");
+                log.info("GitHub connector also not configured - fragment library will be empty");
                 return emptyResult();
             }
             md.append("TAF: `").append(TAF_REPO).append("` branch `").append(TAF_BRANCH)

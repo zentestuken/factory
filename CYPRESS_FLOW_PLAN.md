@@ -201,6 +201,12 @@ from different contexts. The factory uses the Java connector; the MCP server sta
      │  ── scenario_list.md is a reviewed artifact — amend testrail_section here
      │       to override the Gate-0 section before sync (path string or numeric ID)
      │  ── automatable flags are FINAL after approval
+     │  ── "Reject and Re-generate" button (requires non-empty feedback):
+     │       original execution → REJECTED; new execution created at test-spec;
+     │       all gate-0 artifacts preserved (incl. human-amended scenario_list.md);
+     │       reviewer's comments → hitl_feedback.md; rejected test_plan.md →
+     │       previous_test_plan.md (structural reference for the next generation);
+     │       no retry cap — plain "Reject" remains for unconditional hard stops
      ▼
 [testrail-sync-agent]                                             NEW · non-LLM
      │  ── Push ALL cases from test_plan.md to TestRail API — automatable +
@@ -564,6 +570,18 @@ Set `FACTORY_CYPRESS_MAX_REVIEW_ITERATIONS=0` to skip automated review entirely 
 
 SLF4J logging at each loop iteration gives console visibility during what can be a multi-minute loop.
 
+**User-triggered retry (HITL Reject and Re-generate):** When a QA reviewer clicks "Reject and Re-generate" at gate-1, `HitlRetryService` (factory-app) rejects the original execution and creates a new one starting at `test-spec`, pre-seeding two additional optional artifacts from the original:
+
+- `hitl_feedback.md` — the reviewer's rejection comments verbatim
+- `previous_test_plan.md` — a copy of the rejected `test_plan.md` (structural reference)
+
+Both are declared as `optional_inputs` in `cypress-factory.yaml` on the `test-spec` step — a generic engine feature (`StepDescriptor.optionalInputs`): the engine loads the artifact if present, silently skips if absent (no "artifact does not exist" error on normal non-retry runs). The worker reads them via `context.inputs().get("hitl_feedback.md")` / `.get("previous_test_plan.md")` — `null` on a fresh run, non-null on retry. When present, they are rendered into the user prompt as:
+
+- `{{hitl_feedback_block}}` — reviewer feedback with a "PRIORITY — address before anything else" label
+- `{{previous_test_plan_block}}` — rejected cases under a "structural reference only" header
+
+These two blocks sit above the agent loop's own `{{review_feedback}}` / `{{previous_attempt}}` vars. They are constant across all internal agent retry attempts (artifacts, not loop vars). The generator therefore sees up to four inputs simultaneously: human feedback, rejected cases, AI reviewer feedback from the current loop, and the previous AI attempt. Human feedback always wins.
+
 ---
 
 ### 5. `CypressAutomationAgentWorker` — LLM worker (yaml id: `cypress-automation-agent`)
@@ -892,6 +910,8 @@ Adapted from `TestFactoryFinalizerWorker`. Case creation is already done by
 | `ecs-user-setup/SKILL.md` content | TAF `.github/skills/` | Embed in `cypress-automation-agent` system prompt |
 | Agent logic from `.github/agents/*.md` | TAF | Inform worker design; not imported directly |
 | TestRail MCP server | TAF (IDE tool) | Not used by factory; stays in IDE |
+| `HitlRetryService` | factory-app (new, `hitl/`) | Reject-and-re-generate: rejects original execution, creates retry execution starting at test-spec, seeds carry-over + `hitl_feedback.md` + `previous_test_plan.md`; records `HITL_RETRY` audit event |
+| `optional_inputs` engine feature | factory-core (`StepDescriptor`) | Engine loads listed artifacts if present, skips silently if absent; used by test-spec step for retry-only artifacts |
 
 ---
 
@@ -999,8 +1019,11 @@ testing.
     triage → context-load → fragment-scan → examples-load → coverage-load → scenario-analysis →
     gate-0-scenarios → test-spec → gate-1-review → testrail-sync
     Gate-0 reviewed: [scenario_list.md, scope_manifest.md, context.md, existing_coverage.md]
-    Gate-1 reviewed: [test_plan.md, scenario_list.md, scope_manifest.md, context.md]
+    Gate-1 reviewed: [test_plan.md, testcase_review.md, scenario_list.md, scope_manifest.md, context.md, hitl_feedback.md, previous_test_plan.md]
+    test-spec step: `optional_inputs: [hitl_feedback.md, previous_test_plan.md]` (absent on fresh runs, present on HITL retries)
 12. ✅ Wire `CypressFlowConfiguration`, add to `factory-app/pom.xml`
+13. ✅ Implement generate→review loop in `E2eSpecAgentWorker` (up to 3 iterations; `cypress-testcase-reviewer` prompts; `testcase_review.md` output; `drainUsage()` for multi-call token accounting)
+14. ✅ Implement HITL Gate-1 Reject and Re-generate: `HitlRetryService`, `HITL_RETRY` audit event, `optional_inputs` engine feature, "Reject and Re-generate" button in `review.html` (disabled until comments non-empty; cypress-factory + gate-1-test-cases only), retry banner for subsequent review runs
 
 **Milestone:** Gate 0 confirms scenario coverage; Gate 1 reviews test cases; after approval,
 cases appear in TestRail and `test_plan.md` carries real `C######` IDs.
@@ -1113,6 +1136,28 @@ Remaining mitigations:
 `CypressExamplesLoaderWorker` fetches `examples.md` from `folio-eureka-ai-dev` at runtime
 (branch `master`); classpath fallback when GitHub is unavailable. Injected via `{{examples}}`
 in `user.md`. Classpath copy at `src/main/resources/references/examples.md` is updated manually.
+
+### `CoverageLoaderWorker` cap not enforced at case level — KNOWN BUG (unresolved)
+
+`MAX_CASES = 150` is checked before fetching each *section*, not after each *case* is added.
+If the last matched section returns N cases and the map already contains 149 entries, all N cases
+are added, pushing the total past 150. Additionally, the "limit reached" note appended to
+`existing_coverage.md` triggers only when `cases.size() == MAX_CASES` (exactly 150); totals
+above 150 produce no note.
+
+**Fix (pending):** enforce the cap inside the inner case loop and change the note condition to
+`>= MAX_CASES`:
+```java
+if (!caseMap.containsKey(c.id()) && caseMap.size() < MAX_CASES) {
+    caseMap.put(c.id(), c);
+    caseSection.put(c.id(), sec.fullPath());
+}
+```
+Note condition: `if (cases.size() >= MAX_CASES)`.
+
+Until fixed, `existing_coverage.md` may contain more than 150 cases with no "limit reached" warning.
+The over-limit content is harmless for the LLM (more context is not worse) but the cap stops
+being a reliable guard against context-window pressure.
 
 ---
 

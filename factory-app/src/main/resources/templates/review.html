@@ -19,6 +19,12 @@
         <span th:text="'Error: ' + ${pkg.path('error').asString()}"></span>
     </div>
 
+    <div class="alert alert-info" role="alert" th:if="${isRetry}">
+        <span><strong>Retry run</strong> - this execution was re-generated from QA feedback.
+        See <em>hitl_feedback.md</em> in the artifacts below for what was asked for,
+        and <em>previous_test_plan.md</em> for the rejected version.</span>
+    </div>
+
     <div class="card">
         <div class="card-header">
             <h2 class="card-title">Instructions</h2>
@@ -61,18 +67,36 @@
                            placeholder="your name">
                 </div>
                 <div class="field">
-                    <label class="label" for="comments">Comments</label>
-                    <textarea class="textarea" id="comments" name="comments" rows="3"></textarea>
+                    <label class="label" for="comments">Notes / Re-generation feedback</label>
+                    <textarea class="textarea" id="comments" name="comments" rows="3"
+                              th:placeholder="${retryEnabled} ? 'Describe what needs to change (required for Re-generate, optional otherwise)' : 'Optional notes'"></textarea>
                 </div>
             </div>
             <div class="card-footer">
                 <button class="btn btn-primary" type="submit" name="decision" value="APPROVE">Approve</button>
                 <button class="btn btn-outline" type="submit" name="decision" value="AMEND">Amend (save edits)</button>
                 <button class="btn btn-destructive" type="submit" name="decision" value="REJECT"
-                        data-confirm="Reject this review? The execution will be terminated.">Reject</button>
+                        data-confirm="Reject permanently — the execution will be terminated with no re-run.">Reject</button>
+                <button th:if="${retryEnabled}" class="btn btn-outline" type="submit"
+                        name="decision" value="REJECT_AND_RETRY"
+                        id="reject-retry-btn" disabled="disabled"
+                        data-confirm="Reject and re-generate? The current execution will be terminated and a new one started with your feedback.">Reject and Re-generate</button>
             </div>
         </div>
     </form>
+    <th:block th:if="${retryEnabled}">
+    <script>
+        (function() {
+            var comments = document.getElementById('comments');
+            var retryBtn = document.getElementById('reject-retry-btn');
+            if (comments && retryBtn) {
+                comments.addEventListener('input', function() {
+                    retryBtn.disabled = !this.value.trim();
+                });
+            }
+        })();
+    </script>
+    </th:block>
 
     <div class="card" th:if="${review.status.name() != 'PENDING'}">
         <div class="card-header">

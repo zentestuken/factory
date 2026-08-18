@@ -20,6 +20,7 @@ public record StepDescriptor(
         HitlGateSpec gate,
         SubFlowSpec subFlow,
         List<String> inputs,
+        List<String> optionalInputs,
         List<String> outputs,
         Map<String, Object> config) {
 
@@ -27,6 +28,7 @@ public record StepDescriptor(
 
     public StepDescriptor {
         inputs = inputs == null ? List.of() : List.copyOf(inputs);
+        optionalInputs = optionalInputs == null ? List.of() : List.copyOf(optionalInputs);
         outputs = outputs == null ? List.of() : List.copyOf(outputs);
         config = config == null ? Map.of() : Map.copyOf(config);
     }

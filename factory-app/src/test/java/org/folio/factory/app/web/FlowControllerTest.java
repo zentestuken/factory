@@ -51,13 +51,13 @@ class FlowControllerTest {
 
     private FlowDescriptor descriptor() {
         StepDescriptor agent = new StepDescriptor("triage", StepType.AGENT, "triage-worker",
-                null, null, List.of("$trigger"), List.of("scope_manifest.md"), Map.of("model", "opus"));
+                null, null, List.of("$trigger"), null, List.of("scope_manifest.md"), Map.of("model", "opus"));
         StepDescriptor gate = new StepDescriptor("gate-1", StepType.HITL_GATE, null,
                 new HitlGateSpec("gate-1-test-plan", "Review plan", "Check coverage", List.of("test_plan.md")),
-                null, List.of(), List.of(), Map.of());
+                null, List.of(), null, List.of(), Map.of());
         StepDescriptor sub = new StepDescriptor("child", StepType.SUB_FLOW, null, null,
                 new SubFlowSpec("other-flow", Map.of("parent_a", "child_a"), Map.of("child_b", "parent_b")),
-                List.of(), List.of(), Map.of());
+                List.of(), null, List.of(), Map.of());
         return new FlowDescriptor("test-factory", "Test Factory", "1.0.0",
                 List.of(new TriggerContract("jira.issue.updated",
                         Map.of("/issue/fields/status/name", "Ready for QA"))),

@@ -318,7 +318,7 @@ public class ContextLoaderWorker implements AgentWorker {
         }
 
         if (isThinContext(contextContent)) {
-            log.info("Context for areas {} is thin — running lightweight enrichment", areas);
+            log.info("Context for areas {} is thin - running lightweight enrichment", areas);
             meta.put("context_quality", "thin");
 
             String issueKey = fm.metadata().path("issue_key").asString("").trim();
@@ -539,7 +539,7 @@ public class ContextLoaderWorker implements AgentWorker {
             String content = gitHub.getFileContent(repo, branch, path);
             if (content == null || content.isBlank()) return null;
             if (content.length() > MAX_CONTENT_BYTES) {
-                log.warn("File {}/{}/{} exceeds 150 KB — skipping", repo, branch, path);
+                log.warn("File {}/{}/{} exceeds 150 KB - skipping", repo, branch, path);
                 return null;
             }
             return content;
@@ -615,7 +615,7 @@ public class ContextLoaderWorker implements AgentWorker {
 
     private String fetchContext(String area) {
         if (properties.folioAiRepo().isBlank()) {
-            log.info("FACTORY_CYPRESS_FOLIO_AI_REPO not configured — context.md will be empty");
+            log.info("FACTORY_CYPRESS_FOLIO_AI_REPO not configured - context.md will be empty");
             return buildEmptyContext(area);
         }
         String path = CONTEXT_PATH_PREFIX + area + ".md";

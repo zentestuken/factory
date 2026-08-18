@@ -101,6 +101,19 @@ that case. Count the numbered precondition items (1., 2., 3., ...). If a step re
 
 Flag with: case ID, broken reference, actual precondition count.
 
+### R11 — Inline enumeration of 3+ named items
+Any expected result listing 3 or more distinct named items (column names, menu options,
+accordion names, field names, or any enumerated set) must use a lead-in line + bullet list.
+Listing them as a comma- or semicolon-separated prose sentence is unconditionally banned.
+
+This rule does NOT overlap with R4: R4 catches `Field = value` pairs; R11 catches plain
+named-item lists that have no `=` signs (e.g. column names, option labels).
+
+Detect: expected result contains 3 or more comma- or semicolon-separated capitalized nouns
+or noun phrases in a single sentence with no bullet structure (`- ` lines).
+
+Flag with: case ID, step number.
+
 ### R10 — No concrete state assertion in any step
 At least one step per case must assert a concrete observable value: a quoted string, an exact
 number, a field=value pair, a named status, a specific count, or a named element.
@@ -130,6 +143,7 @@ REVIEW_RESULT: FAIL
 Issues:
 - <CaseID> [R<N>] Step <N> expected: "<quote>" — <one-line reason>
 - <CaseID> [R10] No step asserts a concrete value — all expected results are navigation-only
+- <CaseID> [R11] Step <N> expected: "<quote>" — 3+ named items listed inline; use lead-in + bullets
 ```
 
 Rules:

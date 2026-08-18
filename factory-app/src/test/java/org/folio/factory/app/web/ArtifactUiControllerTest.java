@@ -77,7 +77,7 @@ class ArtifactUiControllerTest {
 
     private void stubFlowRegistry() {
         StepDescriptor agent = new StepDescriptor("test-spec", StepType.AGENT, "test-spec-agent",
-                null, null, null, List.of("test_plan.md"), null);
+                null, null, null, null, List.of("test_plan.md"), null);
         when(flowRegistry.all()).thenReturn(List.of(
                 new FlowDescriptor("test-factory", "Test Factory", "1", null, null, null, List.of(agent), null)));
     }

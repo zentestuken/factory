@@ -49,7 +49,7 @@ public class CypressExamplesLoaderWorker implements AgentWorker {
             if (content != null && !content.isBlank()) {
                 return AgentResult.of("examples.md", content);
             }
-            log.warn("Could not fetch examples.md from {}/{}/{} — falling back to classpath",
+            log.warn("Could not fetch examples.md from {}/{}/{} - falling back to classpath",
                     properties.folioAiRepo(), BRANCH, REMOTE_PATH);
         }
         return loadFromClasspath();
@@ -58,7 +58,7 @@ public class CypressExamplesLoaderWorker implements AgentWorker {
     private AgentResult loadFromClasspath() {
         try (InputStream in = getClass().getClassLoader().getResourceAsStream(CLASSPATH_PATH)) {
             if (in == null) {
-                log.warn("Golden examples not found at classpath:{} — examples.md will be empty", CLASSPATH_PATH);
+                log.warn("Golden examples not found at classpath:{} - examples.md will be empty", CLASSPATH_PATH);
                 return AgentResult.of("examples.md", "");
             }
             return AgentResult.of("examples.md", new String(in.readAllBytes(), StandardCharsets.UTF_8));
