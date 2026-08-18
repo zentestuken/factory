@@ -124,7 +124,7 @@ public class CoverageLoaderWorker implements AgentWorker {
             try {
                 List<TestRailCase> cases = testRail.getCases(sec.id());
                 for (TestRailCase c : cases) {
-                    if (!caseMap.containsKey(c.id())) {
+                    if (!caseMap.containsKey(c.id()) && caseMap.size() < MAX_CASES) {
                         caseMap.put(c.id(), c);
                         caseSection.put(c.id(), sec.fullPath());
                     }
@@ -183,7 +183,7 @@ public class CoverageLoaderWorker implements AgentWorker {
             sb.append("\n- ").append(s.fullPath());
         }
         sb.append("\n\nTotal: ").append(cases.size()).append(" case(s)");
-        if (cases.size() == MAX_CASES) sb.append(" (limit reached — not all cases shown)");
+        if (cases.size() >= MAX_CASES) sb.append(" (limit reached — not all cases shown)");
         sb.append(".\n\n");
 
         sb.append("## Cases\n\n");
