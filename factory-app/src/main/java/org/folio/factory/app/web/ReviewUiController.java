@@ -1,5 +1,6 @@
 package org.folio.factory.app.web;
 
+import org.folio.factory.agents.prompt.PromptCatalog;
 import org.folio.factory.app.hitl.HitlRetryService;
 import org.folio.factory.core.domain.HitlReview;
 import org.folio.factory.core.domain.HitlReviewStatus;
@@ -21,6 +22,7 @@ import org.springframework.web.servlet.mvc.support.RedirectAttributes;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -40,13 +42,16 @@ public class ReviewUiController {
     private final HitlReviewRepository reviews;
     private final HitlDecisionService decisionService;
     private final HitlRetryService hitlRetryService;
+    private final PromptCatalog promptCatalog;
     private final JsonMapper jsonMapper;
 
     public ReviewUiController(HitlReviewRepository reviews, HitlDecisionService decisionService,
-                              HitlRetryService hitlRetryService, JsonMapper jsonMapper) {
+                              HitlRetryService hitlRetryService, PromptCatalog promptCatalog,
+                              JsonMapper jsonMapper) {
         this.reviews = reviews;
         this.decisionService = decisionService;
         this.hitlRetryService = hitlRetryService;
+        this.promptCatalog = promptCatalog;
         this.jsonMapper = jsonMapper;
     }
 
@@ -96,7 +101,7 @@ public class ReviewUiController {
         JsonNode reviewPackage = jsonMapper.readTree(review.getReviewPackage());
         boolean isRetry = false;
         for (JsonNode artifact : reviewPackage.path("artifacts")) {
-            if ("hitl_feedback.md".equals(artifact.path("name").asString())) {
+            if (HitlRetryService.FEEDBACK_ARTIFACT.equals(artifact.path("name").asString())) {
                 isRetry = true;
                 break;
             }
@@ -105,10 +110,20 @@ public class ReviewUiController {
         model.addAttribute("pkg", reviewPackage);
         model.addAttribute("error", error);
         model.addAttribute("isRetry", isRetry);
-        model.addAttribute("retryEnabled",
-                review.getStatus() == HitlReviewStatus.PENDING
-                && "gate-1-test-cases".equals(review.getGateId())
-                && "cypress-factory".equals(reviewPackage.path("flowId").asString()));
+        model.addAttribute("instructionBlocks",
+                UiFormat.instructionBlocks(reviewPackage.path("instructions").asString("")));
+        // Each row carries the id (for the /prompts link) and the repo path of the template,
+        // so a reviewer who disagrees with an automated check knows where to change it.
+        List<Map<String, String>> referencePrompts = new ArrayList<>();
+        for (JsonNode promptId : reviewPackage.path("referencePrompts")) {
+            String promptRef = promptId.asString("");
+            if (promptRef.isBlank()) continue;
+            referencePrompts.add(Map.of(
+                    "id", promptRef,
+                    "sourcePath", promptCatalog.sourceDirectory(promptRef) + "/system.md"));
+        }
+        model.addAttribute("referencePrompts", referencePrompts);
+        model.addAttribute("retryEnabled", hitlRetryService.canRetry(review));
         return "review";
     }
 

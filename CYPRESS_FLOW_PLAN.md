@@ -2,25 +2,976 @@
 
 **Story → Manual Test Cases → Cypress E2E specs, using TAF AI assets and MQA skill assets**
 
+This is the single plan for the flow. It covers what is built and running (Part I), the shared
+reference material both halves need (Part II), and the Cypress-automation phases still ahead
+(Part III).
+
 ---
 
-## What This Does — Happy Path in 5 Steps
+## Status at a glance
 
-Before reading anything else: here is what the factory does from an end-user perspective.
+| | Scope | State |
+|---|---|---|
+| **Part I** | Story → manual test cases → TestRail, behind one QA gate | Implemented. 3 steps, 2 artifacts, 1 LLM worker. |
+| **Part II** | Asset inventories, roles, env vars, reuse | Reference for both halves. |
+| **Part III** | Test cases → Cypress specs → PR → execution → Allure report | Not implemented. Design only. |
 
-1. **You trigger the flow** via a REST call (`POST /api/triggers/manual` with the Jira issue key) or automatically via a Jira webhook on a story status transition.
-2. The factory detects the FOLIO area (e.g. Orders), loads the Orders context file, scans
-   the fragment library, and loads golden test case examples — all automatically.
-3. **Gate 0 lands**: a categorized list of proposed scenarios (S-01, S-02…) with shape notes
-   (journey vs atomic, step count, tier). You confirm coverage, add or remove scenarios, approve.
-4. **Gate 1 lands**: the generated test cases (one per confirmed scenario), each with an
-   `automatable: true/false` flag. You review, override any flags, and approve.
-5. **Gate 2 lands**: the generated `.cy.js` spec files, already tagged with real TestRail
-   C###### IDs. You review the code quality and approve.
-6. After approval: specs are committed to stripes-testing in a PR, and (if execution mode is
-   enabled) Cypress runs and produces an Allure HTML report.
+---
 
-That's it. The rest of this document explains how to build the system that does this.
+# Part I — Story → Manual Test Cases (built)
+
+**Approach:** lossless prefetch + a single mega-call, markdown in and markdown out.
+The two alternatives that were considered and rejected are in Appendix A.
+
+---
+
+## 1. Design principle
+
+One LLM session holds everything at once: the full skill text, the golden examples, the area
+context file, and the raw Jira ticket. Every decision is made with all of it visible.
+
+That is the whole shape of Part I. The deterministic work — area resolution, file fetching,
+enrichment triggers, parsing — happens in Java, where it is cheap and testable. The single
+generation call does the judgment work, and it re-reasons from the raw ticket rather than from
+a summary of one.
+
+Auditability of intermediate reasoning is explicitly traded away for test case quality: the
+flow keeps no per-step artifacts, only the finished plan and, on a retry, the human's feedback.
+
+---
+
+## 2. Flow architecture
+
+**Background services** — not flow steps; cloned at startup, refreshed on demand:
+
+```
+[SkillWorkspaceService]   NEW   git clone/pull FACTORY_CYPRESS_FOLIO_AI_REPO
+     └─ {user.dir}/skillsClone/skills/write-testrail-cases/
+          SKILL.md · references/examples.md · references/context/*.md  (29 area files)
+
+[TafSyncService]                git clone/pull stripes-testing
+     └─ {user.dir}/cypressTafClone/
+          cypress/support/fragments/** · permissions.js
+```
+
+**Pipeline:**
+
+```
+[Trigger: Jira story (manual trigger or Jira webhook)]
+     │  ── payload: { issueKey } · optional inline issue for the zero-credentials path
+     ▼
+[cypress-testcase-gen-agent]                                            LLM
+     │
+     │ ── A · FETCH & ROUTE ──────────── non-LLM fetch + one small LLM routing call
+     │
+     │    jira.fetchIssue(issueKey) + linked issues
+     │      ── RAW ticket straight into the prompt: verbatim summary, description,
+     │           acceptance criteria, labels, dev team field
+     │      ── inline trigger payload used instead when Jira is unconfigured
+     │
+     │    ROUTER CALL                                    LLM · ~5k in / ~200 out
+     │      ── SKILL.md steps 1 + 3 are AGENT JUDGMENT, not keyword matching:
+     │           "the story itself is the source of truth"; story text outranks the
+     │           Jira project prefix; refs = what the case verifies (may be a Bug,
+     │           a Tech-Debt ticket, or several keys across projects)
+     │      ── input: raw issue + linked issues + the 29-area table lifted from SKILL.md
+     │      ── returns: areas[1–2] · refs · one-line detection rationale
+     │      ── AreaDetector validates the names against the 29 real context files;
+     │           unknown / empty / call failure → keyword-score fallback
+     │      ── output is 4 small FACTS, not a summary — the mega-call still receives
+     │           the raw issue and re-reasons with everything visible
+     │
+     │ ── B · PREFETCH ───────────────── non-LLM · deterministic · produces no artifacts
+     │
+     │    ContextPrefetch.load(areas, issue)                      → context file(s)
+     │      ── references/context/<area>.md read from the skill clone
+     │      ── GitHub API → classpath, same fallback chain as today
+     │      ── 5 thin-context triggers (< 10 KBRs · DRAFT marker · no "Exact UI Texts" ·
+     │           < 3 toasts · > 5 known gaps) → GitHub + Jira enrichment
+     │
+     │    ExamplesPrefetch.load()                                 → examples.md
+     │      ── golden TestRail cases with style annotations + anti-pattern section
+     │
+     │    FragmentPrefetch.scan(areas, summary)                   → fragment library
+     │      ── score TAF fragments by filename (+3/kw) and content (+1/kw), top-2 per area
+     │      ── matching gui permissions from permissions.js
+     │
+     │    CoveragePrefetch.load(areas)                            → existing coverage
+     │      ── area-matched TestRail sections; dedup by case ID; cap 150
+     │      ── placement-fallback section excluded by design (non-thematic)
+     │
+     │    testRail.listSectionPaths()                             → section list
+     │
+     │    every prefetch degrades to a placeholder string — none may throw
+     │
+     │ ── C · GENERATE ──────────────────────────────────────────── LLM · ONE call
+     │
+     │    system: SKILL.md verbatim + factory delta
+     │            (no step-5 confirmation pause · no step-8 TestRail posting ·
+     │             exact output envelope · exact case-block format)
+     │    user:   examples · context file(s) · enrichment · RAW issue · linked issues ·
+     │            fragments · coverage · section list · [hitl_feedback] · [previous plan]
+     │      ── callForText → free-form markdown; no JSON schema, no structured output
+     │      ── ~48–64k input tokens; everything the model needs is visible at once
+     │
+     │ ── D · VALIDATE ──────────────────────────────────────────── non-LLM
+     │
+     │    TestPlanParser.parse() on the agent's own output — the SAME parser sync uses
+     │      ── zero cases · a case with no steps · a step with blank expected
+     │           → one format-correction retry → then fail the step (engine escalation)
+     │      ── the worker can never emit a plan that sync cannot parse
+     │
+     │ ── E · REVIEW LOOP ─────────────── LLM · up to maxReviewIterations (default 3, 0 = off)
+     │
+     │    cypress-testcase-reviewer scores the "# Test Cases" slice against R1–R11
+     │      ── FAIL → feedback + previous plan appended → regenerate (C) → revalidate (D)
+     │      ── PASS or attempts exhausted → verdict written into "# Review"
+     │
+     │ ── F · ASSEMBLE ──────────────────────────────────────────── non-LLM
+     │
+     │    frontmatter written by the WORKER, never trusted from the LLM:
+     │      issue_key         ← $trigger
+     │      refs              ← issue_key ALWAYS FIRST + router extras (union, deduped)
+     │      team              ← Jira dev-team field (AUTHORITATIVE, canonicalised
+     │                          via DevTeamCatalog) · else agent · else ""
+     │      ecs_enabled       ← agent · else false
+     │      testrail_section  ← agent, VALIDATED via resolveSectionByPath() · else env default
+     │      case_count · review_passed · review_iterations
+     ▼
+[test_plan.md]  — frontmatter + "# Analysis" + "# Test Cases" + "# Review"
+     ▼
+🛑 HITL Gate 1: Test Case Review
+     │  ── "# Analysis" first: area detected, context file loaded, Key Business Rules
+     │       touched, AC → scenario coverage matrix — judge whether the SCOPE is right
+     │  ── "# Test Cases": exactly what will be posted to TestRail
+     │  ── "# Review": automated reviewer verdict and any remaining issues
+     │  ── frontmatter carries the sync fields — correct testrail_section here if wrong
+     │       (path string with › separators, or numeric ID)
+     │  ── AMEND edits inline · APPROVE continues · REJECT terminates permanently
+     │  ── "Reject and Re-generate" (feedback required): original → REJECTED; a new
+     │       execution starts at [cypress-testcase-gen-agent] with the current
+     │       test_plan.md seeded + comments as hitl_feedback.md. Phase A re-runs
+     │       (Jira is idempotent); Phase B revises the seeded plan rather than
+     │       regenerating from scratch. No retry cap.
+     ▼
+[cypress-testrail-sync]                                              non-LLM
+     │  ── TestPlanParser on the "# Test Cases" slice only
+     │  ── push every case; all metadata from test_plan.md frontmatter
+     │  ── automation_type=Manual · labels=[AI label] · team · ecs · refs (from frontmatter)
+     │  ── collect real C###### IDs per case
+     ▼
+[test_plan.md]  — TC-NNN tokens in body headings replaced with real C###### IDs
+     ▼
+[downstream: Cypress automation flow — out of scope for this plan]
+```
+
+## 3. Flow descriptor
+
+`factory-flow-cypress/src/main/resources/flows/cypress-factory.yaml`
+
+```yaml
+id: cypress-factory
+name: Cypress Factory
+version: 2.0.0
+triggers:
+  - event_type: manual
+input_schema:
+  required: [issueKey]
+output_schema:
+  artifacts: [test_plan.md]
+retry_policy:
+  max_attempts: 3
+  backoff_seconds: [30, 120, 300]
+agent_chain:
+  - step_id: testcase-gen
+    type: AGENT
+    worker_id: cypress-testcase-gen-agent
+    inputs: ["$trigger"]
+    optional_inputs: [test_plan.md, hitl_feedback.md]
+    outputs: [test_plan.md]
+
+  - step_id: gate-1-review
+    type: HITL_GATE
+    gate:
+      gate_id: gate-1-test-cases
+      title: "QA review: test cases"
+      review_instructions: |
+        Everything is in test_plan.md, in three sections. Read them in this order:
+
+        - "# Analysis" — the area that was detected and why, the context file that was
+          loaded, the Key Business Rules the story touches, and the AC to scenario coverage
+          matrix. Read this first: it tells you whether the SCOPE is right, which is the one
+          thing no automated check can judge.
+        - "# Test Cases" — exactly what will be posted to TestRail, nothing else.
+        - "# Review" — the automated reviewer's verdict.
+
+        (Abridged. The descriptor holds the full block scalar, which also covers the four
+        frontmatter fields and the degradation warning. UiFormat.instructionBlocks renders
+        blank-line-separated paragraphs and "- " runs as real paragraphs and lists.)
+      reviewed_artifacts: [test_plan.md, hitl_feedback.md]
+      reference_prompts: [cypress-testcase-reviewer]
+
+  - step_id: testrail-sync
+    type: AGENT
+    worker_id: cypress-testrail-sync
+    inputs: [test_plan.md]
+    outputs: [test_plan.md]
+```
+
+**3 steps. 1 HITL gate. 2 artifacts.**
+
+### The Gate 1 page
+
+The gate is a plain server-rendered review page, but three details are load-bearing:
+
+- **`reference_prompts`** surfaces the automated reviewer's checklist as a link to
+  `/prompts/cypress-testcase-reviewer`, followed by the repo path of the file to edit —
+  `PromptCatalog.sourceDirectory()` recovers the owning module from the resource URI. Without
+  it nobody knows what the agent already checked, and approval rests on an invisible standard.
+- **`review_instructions` is a block scalar**, rendered by `UiFormat.instructionBlocks` into
+  real paragraphs and bullet lists. Descriptor text stays plain: no HTML is accepted from a
+  flow descriptor and none is generated.
+- **A decision legend** spells out what Approve / Amend / Reject / Reject-and-Re-generate each
+  do, with the destructive Reject last.
+
+
+## 4. Asset availability and degradation
+
+Every external asset resolves through the same three tiers, and the tier actually used is
+recorded in `# Analysis` on every run:
+
+```
+1. LOCAL CLONE   {user.dir}/skillsClone · {user.dir}/cypressTafClone
+                 git pull at startup; a stale clone is still used when the pull fails
+2. GITHUB API    GitHubConnector — covers "git binary missing but token works"
+3. CLASSPATH     bundled in the jar — last resort, always stale, always flagged
+```
+
+Degradation is **not uniform**. One asset is a hard dependency; the rest are soft:
+
+| Asset | Feeds | All tiers fail |
+|---|---|---|
+| **`SKILL.md`** | the entire system prompt (~18k tokens of methodology) | **HARD — throw `AgentExecutionException`.** Without it there is no MQA process: we would generate from a nameless thin prompt and produce plausible-looking cases with no signal to the reviewer that anything was wrong. Engine retry (3× / 30·120·300s) covers a transient outage, then escalates to the review inbox. Silent quality collapse is worse than a failed step. |
+| `references/context/<area>.md` | domain knowledge — KBRs, exact UI texts, permissions | **SOFT — SKILL.md sanctions it**: *"If a context file for the detected area does not exist… I'll generate cases based on the User Story alone — results may be less accurate."* Proceed; `# Analysis` states which area had no context file. |
+| `references/examples.md` | few-shot style anchor | SOFT. Verification depth and formatting degrade; structure survives. |
+| TAF fragments | `automationNotes`, `automatable` flag | SOFT. Test case **content** is unaffected — only automation hints. `# Analysis` notes it so the Gate 1 reviewer knows to check the flags (the gate already says "override automatable flags"). |
+
+**Bundle scope: `SKILL.md` + `examples.md` only** (~100 KB), under
+`factory-flow-cypress/src/main/resources/references/`.
+
+- Not the 29 context files (890 KB). Their absence has a documented graceful path, and checking
+  in files we do not own creates a fork that drifts.
+- `folio-eureka-ai-dev` is **public**, so tiers 1 and 2 both work with no credentials
+  (`git clone` needs none; the GitHub API is unauthenticated at 60 req/hr, far above our usage).
+  The bundle is therefore a genuine last resort, not the zero-credentials path — but it stays,
+  because it covers: offline/air-gapped builds, unit tests that must not touch the network, a
+  GitHub outage, and the repo later being made private, renamed, or moved.
+
+**The bundle is always present in the jar.** `SKILL.md` and `examples.md` ship inside
+`factory-flow-cypress` at `src/main/resources/references/` and are readable with no network, no
+git binary, and no credentials. `examples.md` is already bundled today; P1 adds `SKILL.md`.
+
+**Staleness is the real hazard, not availability.** The bundled `references/examples.md` is
+currently **18,577 bytes** against **27,467** live — already ~33% behind, silently. Mitigations:
+
+- `# Analysis` always states source and age, e.g.
+  `Skill source: local clone @ 2026-08-27 (a1b2c3d) · context: marc-authority.md · examples: clone`
+  and, on the last resort, `⚠️ examples.md from bundled classpath copy — may be outdated`.
+- Startup WARN when the resolved `SKILL.md` differs in size by >10% from the bundled copy —
+  cheap drift signal that the bundle needs refreshing.
+- **NEW file** `scripts/update-cypress-testcase-skill-bundle.sh`, alongside the existing `reset-executions.sh` /
+  `pg-backup.sh`. It copies the two files from a local skill clone into the module's resources
+  and prints the size delta so drift is visible at the moment you refresh:
+
+  ```bash
+  #!/usr/bin/env bash
+  # Refresh the bundled last-resort copies of SKILL.md and examples.md.
+  # Usage: scripts/update-cypress-testcase-skill-bundle.sh [path-to-folio-eureka-ai-dev]
+  set -euo pipefail
+  SRC="${1:-$HOME/folio-eureka-ai-dev}/skills/write-testrail-cases"
+  DST="factory-flow-cypress/src/main/resources/references"
+  for f in SKILL.md references/examples.md; do
+    out="$DST/$(basename "$f")"
+    old=$( [ -f "$out" ] && wc -c < "$out" || echo 0 )
+    cp "$SRC/$f" "$out"
+    printf '%-12s %8s -> %8s bytes\n' "$(basename "$f")" "$old" "$(wc -c < "$out")"
+  done
+  ```
+
+  Run it deliberately. Do **not** wire it into the Maven build — the bundle would silently become
+  whatever the last person to build happened to have on disk.
+
+
+## 5. Components
+
+| Component | LLM? | Role |
+|---|---|---|
+| `SkillWorkspaceService` | No | git clone/pull of the FOLIO AI skills repo → local disk. Modelled on `TafSyncService`. Not a flow step. |
+| `TafSyncService` | No | git clone/pull of `stripes-testing` → local disk. Not a flow step. |
+| `AreaDetector` | No | **Validator + fallback** for the router call: resolves returned area names against the 29 real context files; keyword-scores story text + Jira prefix when the router fails or returns something unknown. |
+| `ContextPrefetch` | No | Reads area context file(s) from the skill clone; runs the 5 thin-context triggers; enriches from GitHub/Jira when triggered. |
+| `FragmentPrefetch` | No | Lists + keyword-scores TAF fragments for the detected area. |
+| `CoveragePrefetch` | No | Area-matched TestRail sections → existing cases; dedup by case id, cap 150. |
+| `ExamplesPrefetch` | No | Reads `references/examples.md` from the skill clone; GitHub then classpath fallback. |
+| `DevTeamCatalog` | No | The 27 FOLIO teams, parsed from `references/dev-teams.md`. Used by **both** workers, like `TestPlanParser`: the generator canonicalises the team it read off the ticket, sync turns that name into TestRail's `custom_dev_team` option id. Data lives in a resource so filling in a new team is an edit, not a release. |
+| **`TestCaseGenAgentWorker`** | **Yes** | Fetches the Jira issue, runs the router call, assembles the mega-prompt, one call → markdown plan, then the reviewer loop. |
+| ↳ router call | Yes | SKILL.md steps 1 + 3 judgment: which area(s), what `refs`. ~5k in / ~200 out. |
+| ↳ reviewer loop | Yes | Existing pattern, same worker, `maxReviewIterations` (default 3, 0 = off). |
+| ↳ `TestPlanValidator` | No | Parses the agent's own output before returning. One format-correction retry, then fail the step. |
+| Gate 1 | HITL | Human. |
+| `TestRailSyncAgentWorker` | No | Parses the `# Test Cases` slice and pushes each case to TestRail with the frontmatter metadata; writes real case ids back into the plan. |
+
+The worker uses no agent tool-calling: Spring AI 2.0.0 ships no filesystem tool support, and
+prefetch covers what the generation call needs. The step boundary and the artifact contract are
+independent of that choice — see Appendix A.
+
+---
+
+## 6. The artifact contract
+
+### 6.1 `test_plan.md` — always produced
+
+```markdown
+---
+issue_key: UIMARCAUTH-553
+refs: "UIMARCAUTH-553, MODELINKS-201"
+team: Spitfire
+ecs_enabled: false
+testrail_section: "MARC Authority › Browse"
+case_count: 7
+review_passed: true
+review_iterations: 2
+---
+
+# Analysis
+
+**Area detected:** MARC Authority — loaded `marc-authority.md`
+*(router: story describes authority browse; UIMARCAUTH prefix agrees)*
+**Context quality:** enriched (fewer than 10 KBRs) — fetched en_US.json, package.json
+
+## Key Business Rules touched
+- KBR: ...
+
+## Coverage matrix
+| AC | Scenario | Status |
+|---|---|---|
+| AC-1: ... | TC001 | NEW |
+| AC-2: ... | Already covered by C12345 | EXISTING |
+
+## Notes
+...
+
+# Test Cases
+
+## TC001: Browse authority records by personal name
+- **Test Group:** critical
+- **User Journey:** No
+- **Automatable:** Yes
+- **ECS:** No
+
+**Preconditions**
+- ...
+
+**Steps**
+1. **Action:** ...
+   **Expected:** ...
+
+**Automation notes:** ...
+
+# Review
+
+**Result:** PASSED after 2 iteration(s)
+...
+```
+
+On a retry the seeded `test_plan.md` is itself the plan being revised. A step may declare the
+same artifact as both input and output; the store versions it rather than overwriting.
+
+**Where the frontmatter values come from.** The worker owns all eight fields; the agent
+contributes to only three of them, and never has the last word:
+
+| Field | Source |
+|---|---|
+| `issue_key` | The trigger payload. |
+| `refs` | Issue key first, always, then any Jira keys the router proposed (regex-filtered). |
+| `team` | **Jira's Dev Team field is authoritative** — `customfield_10057`, which `JiraRestConnector` renames to `devTeam`. Canonicalised through `DevTeamCatalog`. The agent's reading is used only when the ticket has no team, because it has no other source and would otherwise infer one from the subject matter. |
+| `ecs_enabled` | The agent, from labels and story text. |
+| `testrail_section` | The agent's suggestion, but only if TestRail resolves it; otherwise the configured default. |
+| `case_count`, `review_passed`, `review_iterations` | The worker, from its own parse and review loop. |
+
+The three fields the agent emits inside `# Analysis` (delta 4) are **stripped from the prose**
+once promoted, by `stripPromotedFields`. Models reliably emit them but tend to wrap them in
+`---`, which renders as a stray second frontmatter duplicating the real one. The strip is scoped
+above `# Test Cases` so a step that legitimately contains `team: X` survives.
+
+### 6.2 `hitl_feedback.md` — retry runs only
+
+Written by `HitlRetryService` from the reviewer's rejection comment. Cannot fold into
+`test_plan.md`: it is created outside the worker, and the worker must distinguish "the plan I am
+revising" from "what the human said about it".
+
+### 6.3 Sync parseability — four guarantees
+
+**G1 — the parser is scoped to `# Test Cases`.**
+Today `parseCasesFromBody()` splits the whole body on `^(?=## )`. With `# Analysis` in the same
+file, a heading like `## Notes: coverage` matches `CASE_HEADING` (`^## (.+?):\s+(.+)$`) and
+produces a garbage case. Fix: slice the body from `# Test Cases` to the next `^# `, parse `##`
+inside that slice only. Nothing outside the section can be mistaken for a case.
+
+**G2 — one parser, two callers.**
+Extract into `org.folio.factory.cypressfactory.plan.TestPlanParser`. The generator uses it as a
+validator; sync uses it as the parser. Same code, no drift — if it parses at generation time it
+parses at sync time by construction.
+
+**G3 — the worker never emits an unparseable plan.**
+After generation the worker parses its own output. Zero cases, or any case with zero steps, or
+any step with a blank `expected` → one format-correction retry → then throw
+`AgentExecutionException` and let engine retry/escalation handle it.
+
+**G4 — frontmatter is worker-guaranteed, not LLM-trusted.**
+The worker writes the frontmatter itself; the agent only supplies three of the values, in a
+parseable form inside `# Analysis`.
+
+| Field | Source | Fallback |
+|---|---|---|
+| `issue_key` | `$trigger` payload | — (required) |
+| `refs` | **`issue_key` always, plus** router extras (SKILL.md step 3 judgment — a Bug key the case regression-covers, a Tech-Debt ticket, related keys across projects) | `issue_key` alone |
+| `team` | **Jira dev-team field first**, else the agent's reading; canonicalised via `DevTeamCatalog` | `""`, and sync logs a warning naming the team rather than dropping it silently |
+| `ecs_enabled` | agent | `false` |
+| `testrail_section` | agent, **validated via `testRail.resolveSectionByPath()` before writing** | config default `FACTORY_CYPRESS_TESTRAIL_SECTION_ID`; note added to `# Analysis` |
+| `case_count` | validator | — |
+| `review_passed`, `review_iterations` | reviewer loop | — |
+
+**`refs` — the ticket key is non-negotiable.** `refs` is TestRail's **References** field; a case
+that loses its originating ticket is orphaned. The router is therefore purely additive:
+
+```java
+// worker, phase F
+List<String> refs = new ArrayList<>();
+refs.add(issueKey);                                   // always first
+for (String extra : routerRefs) {
+    String k = extra.strip().toUpperCase(Locale.ROOT);
+    if (JIRA_KEY.matcher(k).matches() && !refs.contains(k)) refs.add(k);
+}
+// JIRA_KEY = Pattern.compile("[A-Z][A-Z0-9]*-\\d+")
+```
+
+The regex filter drops anything that is not a well-formed Jira key, so a hallucinated or
+malformed router value is discarded rather than written into TestRail. `TestRailSyncAgentWorker`
+re-applies the same guarantee when reading the frontmatter (a reviewer could delete the key while
+amending at Gate 1), so `issue_key` is present in `refs` by construction at both layers.
+
+### 6.4 What the sync worker writes into TestRail
+
+Every value comes from `test_plan.md` — the frontmatter for case-wide fields, the parsed case
+block for per-case fields.
+
+| TestRail field | Value source | Notes |
+|---|---|---|
+| `section_id` | `testrail_section` from the frontmatter | Path string (separators `›` `|` `>` `→`, resolved via the API) or a numeric id. Falls back to `FACTORY_CYPRESS_TESTRAIL_SECTION_ID` when absent or unresolvable. |
+| `custom_test_group` | `Test Group` on the case block | 1 = smoke, 2 = criticalPath, 3 = extendedPath |
+| `custom_dev_team` | `team` from the frontmatter, mapped through `DevTeamCatalog` | Left unset when the team is unknown or has no TestRail id; both cases log a warning naming the team. |
+| `custom_ecs_enabled` | `ecs_enabled` from the frontmatter, OR the per-case `ECS` flag | Either one being true sets it. |
+| `custom_automation_type` | `2` (Manual) for every case | The Cypress spec is the automation artifact; the TestRail case stays a manual record. |
+| `labels` | `[id of testrailLabel]` | Resolved at runtime via `getOrCreateLabel`; title from `FACTORY_CYPRESS_TESTRAIL_LABEL`, default `cypressFlow-delete`. |
+| `refs` | `refs` from the frontmatter | The originating `issue_key` is re-asserted here even if a Gate 1 amendment removed it. |
+| `custom_preconds` | The case's Preconditions block | Rendered as a TestRail HTML list. |
+
+### Precondition format
+
+Preconditions are a flat list. A nested detail — a capability set or permission list — is an
+indented `  - ` line under its parent in the markdown, which `TestPlanParser` re-groups onto that
+parent element as a `\n-` sub-bullet. `toHtmlListItem()` renders each `\n` as `<br>` inside the
+TestRail HTML `<li>`.
+
+### Real ID writeback
+
+The worker builds a `TCNNN → C######` mapping as it creates cases, then rewrites the
+`test_plan.md` body: each heading changes from `## TC001: Create order` to
+`## C627249: Create order`. The frontmatter passes through as-is. The updated `test_plan.md` is
+the sole output.
+
+The body is the single source of truth for case data. Downstream workers parse cases from body
+headings using the same `## ID: Title` pattern — after this step, `tc.id()` returns `C627249`.
+
+**Partial failure caveat:** if `addCaseWithMetadata` throws for one case, that `TCNNN` token
+stays unreplaced in the body, and a downstream consumer would read it as a case id. See the
+Part III risks.
+
+### Section hierarchy for `describeBlocks`
+
+After creating each case, fetch the assigned section hierarchy the same way the MCP server does:
+walk `parent_id` up to `depth == 0` via `GET /api/v2/get_section/{id}`. Store as
+`describeBlocks` in the mapping for use in the finalizer PR description (informational only —
+the specs already have correct `describe()` nesting from the generation step).
+
+The Java connector will need a `getSection(sectionId)` method added.
+
+---
+
+
+---
+
+## 7. Component reference
+
+### Skill workspace
+
+**New:** `factory-flow-cypress/.../worker/SkillWorkspaceService.java`
+
+`SkillWorkspaceService` mirrors `TafSyncService`: `syncInBackground()`, `isReady()`, `sync()`,
+`cloneRepo()`, `pull()`, `gitAvailable()`, `run(String...)`, all with `-c core.longpaths=true`
+for Windows path limits.
+
+- Clones `properties.folioAiRepo()` into `{user.dir}/skillsClone`
+- `Path skillRoot()` → `<clone>/skills/write-testrail-cases`
+- `Optional<String> read(String relativePath)` — `SKILL.md`, `references/examples.md`,
+  `references/context/<area>.md`
+- `boolean isReady()`
+
+**Fallback chain** — see Part I §4 for the full contract. `read()` resolves local clone → GitHub API
+(via `GitHubConnector`) → classpath `references/`, and returns which tier answered so
+`# Analysis` can report it:
+
+```java
+public record Asset(String content, Source source, String detail) {}
+public enum Source { CLONE, GITHUB, CLASSPATH }
+public Optional<Asset> read(String relativePath);
+public String requireSkill();   // throws AgentExecutionException — SKILL.md is a hard dependency
+```
+
+**Alongside the service:**
+- `SKILL.md` and `examples.md` are bundled in
+  `factory-flow-cypress/src/main/resources/references/` as the always-present last tier
+  (Part I §4).
+- `scripts/update-cypress-testcase-skill-bundle.sh` refreshes that bundle (content in Part I §4).
+- Startup WARN if the resolved `SKILL.md` differs by >10% in size from the bundled copy.
+
+A bean in `CypressFlowConfiguration` calls `syncInBackground()` on `ApplicationReadyEvent`,
+alongside the TAF sync.
+
+### Prefetch services
+
+Plain Spring beans, not `AgentWorker`s: the generation worker calls them directly, and they
+produce no artifacts.
+
+| Service | Entry point |
+|---|---|
+| `AreaDetector` | `resolve(List<String> routerAreas, JsonNode issue) → List<String>`<br>`areaTable() → String` (the 29-row table for the router prompt) |
+| `ContextPrefetch` | `load(List<String> areas, JsonNode issue) → ContextBundle(text, enriched, enrichmentNote)` |
+| `FragmentPrefetch` | `scan(List<String> areas, String summary) → String` |
+| `CoveragePrefetch` | `load(List<String> areas) → String` |
+| `ExamplesPrefetch` | `load() → String` |
+
+Notes:
+- `AreaDetector` holds `AREA_KEYWORDS`, `PROJECT_KEY_AREAS` and `detectAreas()`. It does not
+  choose the area — the router call does. Its two jobs:
+  - `resolve(routerAreas, issue)` — map each router-returned name to one of the 29 real context
+    files (case-insensitive, hyphen/space tolerant). Any name that does not resolve is dropped
+    and logged at WARN. If nothing resolves, or the router call failed, fall back to keyword
+    scoring on raw issue `summary` + `description` + `labels` + project key.
+  - `areaTable()` — the 29-row Area/context-file/keywords table, rendered for the router prompt.
+- Cap at 2 areas (SKILL.md: "A story can span two areas — read both context files"). The router
+  is instructed to return at most 2; `resolve()` truncates if it returns more.
+- `ContextPrefetch` owns `isThinContext`, `isDraftContext`, `countKeyBusinessRules`,
+  `countToastsInUiTexts`, `countKnownGaps`, `enrichGitHub`, `enrichJira`, `fetchPermissions`,
+  `fetchTranslations` and `AREA_GITHUB_REPOS`. It reads the context file through
+  `SkillWorkspaceService.read("references/context/" + area + ".md")`.
+- `AREA_KEYWORDS` area names must match the 29 context filenames exactly
+  (`agreements`, `bulk-edit`, `check-in`, …). Log a startup WARN for any area name with no
+  matching file, and for any context file with no area entry (drift check against MQA's table).
+
+### The generation worker
+
+`factory-flow-cypress/.../worker/TestCaseGenAgentWorker.java`
+
+Constructor:
+```java
+TestCaseGenAgentWorker(ChatClient chatClient,
+                       JiraConnector jira,
+                       TestRailConnector testRail,
+                       SkillWorkspaceService skills,
+                       AreaDetector areaDetector,
+                       ContextPrefetch contextPrefetch,
+                       FragmentPrefetch fragmentPrefetch,
+                       CoveragePrefetch coveragePrefetch,
+                       ExamplesPrefetch examplesPrefetch,
+                       FrontmatterCodec frontmatterCodec,
+                       TestPlanParser parser,
+                       DevTeamCatalog devTeams,
+                       PromptDump promptDump,
+                       CypressFlowProperties properties)
+```
+
+`execute(AgentContext)`:
+
+1. **Issue** — `issueKey` from `$trigger`. If the trigger carries an inline `issue` object, use
+   it; otherwise `jira.fetchIssue(key)` plus linked issues. Zero-credential path must still work.
+2. **Route** — `callForText(ROUTER_PROMPT_ID, {issue, linked_issues, area_table})`.
+   Returns `areas`, `refs`, and a one-line rationale. `areaDetector.resolve(...)` validates;
+   any failure (call error, unparseable, nothing resolves) falls back to keyword scoring —
+   **the router must never break the run**.
+3. **Prefetch** — context (+ enrichment), examples, fragments, coverage, TestRail section list.
+   Every prefetch degrades to a placeholder string on failure; none may throw.
+4. **Generate** — `callForText(GEN_PROMPT_ID, vars)`. Free-form markdown; not
+   `callForEntity`, and no structured-output schema.
+5. **Validate** — `parser.parse(planMarkdown)`. On failure, one retry with a format-correction
+   message appended; on second failure throw `AgentExecutionException`.
+6. **Review loop** — unchanged shape. Reviewer receives the `# Test Cases` slice. On FAIL,
+   append feedback + the previous plan to `vars` and regenerate (re-validating each time).
+7. **Assemble** — worker writes frontmatter per Part I §6.3 G4, validates `testrail_section` via
+   `testRail.resolveSectionByPath()`, appends the `# Review` section, returns
+   `AgentResult` with `test_plan.md` + accumulated token metrics (`drainUsage()` / `accumulate`
+   pattern, unchanged).
+
+Retry inputs: `test_plan.md` (optional) → "revise this, do not regenerate from scratch";
+`hitl_feedback.md` (optional) → a priority corrections block. Built by `buildPreviousPlanBlock`
+and `buildHitlFeedbackBlock`.
+
+`maxTokens()` is `16384`.
+
+**Prompts — router:** `factory-flow-cypress/src/main/resources/prompts/cypress-area-router/`
+
+`system.md` — SKILL.md's **Area Detection** and **step 3** rules verbatim (the "story is the
+source of truth" / "trust story over prefix" / "refs = what the case verifies" paragraphs), plus:
+
+> Return exactly this block and nothing else:
+> ```
+> AREAS: <context-file-stem>[, <second-stem>]
+> REFS: <comma-separated Jira keys>
+> WHY: <one line>
+> ```
+> Use at most 2 areas, and only stems from the table. If the story spans two areas, list both.
+
+`user.md` placeholders: `{{issue}}`, `{{linked_issues}}`, `{{area_table}}`.
+
+Parsed with three line-prefix regexes. Any parse failure → `AreaDetector` keyword fallback,
+logged at WARN. Deliberately **not** structured output — a 3-line block is cheaper and more
+robust than a JSON schema here.
+
+**Prompts — generation:** `factory-flow-cypress/src/main/resources/prompts/cypress-testcase-gen/`
+
+`system.md` = `{{skill}}` (SKILL.md verbatim from the clone) + a **factory delta** block +
+`{{examples}}` + the valid team list `{{dev_teams}}`. Everything in the system prompt is
+constant across calls and across runs, which is what makes it cacheable — see the prompt
+caching subsection below.
+
+**The deltas describe workflow parts by behaviour, never by step number.** SKILL.md is
+maintained by MQA and gets renumbered and reorganised; a delta that says "skip step 8" points at
+the wrong thing the moment a step is inserted, and nothing errors — the run just quietly does
+the wrong thing. Behaviour descriptions are specific enough to match and loose enough to survive
+edits. The block also carries an explicit fallback: *if a delta no longer maps onto the workflow
+at all, follow the stated intent and note the mismatch at the top of `# Analysis`* — which turns
+silent drift into a visible one-line report at Gate 1.
+
+> - **Everything before scenario analysis is already done** — area detection, reading the
+>   matching context file, the thin-context assessment and enrichment, the golden examples, and
+>   the ticket. Begin where the workflow maps the story onto the context file's Key Business
+>   Rules. If the supplied context file clearly does not match the story, say so in the first
+>   line of `# Analysis` rather than generating against the wrong domain knowledge.
+> - **Never pause for confirmation.** Wherever the workflow says to present something and wait —
+>   the scenario list above all — write it into `# Analysis` and carry straight on. A human
+>   reviews the whole document at one gate afterwards.
+> - **Never touch TestRail.** Ignore anything about asking for a Section ID, showing a posting
+>   preview, or calling the API. Placement is expressed only as `testrail_section:` in `# Analysis`.
+> - Also state `team:` and `ecs_enabled:` on their own lines in `# Analysis`.
+> - Additional per-case fields not in the skill: `- **Automatable:** Yes/No` and an optional
+>   `**Automation notes:**` line referencing real helpers from the fragment library.
+> - Output envelope: exactly three top-level sections, `# Analysis`, `# Test Cases`, `# Review`
+>   (leave `# Review` empty — the factory fills it). No YAML frontmatter — the factory writes it.
+> - Inside `# Analysis` and `# Review`, never use a `##` heading containing a colon.
+> - Case block format is **exact** — reproduced verbatim in the prompt, matching `TestPlanParser`.
+
+`user.md` placeholders: `{{context_files}}`, `{{enrichment}}`, `{{issue}}`,
+`{{linked_issues}}`, `{{fragments}}`, `{{coverage}}`, `{{sections}}`, `{{hitl_feedback_block}}`,
+`{{previous_plan_block}}`, `{{review_feedback}}`.
+
+**`{{examples}}` deliberately lives in `system.md`, not here.** It is static, so putting it in
+the cached prefix costs nothing; moving it back into the user message would silently disable
+caching for ~7k tokens per call.
+
+**Reviewer prompt:** `cypress-testcase-reviewer/`. `user.md` receives `{{issue}}` and the
+`# Test Cases` slice; the checklist rules live in `system.md`.
+
+**Detecting delta drift — three layers.** Behaviour-worded deltas survive renumbering, but not
+*removal*: if MQA deletes the confirmation pause outright, delta 2 overrides nothing and nobody
+finds out. `SkillWorkspaceService.DELTA_ANCHORS` maps each delta to one phrase that is unique in
+SKILL.md, and `unanchoredDeltas(skillText)` names the deltas whose phrase has gone:
+
+| Anchor phrase | Guards |
+|---|---|
+| `read the matching context file` | delta 1 — gathering already performed |
+| `Wait for confirmation` | delta 2 — never pause for confirmation |
+| `Ask for the TestRail Section ID` | delta 3 — never touch TestRail |
+
+- **Startup** — `warnOnDeltaDrift()` logs a WARN naming the affected deltas after each sync.
+- **Gate 1** — the worker appends the same finding to the Provenance block, so the reviewer sees
+  `⚠️ SKILL.md has changed: delta 3 … no longer match` in `# Analysis` on the run itself.
+- **Bundle refresh** — `scripts/update-cypress-testcase-skill-bundle.sh` re-checks the anchors
+  against the newly copied file and prints ok/MISSING per delta. This is the moment a human is
+  deliberately looking at the skill, so it is the cheapest place to catch it.
+
+Keep the script's anchor list and `DELTA_ANCHORS` in step; `SkillWorkspaceServiceTest` asserts
+the bundled SKILL.md still anchors all three, so a refresh that breaks one fails the build.
+
+**Optimization — verified and implemented.** SKILL.md (~18k tokens) + `examples.md` (~7k) are
+stable across every run and every review iteration, so both now live in `system.md` and the
+generation call requests Anthropic prompt caching over it.
+
+Spring AI 2.0.0 supports this properly — no hand-placed breakpoint needed. `AnthropicCacheOptions`
+with `AnthropicCacheStrategy.SYSTEM_ONLY` marks the system prompt; the library decides placement:
+
+```java
+@Override
+protected ChatOptions.Builder<?> chatOptions() {          // hook on AbstractLlmAgentWorker
+    return AnthropicChatOptions.builder()
+            .maxTokens(maxTokens())
+            .cacheOptions(AnthropicCacheOptions.builder()
+                    .strategy(AnthropicCacheStrategy.SYSTEM_ONLY)
+                    .messageTypeTtl(MessageType.SYSTEM, AnthropicCacheTtl.FIVE_MINUTES)
+                    .build());
+}
+```
+
+Design constraints that shaped it:
+
+- **`maxTokens()` was kept, not replaced.** The default `chatOptions()` builds from it, so any
+  existing override keeps working. Replacing it would have compiled fine and silently stopped
+  being called.
+- **The Anthropic dependency lives in this module's pom**, never in `factory-agents` — provider
+  swapping via `FACTORY_LLM_PROVIDER` is a live capability. On OpenAI the options degrade to a
+  warning and caching just does not happen.
+- **Five-minute TTL, deliberately.** The TTL is a sliding window refreshed on each read, so it
+  survives a whole run however long the run takes. One-hour TTL costs meaningfully more per
+  write and only pays off for *cross-run* hits; revisit if `cacheReadTokens` shows those are
+  being missed often.
+- **The cached prefix must stay byte-identical.** Review feedback and the previous plan stay in
+  the user message. `systemMessageIsIdenticalAcrossReviewIterationsSoTheCachePrefixHolds` pins
+  this — moving any per-attempt value into `system.md` fails that test rather than silently
+  disabling caching.
+
+Verification is empirical only: `StubChatModel` ignores options, so no test can prove caching
+engages against the real API. `AgentResult` metrics now carry `cacheWriteTokens` /
+`cacheReadTokens` (read through the portable `Usage` interface) and reach both the `/audit`
+`STEP_COMPLETED` detail and `factory.llm.tokens{type=cache_write|cache_read}`. A non-zero
+`cacheReadTokens` on a run's later generation calls is the signal it is working — see Part I §11 step 12.
+
+**Scope: this worker only.** `chatOptions()` is a per-worker override and cache entries key on
+the prompt prefix, so entries never cross workers. A future test-automation or debugging worker
+gets no benefit from this one and must opt in itself — worth it only where a *large, byte-stable*
+prefix exists. A debugging agent whose input is dominated by a failing spec and its logs is a
+poor candidate: it would pay write premiums for reads that never come, if it clears the
+cacheable minimum at all. Workers added to this module need no pom change; a worker in a new
+flow module needs `spring-ai-anthropic` in that module's pom, never in `factory-agents`.
+
+### Parser and TestRail sync
+
+`factory-flow-cypress/.../plan/TestPlanParser.java` and
+`factory-flow-cypress/.../plan/DevTeamCatalog.java`, backed by
+`src/main/resources/references/dev-teams.md`.
+
+`DevTeamCatalog` maps a team name to TestRail's `custom_dev_team` option id, case-insensitively
+and tolerating a trailing `Team`. Both name columns are indexed, so a value spelled the Jira way
+(`Bama`) or the TestRail way (`BAMA`) resolves.
+
+Sync distinguishes three outcomes and logs the last two, because an unset field is invisible in
+TestRail:
+
+| Outcome | Behaviour |
+|---|---|
+| Known team with an id | Sets `custom_dev_team`. |
+| Known team, no id yet | Warns naming the team; field left unset. Fill the TestRail ID column in `dev-teams.md`. |
+| Unknown team | Warns naming the value; field left unset. Add the row if it is a real team. |
+
+The middle case is real: teams appear in Jira before anyone looks them up in TestRail.
+
+`TestPlanParser` owns `ParsedCase`, `ParseState`, `CASE_HEADING`, `ATTR_LINE`, `STEP_ACTION`,
+`STEP_EXPECTED`, `parseCasesFromBody` and `flushPendingStep`, and exposes:
+
+```java
+public List<ParsedCase> parse(String body);          // slices to "# Test Cases" first (G1)
+public record Problem(String caseId, String detail) {}
+public List<Problem> validate(List<ParsedCase> cases); // zero cases / zero steps / blank expected
+```
+
+`TestRailSyncAgentWorker` takes `test_plan.md` as its only input and reads `issue_key`, `refs`,
+`team`, `ecs_enabled` and `testrail_section` from the frontmatter, falling back to
+`properties.testrailSectionId()` for the section. It delegates all parsing to `TestPlanParser`,
+and re-asserts `issue_key` inside `refs` before writing, so a Gate 1 amendment cannot orphan a
+case from its ticket (Part I §6.3).
+
+### Wiring
+
+`cypress-factory.yaml` is the descriptor in Part I §3.
+
+`CypressFlowConfiguration` declares the beans: `skillWorkspaceService`, `tafSyncService`,
+`devTeamCatalog`, `areaDetector`, `contextPrefetch`, `fragmentPrefetch`, `coveragePrefetch`,
+`examplesPrefetch`, `testPlanParser`, `promptDump`, and the two worker beans the descriptor
+names.
+
+**`HitlRetryService`** (`factory-app`) — made **flow-agnostic** rather than given a cypress
+artifact list, because a hardcoded list in the composition root is a control-plane violation.
+The carry-over set is derived from the restart step's own declaration:
+
+```java
+carryOver = (startStep.inputs() ∪ startStep.optionalInputs()) − {"$trigger", "hitl_feedback.md"}
+```
+
+`canRetry(review)` decides whether the button renders, also from the descriptor alone: the review
+is PENDING, its step index points at a `HITL_GATE`, and the step before it is an `AGENT` step. No
+flow id or gate id appears anywhere in the retry path. Requiring the reviewed step to *be* a gate
+is what keeps escalation reviews out — an escalation's step index points at the AGENT step that
+failed, not at a gate.
+
+Consequence worth knowing: **any** flow shaped `AGENT → HITL_GATE` now gets the button, including
+both Test Factory gates. It restarts and carries artifacts correctly there, but Test Factory's
+workers do not declare or read `hitl_feedback.md`, so a retry is a plain re-run rather than a
+feedback-driven revision.
+
+**Config** — no new env vars. `FACTORY_CYPRESS_FOLIO_AI_REPO` now drives the skill clone as well
+as the GitHub fallback.
+
+## 8. Tests
+
+**Unit — new**
+
+| Class | Covers |
+|---|---|
+| `AreaDetectorTest` | `resolve()` maps router names to real files (case/hyphen tolerant); drops unknown names; falls back to keyword scoring on empty/failed router output; story text beats Jira prefix; two-area spanning; truncates >2 |
+| `AreaRouterTest` | 3-line block parsed correctly; missing `REFS:` line → issue key alone; garbage output → keyword fallback, run continues; LLM exception → keyword fallback, run continues |
+| `RefsAssemblyTest` | issue key always first and always present — when the router omits it, returns unrelated keys only, returns malformed junk (`"the story"`, `"ERM"`, `"123"`), returns duplicates in mixed case, or fails entirely; non-Jira-key values dropped; order stable |
+| `TestPlanParserTest` | `# Test Cases` scoping (a `## Notes: x` heading in `# Analysis` must **not** parse as a case); multi-line expected; nested preconditions; validator catches zero cases / zero steps / blank expected |
+| `ContextPrefetchTest` | reads from clone; GitHub fallback; classpath fallback; each of the 5 thin-context triggers |
+| `SkillWorkspaceServiceTest` | tier resolution clone → GitHub → classpath, and the reported `Source` for each; `isReady()` false before sync; **`requireSkill()` throws when all three tiers fail**; missing context file returns empty (soft) while missing SKILL.md throws (hard); stale-clone-used-when-pull-fails |
+| `DevTeamCatalogTest` | all 27 teams parse; name → TestRail id; case-insensitive and `"… Team"`-tolerant lookup; the TestRail spelling resolves where it differs from Jira (`BAMA` → `Bama`); unknown team left untouched rather than guessed; a recognised team with no TestRail id is found but not syncable |
+
+**Unit — worker behaviour**
+
+`TestCaseGenAgentWorkerTest`, driven by `StubChatModel`: fresh run; retry with seeded `test_plan.md` + `hitl_feedback.md`; review pass-first /
+pass-second / fail-all-three; feedback accumulation; token accumulation across all calls;
+`maxReviewIterations=0`; **plus** malformed-output → format-correction retry → success, and
+malformed twice → `AgentExecutionException`.
+
+`TestRailSyncAgentWorkerTest` — metadata mapping and HTML rendering for every TestRail field;
+`refs` absent from the frontmatter → `issue_key`; `refs` present but missing `issue_key`
+(a Gate 1 amendment) → `issue_key` prepended.
+
+**Unit — frontmatter provenance**
+
+| Class | Covers |
+|---|---|
+| `TestCaseGenAgentWorkerTest` | Jira's Dev Team overrides a contradicting value the agent wrote; the resolved team is injected into the prompt so the agent need not guess; with no team on the ticket the agent's reading is used; `devTeam()` reads the renamed `devTeam` key in all its single-select shapes (`title`/`value`/`name`/plain) and returns blank rather than throwing when absent |
+| `TestCaseGenAgentWorkerTest` | `stripPromotedFields` removes the fenced block, removes bare field lines with no fence, and leaves case blocks below `# Test Cases` untouched |
+| `TestRailSyncAgentWorkerTest` | teams the old 10-entry map dropped now resolve (Bienenvolk, Odin, Fenrir, Klemming, Big FC); the TestRail spelling and decorated values resolve |
+
+**Unit — prompt caching**
+
+| Class | Covers |
+|---|---|
+| `TestCaseGenAgentWorkerTest` | skill + examples ride in the **system** message (only that is cached); `chatOptions()` requests `SYSTEM_ONLY` + `FIVE_MINUTES` with `maxTokens` intact; **the system message is byte-identical across review iterations** — the one test that fails if someone later moves a per-attempt value into `system.md` and silently kills caching |
+| `AbstractLlmAgentWorkerTest` | cache write and cache read reach `AgentResult` metrics independently; providers reporting neither produce no cache keys rather than failing; default `chatOptions()` is `null` when `maxTokens()` is unset, so existing overrides are unaffected |
+| `EngineMetricsTest` | `cacheWriteTokens`/`cacheReadTokens` become `factory.llm.tokens{type=cache_write|cache_read}`; absent keys record nothing |
+
+No test can prove caching engages against the real API — `StubChatModel` ignores options
+entirely. These tests pin the *preconditions* (what is in the system message, that it does not
+drift, that the counts are plumbed); Part I §11 step 12 is the empirical check.
+
+**Integration**
+
+A `factory-app` end-to-end mirroring `TestFactoryEndToEndTest`: scripted `StubChatModel`,
+WireMock'd Jira/TestRail, run through Gate 1 approval to TestRail sync. Must assert the
+**round-trip**: the markdown the stub model emits produces the expected `addCaseWithMetadata`
+calls. This is the test that would have caught G1.
+
+Docker must be running (Testcontainers). Full gate: `mvn verify`.
+
+---
+
+## 9. Risks
+
+| Risk | Mitigation |
+|---|---|
+| Model drifts from the exact case-block format → silent zero cases | G1–G3. Validator runs on the worker's own output; the step fails loudly rather than syncing nothing. |
+| Prompt is ~48–64k input tokens; 3 review iterations ≈ 200k total | Measured acceptable (~$0.60–1.20/run). **Prompt caching is implemented** over the stable SKILL.md + examples prefix (P3), which removes most of the repeat cost inside a run. |
+| Router picks a wrong or non-existent area | `AreaDetector.resolve()` drops unresolvable names; total failure falls back to keyword scoring. The generation prompt also tells the agent to flag a mismatched context file in `# Analysis` rather than generate against it — so a bad route is visible at Gate 1 instead of silent. |
+| Router adds a call and a failure mode to every run | ~5k tokens / ~$0.02 / ~2s. Every failure path falls back to the old keyword behaviour — the router can degrade the run but never break it. |
+| `AREA_KEYWORDS` names drift from MQA's 29 context files | Startup WARN drift check. Affects only the keyword fallback path. |
+| Skill clone unavailable | Three-tier chain per asset (Part I §4). `SKILL.md` is a hard dependency and fails the step rather than degrading; everything else proceeds with a note in `# Analysis`. |
+| Bundled classpath copies go stale unnoticed | Source + age printed in `# Analysis` every run; startup WARN on >10% size drift; `scripts/update-cypress-testcase-skill-bundle.sh` run deliberately (Part I §4). |
+| `# Analysis` is a section rather than its own artifact, so amending it at Gate 1 means editing one textarea | Fewer fields, not more. Revisit if reviewers complain. |
+| Two-area stories double the context file budget (up to 26k tokens) | Cap at 2 areas; second only within 60% of top score. |
+
+
+## 10. Open decisions
+
+1. **Area table source of truth** — the Java `AREA_KEYWORDS` map is authoritative, with a
+   warn-only drift check against SKILL.md's table rather than parsing that table at runtime.
+   The map feeds both the router prompt and the keyword fallback, so drift is costly.
+2. **Reviewer scope** — the reviewer currently sees only the cases. Consider giving it
+   `# Analysis` too so it can flag AC coverage gaps, not just formatting. Defer to a follow-up.
+3. **Tool-calling / `claude -p`** — out of scope. The step boundary and artifact contract hold
+   regardless of the worker's internals; see Appendix A.
+
+---
+
+## 11. Verification
+
+1. `mvn install -DskipTests` → `mvn verify` green (Docker/Podman up).
+2. Trigger `UIMARCAUTH-553` and a Finance/Orders cross-area story.
+3. `# Analysis` names the right context file(s) and the router rationale; coverage matrix maps
+   every AC. For the cross-area story, confirm the router returned **both** areas.
+   Force a router failure (bad API key on that call) and confirm the run completes via the
+   keyword fallback with a WARN.
+4. Step counts near the House Style median for the area (Inventory ~5, Orders ~8, Fees/Fines ~2).
+5. No semicolon-joined field lists; toast text quoted verbatim; absolute numeric values.
+6. Frontmatter carries all five sync fields (`issue_key`, `refs`, `team`, `ecs_enabled`,
+   `testrail_section`); `testrail_section` resolves.
+   **`team` must equal the story's Jira Dev Team**, never a value inferred from the subject
+   matter. With `FACTORY_DEBUG_ENABLED=true`, the exact value read off
+   the ticket is in `debugPrompts/<executionId>/2-generate-attempt1.md` as
+   `**Development Team:** <value>`; compare it against the frontmatter and against Jira. There
+   must be **no second `---` block** in the body duplicating these fields.
+   Watch the log for `is not in references/dev-teams.md` or `has no TestRail id` — either means
+   TestRail's Dev Team will be left unset, and both name the team so the table can be corrected.
+7. Gate 1 → Approve → cases land in the correct TestRail section with correct metadata.
+   Open a created case in TestRail and confirm the **References** field contains the originating
+   ticket key (plus any extras the router added).
+8. Gate 1 → Reject and Re-generate with feedback → retry starts at `testcase-gen`, reuses the
+   seeded plan, addresses the feedback.
+9. Zero-credentials run completes end-to-end with `CONNECTOR_SKIPPED` audit entries. The skill
+   repo is public, so this still resolves via clone or unauthenticated API — the bundle is
+   exercised separately in step 10.
+10. Degradation matrix (Part I §4): delete the skill clone and block GitHub →
+    run still completes off the classpath bundle, `# Analysis` flags the source.
+    Then remove the bundled `SKILL.md` too → step **fails** rather than generating.
+    Point `AreaDetector` at an area with no context file → run completes with the
+    "User Story alone" note. Delete the TAF clone → cases generate, automation notes degrade.
+11. **Quality gate:** side-by-side a factory-generated plan against an MQA-generated plan for the
+    same story. This is the only test that matters.
+12. **Prompt caching (empirical — no test can cover it).** In `/audit`, open the
+    `STEP_COMPLETED` event for `testcase-gen` and read the metrics; the same counts are on
+    `factory.llm.tokens{type=cache_write|cache_read}`.
+    - A run whose review loop iterates should show `cacheWriteTokens` on the first generation
+      call and `cacheReadTokens` on the later ones. Read-but-no-write on the first call means
+      an earlier run's prefix was still live.
+    - `cacheWriteTokens` every call with `cacheReadTokens` never — caching is not engaging.
+      Most likely the system prompt is not byte-identical between calls: diff
+      `debugPrompts/<executionId>/2-generate-attempt1.md` against `4-generate-attempt2.md`
+      above the first `## ` user section.
+    - Neither count present at all — the provider is not Anthropic, or the options were
+      dropped; check the log for `"is not supported ... Ignoring."`.
+    - **Reject and Re-generate is the interesting case.** The retry is a new execution, so its
+      first generation call hits only if it lands within five minutes of the previous run's
+      last generation call. The pipeline consumes part of that window at both ends (the final
+      review call before the gate, then the router call and prefetch after it), leaving roughly
+      three to four minutes of actual review time. Consistent misses here are the evidence for
+      switching to `ONE_HOUR`.
+
+
+---
+
+# Part II — Shared reference
+
+Applies to both halves of the flow.
 
 ---
 
@@ -39,6 +990,7 @@ Before building anything, understand what already exists in `stripes-testing`:
 | TestRail MCP server | `scripts_for_work/testrail-mcp-server/index.js` | Exposes `get_test_case` tool with automatic section hierarchy retrieval |
 | `.claude/settings.local.json` | `.claude/settings.local.json` | Pre-approves MCP + ESLint calls without user prompts |
 
+
 ## MQA Skill Assets Inventory
 
 MQA's `write-testrail-cases` skill, used for manual TestRail case authoring, is the second key
@@ -53,12 +1005,11 @@ source for the factory. Located at `folio-eureka-ai-dev\skills\write-testrail-ca
 rely on IDE tooling, MCP servers, interactive feedback). The factory carries their *logic and
 instructions* as content, not the asset files themselves.
 
-**Context files are runtime-loaded, not embedded:**
-The `write-testrail-cases/references/context/*.md` files are fetched from GitHub at execution time
-by `ContextLoaderWorker` (single-file GET via GitHub API — no local clone needed). When MQA updates
-a context file (e.g., adds new business rules to `inventory.md`), the factory picks up the change
-automatically on the next run — no prompt re-sync needed. Only the writing instructions embedded in
-`SKILL.md` itself require manual re-sync if they change significantly.
+**Skill assets are runtime-loaded, not embedded:**
+`SKILL.md`, `references/examples.md` and `references/context/*.md` are read at execution time
+through the three-tier chain in Part I §4 — local clone first, GitHub API second, the jar bundle
+last. When MQA edits a context file or the skill itself, the factory picks the change up on the
+next run with no re-sync. Only the factory delta block (Part I §7) is authored here.
 
 **Ongoing maintenance consequence:** When the TAF's `CLAUDE.md`, `ecs-user-setup/SKILL.md`, or
 the MQA `write-testrail-cases/SKILL.md` writing guidelines are updated, the corresponding
@@ -68,207 +1019,6 @@ maps to which factory prompt section, reviewed whenever a source asset changes.
 
 ---
 
-## How TAF / MQA Assets Map to Factory Workers
-
-```
-TAF / MQA (interactive, IDE)           Factory (automated, Java + LLM API)
-─────────────────────────────────────  ────────────────────────────────────────────
-                                       triage-agent         ← scope + context
-                                       context-loader       ← detect FOLIO area → load context file
-write-testrail-cases/SKILL.md          e2e-spec-agent   ← test case list (no IDs yet; assigned after Gate 1)
-context files (runtime-loaded)         injected via ContextLoaderWorker into e2e-spec-agent user prompt
-                                       HITL Gate 1          ← human review of test cases
-test-implementer.agent.md              cypress-automation-agent ← generate specs (real C###### IDs from test_plan.md)
-test-reviewer.agent.md                 CypressSanityPostProcessor + HITL Gate 2
-                                       testrail-sync        ← push ALL cases → real C###### IDs
-                                                              update test_plan.md with real IDs (after Gate 1)
-                                       cypress-execution    ← run with real IDs in place (or skip)
-                                       cypress-finalizer    ← commit + update
-```
-
-The TestRail MCP server (IDE) and the factory's TestRail Java connector serve the same purpose
-from different contexts. The factory uses the Java connector; the MCP server stays in the IDE.
-
----
-
-## Flow Architecture
-
-```
-[Trigger: Jira story (manual trigger or Jira webhook)]
-     │
-     ▼
-[triage-agent]                                               REUSE from Flow A
-     │  ── Fetch story + linked issues from Jira API
-     │  ── Extract acceptance criteria verbatim → acceptance_criteria[] in scope_manifest
-     │  ── Identify affected FOLIO modules; map to test scope boundaries
-     │  ── Map "Team" / "Squad" / "Dev team" Jira field → devTeam
-     │  ──   Known teams: Firebird, Folijet, Spitfire, Thunderjet, Vega, Volaris,
-     │  ──                Citation, Corsair, Eureka, Promin (stored verbatim)
-     │  ── Detect ECS context from labels/description → ecs_enabled flag
-     ▼
-[scope_manifest.md]
-     │
-     ▼
-[context-loader]                                                  NEW · non-LLM
-     │  ── Keyword-match story summary + components to one of 19 FOLIO areas
-     │  ── Fetch context/{area}.md from FACTORY_CYPRESS_FOLIO_AI_REPO via GitHub API
-     │       (branch: master · always reflects latest MQA edits)
-     │  ── Provides: verbatim UI texts, business rules, capability sets/permissions for the area
-     │  ── On ambiguity: record all matches; reviewer corrects inline at Gate 1
-     │  ── On failure / unknown area: context.md with area: unknown; flow continues with empty context.md
-     │  ── Thin-context check (all 5 triggers): < 10 KBRs, DRAFT marker, missing "## Exact UI Texts",
-     │       < 3 toasts in UI Texts, > 5 known gaps → trigger lightweight enrichment:
-     │       (a) GitHub: package.json permissions + keyword-filtered en_US.json translations
-     │       (b) Jira: linked issue summaries and descriptions
-     │       Prepends context_quality: thin to frontmatter + enrichment note in body
-     │       Degrades gracefully — enrichment skipped silently when connectors unset
-     ▼
-[context.md]
-     │
-     ▼
-[fragment-scanner]                                                NEW · non-LLM
-     │  ── TAF auto-cloned to {user.dir}/cypressTafClone at startup (TafSyncService)
-     │  ── Reads areas from context.md frontmatter; keywords from scope_manifest.md summary
-     │  ── Local path: score by filename (+3/kw) + content (+1/kw); fetch top-2 per area
-     │  ── GitHub API fallback when clone not ready (filename scoring only)
-     │  ── Extracts matching gui permissions from permissions.js per area
-     ▼
-[fragment_library.md]
-     │
-     ▼
-[examples-loader]                                                 NEW · non-LLM
-     │  ── Fetches examples.md from folio-eureka-ai-dev GitHub repo at runtime
-     │       (branch: master, path: skills/write-testrail-cases/references/examples.md)
-     │  ── Falls back to classpath:references/examples.md when GitHub unavailable
-     │  ── 4 golden TestRail cases with style annotations (Check-in, AU filter journey,
-     │       Check-in lifecycle journey, ECS cross-tenant enforcement); anti-pattern section
-     ▼
-[examples.md]
-     │
-     ▼
-[coverage-loader]                                                 NEW · non-LLM
-     │  ── Reads detected area(s) from context.md frontmatter
-     │  ── Calls getSections() → keyword-matches area name against all section full-paths
-     │       (split area by hyphens, require all tokens ≥3 chars to appear in path)
-     │  ── Explicitly excludes FACTORY_CYPRESS_TESTRAIL_SECTION_ID (placement fallback,
-     │       non-thematic — e.g. "test_ai"); named by its actual TestRail name in skip message
-     │  ── Loads cases from matched sections; deduplicates by case ID; max 150 total
-     │  ── Degrades gracefully: empty coverage when TestRail unconfigured, area unknown,
-     │       or no area-specific section found
-     ▼
-[existing_coverage.md]
-     │
-     ▼
-[scenario-analysis]                                                   NEW · LLM
-     │  ── Reads scope_manifest.md + context.md
-     │  ── Fetches available TestRail section paths from TestRail API (depth ≤ 2)
-     │  ── Maps acceptance criteria → scenario candidates
-     │  ── Looks up area House Style (Type, step count, journey/atomic shape)
-     │  ── Produces categorized scenario proposals: happy path, business-rule
-     │       verification, capability boundaries, negative/edge, ECS variants
-     │  ── Each scenario: S-NN | title | Type | Steps: ~N | Journey: Yes/No | Tier
-     │  ── Suggests best-matching TestRail section → testrail_section in frontmatter
-     │       (path string like "Inventory › Search", or best guess when TestRail unconfigured)
-     ▼
-[scenario_list.md]  — frontmatter: testrail_section; body: S-NN scenario proposals
-     │
-     ▼
-🛑 HITL Gate 0: Scenario Coverage Review
-     │  ── QA confirms WHAT will be tested before any case is written
-     │  ── Add missing coverage, remove out-of-scope items
-     │  ── Adjust journey vs atomic shape per scenario
-     │  ── Edit testrail_section in scenario_list.md frontmatter if suggestion is wrong
-     │       (path string with › separators, or numeric ID; delete to use env default)
-     │  ── test-spec generates exactly the confirmed scenarios
-     ▼
-[e2e-spec-agent]                                                      NEW · LLM
-     │  ── Reads scope_manifest.md + context.md + fragment_library.md
-     │        + examples.md + scenario_list.md + existing_coverage.md (area style reference)
-     │  ── System prompt: write-testrail-cases/SKILL.md guidelines (embedded)
-     │       + House Style by Area table + Journey vs Atomic guidance
-     │       + Step Patterns + Entry Point Exhaustion rule
-     │  ── Generates exactly the cases listed in scenario_list.md
-     │  ── automatable: true/false per case (no IDs yet — TestRail assigns them)
-     │  ── Non-automatable: multi-tab flows, external auth, OS-level ops
-     ▼
-[test_plan.md]  — lightweight frontmatter (issue_key, team, ecs_enabled, case_count) + body with one ## TC-X: Title section per case; no TestRail IDs yet
-     │
-     ▼
-🛑 HITL Gate 1: Test Case Review
-     │  ── QA reviews all cases against story acceptance criteria
-     │  ── Override automatable flags; amend steps; reject cases
-     │  ── Correct detected_area in context.md inline if wrong
-     │  ── scenario_list.md is a reviewed artifact — amend testrail_section here
-     │       to override the Gate-0 section before sync (path string or numeric ID)
-     │  ── automatable flags are FINAL after approval
-     │  ── "Reject and Re-generate" button (requires non-empty feedback):
-     │       original execution → REJECTED; new execution created at test-spec;
-     │       all gate-0 artifacts preserved (incl. human-amended scenario_list.md);
-     │       reviewer's comments → hitl_feedback.md; rejected test_plan.md →
-     │       previous_test_plan.md (structural reference for the next generation);
-     │       no retry cap — plain "Reject" remains for unconditional hard stops
-     ▼
-[testrail-sync-agent]                                             NEW · non-LLM
-     │  ── Push ALL cases from test_plan.md to TestRail API — automatable +
-     │       non-automatable alike; collect real C###### IDs for each
-     │  ── Metadata: automation_type=Manual, labels=[AI label], team, ecs_enabled, refs=issueKey
-     │  ── Output updated test_plan.md with real C###### IDs per case
-     ▼
-[test_plan.md]  — same format; TC-X tokens in body headings replaced with real C###### IDs
-     │
-     ▼
-[cypress-automation-agent]                                            NEW · LLM
-     │  ── Reads updated test_plan.md (real C###### IDs) + fragment_library.md
-     │  ── Skip automatable: false cases entirely — no spec generated for them
-     │  ── System prompt: cypressTafClone/CLAUDE.md + each
-     │       cypressTafClone/.github/skills/<skill_name>/SKILL.md (embedded)
-     │  ── Generate .cy.js specs; use existing fragments; stub new ones for gaps
-     │  ── Real IDs throughout: tags ['C627249'], AT_C627249_ vars, file names
-     │  ── New fragment stubs: ⚠️ AI-GENERATED DRAFT banner required
-     │  ── ECS cases (ecs_enabled: true): apply multi-tenant user setup rules
-     ▼
-[test_scripts.md]  — .cy.js specs + fragment stubs, all with real C###### IDs
-     │                 CypressSanityPostProcessor runs automatically after this step
-     ▼
-🛑 HITL Gate 2: Spec Review
-     │  ── AQA reviews .cy.js specs and new fragment stubs
-     │  ── Sanity checks already passed: describe/it structure, tag format,
-     │       no raw cy.get() calls, AI-draft banner on new fragments
-     │  ── If FACTORY_TAF_HAS_ENV_CONFIG=true: Execution Plan shown with resolved
-     │       npx cypress run commands; reviewer may override env params per bucket
-     ▼
-[cypress-execution-agent]                                         NEW · non-LLM
-     │  ── Advisory mode (default): test_results.md mode: ADVISORY — no run
-     │  ── Execution mode: materialise specs + fragments to cypressTafClone/
-     │       rm -rf cypressTafClone/allure-results
-     │       npx cypress run  (regular specs · ecsEnabled=false · allure=true)
-     │       npx cypress run  (ECS specs only if present · ecsEnabled=true)
-     │       allure generate allure-results -o cypressTafClone/allure-report
-     │  ── Env config: cypress-exec.yaml → FACTORY_CYPRESS_*_ENV → Gate 2 override
-     ▼
-[test_results.md]  — pass/fail per case, totals
-     │
-     ▼
-[cypress-finalizer]                                          ADAPTED from Flow A
-     │  ── Commit test_scripts.md bundle to stripes-testing GitHub repo:
-     │       .cy.js specs → cypress/e2e/
-     │       fragment stubs → cypress/support/fragments/
-     │       branch: test-factory/cypress-{issueKey}
-     │  ── Open PR: title "{issueKey}: AI-generated Cypress E2E specs";
-     │       body lists C###### IDs; flags AI-draft fragment files
-     │  ── Post Jira comment: case count, automated count, PR link, run summary (passed/failed/skipped) if execution mode was used
-     ▼
-[sync_report.md]
-     │
-     ▼
-[Flow Output: test_plan.md + test_scripts.md + sync_report.md]
-     │  ── TestRail: all cases created with real C###### IDs
-     │  ── stripes-testing: PR open with .cy.js specs + any new fragment stubs
-     │  ── Jira: story commented with case count, PR link, run summary (passed/failed/skipped; execution mode only)
-     │  ── Allure HTML report at cypressTafClone/allure-report/ (local)(execution mode only)
-```
-
----
 
 ## Who Does What — Plain English
 
@@ -292,8 +1042,10 @@ User prompt    — variable data assembled fresh each run from this execution's 
 The system prompts are plain `.md` files checked into the factory repo:
 
 ```
-factory-flow-cypress/src/main/resources/prompts/e2e-spec-agent/system.md
-factory-flow-cypress/src/main/resources/prompts/cypress-automation-agent/system.md
+factory-flow-cypress/src/main/resources/prompts/cypress-testcase-gen/system.md
+factory-flow-cypress/src/main/resources/prompts/cypress-area-router/system.md
+factory-flow-cypress/src/main/resources/prompts/cypress-testcase-reviewer/system.md
+factory-flow-cypress/src/main/resources/prompts/cypress-automation-agent/system.md   (Part III)
 ```
 
 **A developer writes these files during implementation** by reading the source assets (MQA's
@@ -305,7 +1057,8 @@ Once written, the factory just reads these files off disk on every run — no co
 no dynamic assembly. If a source asset changes significantly, a developer re-syncs the
 corresponding `system.md` by hand.
 
-> **For MQA engineers:** Writing `e2e-spec-agent/system.md` is your job — you know the
+> **For MQA engineers:** The factory delta block in `cypress-testcase-gen/system.md` is your
+> job — you know the
 > `write-testrail-cases` skill best. It is literally copy-paste from SKILL.md plus a few lines
 > specifying output format. No Java required.
 
@@ -315,31 +1068,33 @@ corresponding `system.md` by hand.
 
 ### Who assembles the user prompts — the factory, every run
 
-The user prompt templates (`user.md` files) contain placeholders like `{{scope_manifest}}`,
-`{{context}}`, `{{fragment_library}}`, `{{test_plan}}`. The factory fills these in at runtime
-using the artifacts produced by previous steps in the same execution. A developer writes the
-template once; the factory does the assembly on every run.
+The user prompt templates (`user.md` files) contain placeholders like `{{issue}}`,
+`{{context_files}}`, `{{fragments}}` and `{{coverage}}`. The worker fills these at runtime from
+what it fetched and prefetched. A developer writes the template once; the factory assembles it
+on every run.
 
 ### What is runtime-loaded vs embedded
 
 | What | How it reaches the LLM | Who keeps it current |
 |---|---|---|
 | `system.md` files | Embedded at implementation time | Developer re-syncs when source changes |
-| `context.md` (area context file) | Fetched from GitHub API at runtime by `ContextLoaderWorker` | MQA — updating `inventory.md` etc. takes effect on the next factory run automatically |
-| `fragment_library.md` | Generated at runtime by `FragmentScannerWorker` (area-scoped fragments + permissions) | Current — reflects TAF at last clone/pull |
-| `test_plan.md`, `scope_manifest.md` | Produced by earlier steps in the same execution | N/A — generated fresh each run |
+| `SKILL.md`, `examples.md`, area context files | Read at runtime by `SkillWorkspaceService` / the prefetch services | MQA — an edit takes effect on the next factory run |
+| TAF fragments and permissions | Scored at runtime by `FragmentPrefetch` | Reflects `stripes-testing` at the last clone or pull |
+| `test_plan.md` | Produced by the generation step in the same execution | Generated fresh each run |
 
 ### The three types of components you write
 
 | Type | How to spot it | YAML entry? | Example |
 |---|---|---|---|
-| **Non-LLM worker** | Java class `implements AgentWorker` directly | Yes — `type: AGENT` step in the YAML | `ContextLoaderWorker` |
-| **LLM worker** | Java class `extends AbstractLlmAgentWorker` | Yes — `type: AGENT` step in the YAML | `E2eSpecAgentWorker` |
+| **Non-LLM worker** | Java class `implements AgentWorker` directly | Yes — `type: AGENT` step in the YAML | `TestRailSyncAgentWorker` |
+| **LLM worker** | Java class `extends AbstractLlmAgentWorker` | Yes — `type: AGENT` step in the YAML | `TestCaseGenAgentWorker` |
+| **Plain service** | Java class, no SPI | No — called directly by a worker | `ContextPrefetch`, `DevTeamCatalog` |
 | **Post-processor** | Java class annotated `@Component implements StepPostProcessor` | **No** — auto-runs after every agent step, no YAML entry needed | `CypressSanityPostProcessor` |
 
-**Why "agent" and "worker" both appear:** In the YAML, every pipeline step (LLM or not) has `type: AGENT` — that is just the YAML vocabulary for "a step that runs a worker." In Java, the interface is `AgentWorker`. So "worker" and "agent" refer to the same thing from different angles. The `-Agent` or `-Worker` suffix in a class name is just a naming convention and does not tell you whether it calls an LLM — only the supertype does. `TestRailSyncAgentWorker` has "Agent" in its name but is non-LLM; `E2eSpecAgentWorker` has "Agent" and IS LLM. Always check the supertype.
+**Why "agent" and "worker" both appear:** In the YAML, every pipeline step (LLM or not) has `type: AGENT` — that is just the YAML vocabulary for "a step that runs a worker." In Java, the interface is `AgentWorker`. So "worker" and "agent" refer to the same thing from different angles. The `-Agent` or `-Worker` suffix in a class name is just a naming convention and does not tell you whether it calls an LLM — only the supertype does. `TestRailSyncAgentWorker` has "Agent" in its name but is non-LLM; `TestCaseGenAgentWorker` has "Agent" and is LLM. Always check the supertype.
 
 ---
+
 
 ## What You Build
 
@@ -352,239 +1107,108 @@ factory-flow-cypress/
   pom.xml
   src/main/java/org/folio/factory/cypressfactory/
     CypressFlowConfiguration.java
+    CypressFlowProperties.java
+    plan/
+      TestPlanParser.java                   (parses + validates the "# Test Cases" slice)
+      DevTeamCatalog.java                   (team name -> TestRail option id)
+    prefetch/
+      AreaDetector.java                     (validates router areas; keyword fallback)
+      ContextPrefetch.java                  (area context file + thin-context enrichment)
+      FragmentPrefetch.java                 (TAF fragment scoring + permissions)
+      CoveragePrefetch.java                 (existing TestRail cases for the area)
+      ExamplesPrefetch.java                 (golden examples)
     worker/
-      ContextLoaderWorker.java              (non-LLM; thin-context detection built in)
-      FragmentScannerWorker.java            (non-LLM)
-      CypressExamplesLoaderWorker.java      (non-LLM; loads classpath:references/examples.md)
-      ScenarioAnalysisAgentWorker.java      (LLM; produces scenario_list.md for Gate 0)
-      E2eSpecAgentWorker.java               (LLM: generates test cases from confirmed scenarios)
-      CypressAutomationAgentWorker.java     (LLM)
-      TestRailSyncAgentWorker.java          (non-LLM: push cases after Gate 1 → write real IDs)
-      CypressExecutionWorker.java           (process runner, no LLM)
-      CypressFinalizerWorker.java           (adapted from Flow A)
+      SkillWorkspaceService.java            (skill clone + three-tier asset reads)
+      TafSyncService.java                   (stripes-testing clone)
+      PromptDump.java                        (rendered-prompt capture, debug only)
+      TestCaseGenAgentWorker.java           (LLM: router call, generation, review loop)
+      TestRailSyncAgentWorker.java          (non-LLM: push cases, write real ids back)
+      CypressAutomationAgentWorker.java     (LLM)                          [Part III]
+      CypressExecutionWorker.java           (process runner, no LLM)       [Part III]
+      CypressFinalizerWorker.java                                          [Part III]
   src/main/resources/
     flows/cypress-factory.yaml
-    cypress-exec.yaml                       (execution env config — regular + ECS params)
+    cypress-exec.yaml                       (execution env config)         [Part III]
     references/
-      examples.md                           (3 golden TestRail cases + anti-patterns)
-    prompts/cypress-e2e-spec-agent/
+      SKILL.md                              (bundled last-tier copy)
+      examples.md                           (bundled last-tier copy)
+      dev-teams.md                          (27 FOLIO teams, Jira <-> TestRail)
+    prompts/cypress-area-router/
       system.md
       user.md
-    prompts/cypress-scenario-analysis/
+    prompts/cypress-testcase-gen/
       system.md
       user.md
-    prompts/cypress-automation-agent/
+    prompts/cypress-testcase-reviewer/
+      system.md
+      user.md
+    prompts/cypress-automation-agent/       [Part III]
       system.md
       user.md
 ```
 
 ---
 
-### 2. `ContextLoaderWorker` — non-LLM worker (yaml id: `context-loader`)
 
-Runs after triage, before fragment-scanner. Non-LLM.
+## What the flow reuses
 
-Reads `scope_manifest.md` and applies the keyword-matching table from `write-testrail-cases/SKILL.md`
-(Area Detection Table) against the story summary and component fields. Produces `context.md` —
-a verbatim pass-through of the matched area context file, with a small frontmatter header added.
+| Component | Source | Role here |
+|---|---|---|
+| HITL gate mechanism, `ArtifactStore`, `ExecutionEngine`, poller | `factory-core` | Unmodified control plane. |
+| HITL web console and review UI | `factory-app` | Gate 1 is a standard review page; `reference_prompts` and the block-scalar instructions are descriptor data, not cypress-specific UI. |
+| `HitlRetryService` | `factory-app` | Reject-and-re-generate. Flow-agnostic: the carry-over set comes from the restart step's declared inputs. |
+| `optional_inputs` | `factory-core` (`StepDescriptor`) | Lets the generation step read `test_plan.md` and `hitl_feedback.md` when a retry seeded them, and ignore them on a fresh run. |
+| `AbstractLlmAgentWorker`, `FrontmatterCodec`, `PromptLoader` | `factory-agents` | Prompt loading, frontmatter render/parse, token and cache metrics. |
+| TestRail connector | `factory-connectors` | Case creation, label resolution, section-path resolution, existing-coverage reads. |
+| Jira connector | `factory-connectors` | Issue and linked-issue fetch, including the `devTeam` custom field. |
+| GitHub connector | `factory-connectors` | Second-tier asset fetch (`getFileContent`, `listDirectory`) and context enrichment. |
+| `write-testrail-cases/SKILL.md` | MQA skill repo | Loaded at runtime as the generation system prompt. Never forked. |
+| `references/examples.md` | MQA skill repo | Loaded at runtime as the few-shot style anchor. |
+| Area context files (29 × `references/context/*.md`) | MQA skill repo | Loaded at runtime for the detected area. |
+| TAF fragments and `permissions.js` | `stripes-testing` | Scored and excerpted for automation notes and the `Automatable` flag. |
 
-**Area detection logic:**
-- Applies keyword matching (case-insensitive) against `scope_manifest.summary` and any `components`/`labels` fields
-- Uses the 19-area keyword table defined in the skill
-- If multiple areas match: use highest-confidence match (most keywords); list all matched area names in `context.md` frontmatter for Gate 1 reviewer visibility
-- If no area matches: produce `context.md` with `area: unknown` and an empty body; log a warning;
-  e2e-spec-agent proceeds without area context (still valid, less accurate — LLM falls back to
-  its general FOLIO testing knowledge). No fallback/generic context file exists by design.
+Part III additionally reuses `ScriptBundleCodec` (`factory-agents`) and TAF's `CLAUDE.md` and
+`ecs-user-setup/SKILL.md` as system-prompt sources.
 
-**`context.md` frontmatter (happy path):**
-```markdown
----
-areas:
-  - inventory
----
-[verbatim content of inventory.md]
-```
+## Environment Variables
 
-**`context.md` when thin context triggers enrichment:**
-```markdown
----
-areas:
-  - inventory
-context_quality: thin
----
-[context file content + ## Live Enrichment section]
-```
-
-**`context.md` when area is unknown (no keyword match):**
-```markdown
----
-areas:
-  - generic
----
-# Cypress Context: generic
-
-_No area-specific context available. Refer to the scope manifest for guidance._
-```
-The e2e-spec-agent prompt reads `context.md` — an empty/generic body is valid input. The Gate 1
-reviewer should notice `areas: [generic]` in the frontmatter and paste the correct context file
-content into the body before approving, or accept lower-quality test cases.
-
-`context.md` is included in the Gate 1 review artifacts so the QA reviewer can see which area
-was detected. If the detection is wrong, the reviewer edits the `context.md` body directly in
-the HITL editor before approving — replacing the wrong area's content with the correct one.
-v1 does not re-run detection after Gate 1; any correction is made inline.
-
-**Thin-context enrichment** (triggers on any of 5 conditions: < 10 KBRs, DRAFT marker, missing
-`## Exact UI Texts` section, < 3 toasts listed, > 5 known gaps): the worker attempts lightweight
-enrichment before finalising `context.md`:
-1. GitHub: fetches `package.json` for the matched area's module (permissions) and keyword-filtered
-   entries from `en_US.json` (translation strings). 150KB file-size guard; max 15 keywords, 50 translation entries.
-2. Jira: fetches linked issues and appends their summaries/descriptions.
-All enrichment degrades gracefully when connectors are unconfigured. Appends an enrichment note to
-the body and sets `context_quality: thin` in frontmatter when triggered.
-
-**Configuration required:**
-```yaml
-factory.cypress.folio-ai-repo: ${FACTORY_CYPRESS_FOLIO_AI_REPO:}  # e.g. folio-org/folio-eureka-ai-dev
-```
-
-The worker fetches the context file via the GitHub API (single file GET — no full clone):
-`GET /repos/{repo}/contents/skills/write-testrail-cases/references/context/{area}.md?ref=main`
-
-Uses the existing `GitHubConnector` (same credentials as the finalizer). If the repo is not
-configured or the fetch fails, the worker produces `context.md` with `area: unknown` and
-continues — no hard failure.
-
-> **Connector gap:** `GitHubConnector` currently only has write-side methods (`createBranch`,
-> `commitFiles`, `createPullRequest`). A `getFileContent(String repo, String branch, String path)`
-> method must be added to the interface and its implementation (`DefaultGitHubConnector`) before
-> `ContextLoaderWorker` can function. This is analogous to the `getSection(sectionId)` addition
-> needed in `TestRailConnector`.
+| Variable | Purpose |
+|---|---|
+| TAF path | Auto-managed: `TafSyncService` clones to `{user.dir}/cypressTafClone` on startup — no env var needed |
+| `FACTORY_CYPRESS_FOLIO_AI_REPO` | GitHub repo (`owner/name`) containing the FOLIO AI skills. Cloned to `skillsClone/` at startup by `SkillWorkspaceService`; the GitHub API and the jar-bundled copies are the second and third fallbacks. Supplies SKILL.md, `examples.md` and the area context files. |
+| `FACTORY_CYPRESS_TARGET_REPO` | GitHub repo (`owner/name`) where generated Cypress specs are committed (e.g. `folio-org/stripes-testing`) |
+| `FACTORY_CYPRESS_BASE_BRANCH` | Base branch in `TARGET_REPO` (default: `master`) |
+| `FACTORY_CYPRESS_TESTRAIL_SECTION_ID` | Fallback TestRail section ID (long integer); used when `testrail_section` is absent from `test_plan.md` frontmatter, or present but unresolvable against TestRail |
+| `FACTORY_CYPRESS_TESTRAIL_CASE_TYPE_ID` | TestRail case type ID (e.g. `1`=Functional on foliotest); code default `1`=Functional — override to change |
+| `FACTORY_CYPRESS_TESTRAIL_PRIORITY_ID` | TestRail priority ID (default: `3`=Medium) |
+| `FACTORY_CYPRESS_TESTRAIL_LABEL` | Label title applied to every created case (default: `cypressFlow-delete`); resolved to a label ID at runtime via `getOrCreateLabel` |
+| `FACTORY_CYPRESS_MAX_REVIEW_ITERATIONS` | Max agent review iterations inside `TestCaseGenAgentWorker` per run (default `3`). Set to `0` to skip automated review entirely. |
+| `FACTORY_CONNECTORS_TESTRAIL_BASE_URL` | TestRail instance base URL |
+| `FACTORY_CONNECTORS_TESTRAIL_USERNAME` | TestRail username (email) |
+| `FACTORY_CONNECTORS_TESTRAIL_API_KEY` | TestRail API key |
+| `FACTORY_CONNECTORS_TESTRAIL_PROJECT_ID` | TestRail project ID (integer) |
+| `FACTORY_CONNECTORS_TESTRAIL_SUITE_ID` | TestRail suite ID (integer; required on multi-suite projects) |
+| `FACTORY_CONNECTORS_GITHUB_TOKEN` | GitHub personal access token (read for context/examples fetch; write for finalizer PR) |
+| `FACTORY_CONNECTORS_GITHUB_BASE_URL` | GitHub API base URL (default: `https://api.github.com`; override for GHE) |
+| `FACTORY_DEBUG_ENABLED` | Dumps every rendered prompt to `debugPrompts/<executionId>/` and exposes `POST /api/debug/partial-run`. Local use only. |
+| `FACTORY_TAF_HAS_ENV_CONFIG` | Set `true` to enable execution mode in `CypressExecutionWorker` (Phase 3+) |
+| `FACTORY_CYPRESS_EXEC_CONFIG` | Path to `cypress-exec.yaml`; defaults to bundled `src/main/resources/cypress-exec.yaml` |
+| `FACTORY_CYPRESS_REGULAR_ENV` | Deploy-time override for regular-test env params (`key=val,key=val`); merged on top of `cypress-exec.yaml` regular block |
+| `FACTORY_CYPRESS_ECS_ENV` | Deploy-time override for ECS-test env params (`key=val,key=val`); merged on top of `cypress-exec.yaml` ecs block |
 
 ---
 
-### 3. `FragmentScannerWorker` — non-LLM worker (yaml id: `fragment-scanner`)
-
-Runs after context-loader. Produces `fragment_library.md` — area-scoped fragment excerpts and
-matching permissions from the stripes-testing TAF.
-
-**TAF is auto-cloned at startup by `TafSyncService`** to `{user.dir}/cypressTafClone` (shallow
-clone of `folio-org/stripes-testing`, branch `master`). No configuration required. When the clone
-is not yet ready, the worker falls back to the GitHub contents API automatically.
-Both `git clone` and `git pull` use `-c core.longpaths=true` to avoid Windows MAX_PATH failures.
-
-**Inputs:** `context.md` (areas from frontmatter) + `scope_manifest.md` (summary for keywords).
-
-**Two-path execution:**
-
-*Local path (TAF clone ready):*
-- Resolves each area to its fragment directory (e.g. `check-in` → `checkin`, `fees-fines` → `users`,
-  `data-import` → `data_import`) via an explicit map; unmapped areas use the area name directly
-- Scores `.js` files: filename keyword match = +3/kw, content keyword match = +1/kw
-- Fetches top-2 scoring files in full; lists remaining filenames
-- Extracts matching `gui` permission strings from `permissions.js` using area-specific prefix list
-
-*GitHub API fallback (clone not ready):*
-- Uses `GitHubConnector.listDirectory()` to list files; filename scoring only
-- Permissions section omitted (file too large to fetch via API)
-
-**`fragment_library.md` output (per area):**
-- Full source of top-2 scored fragment files under a `### path` heading
-- Bullet list of other fragment filenames in the area
-- `### Permissions` section: exact `gui` strings for use in test case preconditions
-
-This artifact feeds both `e2e-spec-agent` (permission names in preconditions) and
-`cypress-automation-agent` (fragment imports and method names).
-
-> **Fragment directory naming:** TAF uses mixed conventions — `bulk-edit` (hyphenated),
-> `checkin` (no separator), `data_import` (underscore), `marcAuthority` (camelCase).
-> The explicit `AREA_TO_DIR` map in `FragmentScannerWorker` handles all known mismatches.
 
 ---
 
-### 4. `E2eSpecAgentWorker` — LLM worker (yaml id: `e2e-spec-agent`)
+# Part III — Cypress automation (not built)
 
-**Do not write this from scratch.** The content already exists in the MQA skill.
-
-**Build the system prompt from `write-testrail-cases/SKILL.md` in order:**
-
-1. **Core principle and writing guidelines** — embed verbatim:
-   - Core Principle ("A test case exists to verify a business rule, not a click path")
-   - Test Case Structure (title format, preconditions, steps)
-   - Scenario Coverage Checklist
-   - Self-Review Gate (the 10-point checklist)
-   - Step Patterns (the copy-paste patterns section)
-
-2. **Scenario Analysis format** — embed the Scenario Analysis Format section verbatim.
-   The factory's Gate 1 is the equivalent of the skill's "wait for confirmation" step — the LLM
-   should produce the scenario analysis as part of `test_plan.md`, not as a separate turn.
-
-3. **Metadata field definitions** — embed the Metadata Fields Reference table. In particular:
-   - `custom_automation_type`: always `2` (Manual) — the Cypress spec is the automation artifact;
-     the TestRail case itself is always a manual test case record
-   - `labels`: always `[67]` (the AI label on foliotest.testrail.io)
-   - `custom_ecs_enabled`: derived from `scope_manifest.md` ECS flag
-   - `custom_dev_team`: derived from Jira team field via the mapping table
-   - `custom_test_group`: derived per case (Smoke=1, Critical Path=2, Extended=3)
-
-4. **Area detection note** — the context file is already loaded into the user prompt by
-   `ContextLoaderWorker`; the system prompt tells the LLM to treat it as authoritative for
-   exact UI texts, capability set names, and business rule numbering.
-
-5. **`examples.md`** — resolved by `CypressExamplesLoaderWorker`. Fetches from
-   `folio-eureka-ai-dev` GitHub repo at runtime (branch `master`); falls back to
-   `classpath:references/examples.md`. Injected into the user prompt via `{{examples}}`.
-
-**What the prompt must add beyond SKILL.md:**
-
-- Output format: YAML-frontmattered `test_plan.md` with one block per test case
-- Per-case `automatable` flag (`true/false`) — the LLM sets an initial value based on obvious
-  constraints (multiple browser tabs, external auth flows, MFA, OS interactions → false). This
-  flag is **not final** — the Gate 1 reviewer can and should override it. After Gate 1 approval
-  the flag is treated as final by all downstream steps: automatable cases get a Cypress spec;
-  non-automatable cases go to TestRail only (manual execution forever).
-- No ID assignment at this stage — TestRail assigns real `C######` IDs after Gate 1 approval.
-  Cases in `test_plan.md` have titles and automatable flags; IDs are added by `testrail-sync-agent`.
-- The scenario analysis block goes at the top of `test_plan.md` so Gate 1 reviewers see the
-  coverage rationale alongside the cases themselves.
-
-The `worker_id` `e2e-spec-agent` in `cypress-factory.yaml` is the only coupling point for
-this step. If MQA significantly restructures the skill or a different markdown skill replaces it,
-only the system prompt needs updating — the YAML descriptor and all downstream workers stay unchanged.
-
-**User prompt template** receives:
-- `scope_manifest.md` (from triage)
-- `context.md` (from ContextLoaderWorker — verbatim area context file)
-- The Jira story body (already in scope_manifest or passed directly)
-
-**The worker class — `E2eSpecAgentWorker`:**
-
-Extends `AbstractLlmAgentWorker`. Reads inputs, runs a **generate → review loop** (up to `FACTORY_CYPRESS_MAX_REVIEW_ITERATIONS` attempts, default 3), and outputs two artifacts:
-
-- `test_plan.md` — the final test plan (YAML frontmatter + markdown body, real `C######` IDs after `testrail-sync`)
-- `testcase_review.md` — automated quality review result (frontmatter: `review_passed`, `iterations`; body: PASS/FAIL summary and any remaining issues)
-
-The review loop calls a second LLM prompt (`cypress-testcase-reviewer`) after each generation. On `FAIL`, the issues block is accumulated into `review_feedback` and the previous rendered plan is passed as `previous_attempt` — the generator edits rather than regenerating from scratch. After `maxReviewIterations` attempts the best effort is forwarded to gate-1 regardless of review result, so the human sees both artifacts and can amend `test_plan.md` directly.
-
-Set `FACTORY_CYPRESS_MAX_REVIEW_ITERATIONS=0` to skip automated review entirely (both reviewer calls and `testcase_review.md` still written, noting review disabled).
-
-SLF4J logging at each loop iteration gives console visibility during what can be a multi-minute loop.
-
-**User-triggered retry (HITL Reject and Re-generate):** When a QA reviewer clicks "Reject and Re-generate" at gate-1, `HitlRetryService` (factory-app) rejects the original execution and creates a new one starting at `test-spec`, pre-seeding two additional optional artifacts from the original:
-
-- `hitl_feedback.md` — the reviewer's rejection comments verbatim
-- `previous_test_plan.md` — a copy of the rejected `test_plan.md` (structural reference)
-
-Both are declared as `optional_inputs` in `cypress-factory.yaml` on the `test-spec` step — a generic engine feature (`StepDescriptor.optionalInputs`): the engine loads the artifact if present, silently skips if absent (no "artifact does not exist" error on normal non-retry runs). The worker reads them via `context.inputs().get("hitl_feedback.md")` / `.get("previous_test_plan.md")` — `null` on a fresh run, non-null on retry. When present, they are rendered into the user prompt as:
-
-- `{{hitl_feedback_block}}` — reviewer feedback with a "PRIORITY — address before anything else" label
-- `{{previous_test_plan_block}}` — rejected cases under a "structural reference only" header
-
-These two blocks sit above the agent loop's own `{{review_feedback}}` / `{{previous_attempt}}` vars. They are constant across all internal agent retry attempts (artifacts, not loop vars). The generator therefore sees up to four inputs simultaneously: human feedback, rejected cases, AI reviewer feedback from the current loop, and the previous AI attempt. Human feedback always wins.
+Design only — none of the following is implemented. The input is `test_plan.md` carrying real
+TestRail C###### ids, which is what Part I produces.
 
 ---
 
-### 5. `CypressAutomationAgentWorker` — LLM worker (yaml id: `cypress-automation-agent`)
+## 1. `CypressAutomationAgentWorker` — LLM worker (yaml id: `cypress-automation-agent`)
 
 **Do not write this from scratch.** The content already exists in the TAF.
 
@@ -601,7 +1225,7 @@ These two blocks sit above the agent loop's own `{{review_feedback}}` / `{{previ
 2. **ECS rules from `.github/skills/ecs-user-setup/SKILL.md`** — embed the decision tree and
    code patterns. The factory LLM cannot invoke IDE skills; the guidance must be in the prompt.
 
-3. **Fragment library injection** — the `fragment_library.md` artifact from `FragmentScannerWorker`
+3. **Fragment library injection** — the fragment excerpt produced by `FragmentPrefetch`
    is included in the user-facing prompt template (not the system prompt, since it changes per run).
 
 4. **Few-shot examples** — 3-5 real `.cy.js` specs from the TAF (one per complexity level: simple
@@ -616,7 +1240,7 @@ LLM to ignore non-automatable cases entirely rather than generating a stub or pl
 
 - Output format: `ScriptBundle` (same frontmatter format as Flow A)
 - File path derivation: place the spec under `cypress/e2e/` using the test case context from
-  `test_plan.md` (title, scope, feature area) and `scope_manifest.md` as the folder structure
+  `test_plan.md` (title, scope, feature area) and its frontmatter as the folder structure
   guide — same way CLAUDE.md instructs the IDE agents. By this stage, `test_plan.md` already
   carries real `C######` IDs (assigned by `testrail-sync-agent`). The LLM derives folder structure
   from content and context, not from TestRail section hierarchy. The mapping is not 1:1; do not
@@ -638,8 +1262,8 @@ LLM to ignore non-automatable cases entirely rather than generating a stub or pl
   // and interactions against the actual UI before relying on this in tests.
   ```
 - Team tag: read from `test_plan.md` as a string (e.g. `spitfire`). The team name is sourced
-  from the Jira story's team field during triage and stored in `scope_manifest.md`; the
-  e2e-spec-agent copies it into `test_plan.md`. If the value is `unknown`, use
+  from the Jira story's Dev Team field and written into the `test_plan.md` frontmatter by the
+  generation worker. If the value is `unknown`, use
   `'N/A - please fill'` as the tag and add this banner at the top of the spec:
   ```javascript
   // ⚠️  TEAM TAG UNRESOLVED — Jira team value did not match any known team in the mapping table.
@@ -648,67 +1272,8 @@ LLM to ignore non-automatable cases entirely rather than generating a stub or pl
 
 ---
 
-### 6. `TestRailSyncAgentWorker` — non-LLM worker (yaml id: `cypress-testrail-sync`)
 
-> **Execution order note:** In the YAML this step runs between Gate 1 and `cypress-automation-agent`
-> (section 5). Sections here are numbered by implementation complexity, not pipeline order.
-
-Non-LLM. Runs **after Gate 1 approval**, before spec generation. Uses the existing Java
-`TestRailConnector` (not the MCP server — that is IDE-only).
-
-Reads `test_plan.md` (Gate-1-approved cases). Pushes **all cases** to TestRail — automatable and
-non-automatable alike — and collects real `C######` IDs for each. Outputs an updated `test_plan.md`
-with the real IDs written back into each case entry. The downstream `cypress-automation-agent` reads
-this updated `test_plan.md` and uses the real IDs directly when generating specs — no find-replace
-step needed anywhere in the pipeline.
-
-**Reference:** The custom MCP server (`testrail-mcp-server/index.js`) is a useful data contract
-reference for which TestRail fields to set and retrieve. The factory uses the Java connector.
-
-#### Data the worker sets on case creation
-
-| TestRail field | Value source | Notes |
-|---|---|---|
-| `section_id` | `testrail_section` from `scenario_list.md` frontmatter (Gate-0 confirmed); `scope_manifest.md` override takes priority if present; falls back to `FACTORY_CYPRESS_TESTRAIL_SECTION_ID` | Accepts path string (resolved via API) or numeric ID |
-| `custom_test_group` | `testGroup` from `test_plan.md` per case | 1=smoke, 2=criticalPath, 3=extendedPath |
-| `custom_dev_team` | `team` field from `scope_manifest.md` → mapped: Firebird=3, Folijet=4, Spitfire=6, Thunderjet=8, Vega=9, Volaris=13, Citation=18, Corsair=19, Eureka=21, Promin=27 | omitted if team absent or unknown |
-| `custom_ecs_enabled` | ECS flag from `scope_manifest.md` | |
-| `custom_automation_type` | `2` (Manual) for all cases | The Cypress spec is the automation artifact; the TestRail case is always a manual test case record |
-| `labels` | `[id of testrailLabel]` | Label resolved at runtime via `getOrCreateLabel(testrailLabel)`; label title configured by `FACTORY_CYPRESS_TESTRAIL_LABEL` (default: `cypress-flow-delete-case`) |
-| `refs` | `issue_key` from `scope_manifest.md` | Jira issue key (e.g. `UIIN-2156`) linked on every created case; omitted when blank |
-
-#### Precondition format
-
-Preconditions are stored as a flat string list. Capability sets and permission lists are encoded as `\n-` sub-bullets within one precondition element (e.g., `"User has capability sets\n- CapabilitySet A\n- CapabilitySet B"`). `renderBody()` in `E2eSpecAgentWorker` emits them as indented `  - ` markdown lines; `parseCasesFromBody()` re-groups them back onto the parent precondition element. `toHtmlListItem()` renders `\n` as `<br>` in the TestRail HTML `<li>`.
-
-#### Real ID writeback
-
-The worker maintains a `TC-X → C######` mapping built during case creation. After all cases
-are pushed it does a string replacement in the `test_plan.md` body — each heading changes from
-`## TC-1: Create order` to `## C627249: Create order`. The frontmatter is passed through
-unchanged (it carries only lightweight metadata: `issue_key`, `team`, `ecs_enabled`,
-`case_count`). The updated `test_plan.md` is the sole output; no spec bundle is read or modified here.
-
-The body is the single source of truth for case data. Downstream workers parse cases from body
-headings using the same `## ID: Title` pattern — after this step, `tc.id()` returns `C627249`.
-
-**Partial failure caveat:** if `addCaseWithMetadata` throws for one case, that `TC-X` token
-stays unreplaced in the body. The downstream `cypress-automation-agent` would then receive
-`TC-X` as a case ID instead of a real TestRail ID, silently breaking the spec-to-TestRail link
-for that case. See Phase 2 Risks below.
-
-#### Section hierarchy for `describeBlocks`
-
-After creating each case, fetch the assigned section hierarchy the same way the MCP server does:
-walk `parent_id` up to `depth == 0` via `GET /api/v2/get_section/{id}`. Store as
-`describeBlocks` in the mapping for use in the finalizer PR description (informational only —
-the specs already have correct `describe()` nesting from the generation step).
-
-The Java connector will need a `getSection(sectionId)` method added.
-
----
-
-### 7. `CypressSanityPostProcessor` — post-processor (no YAML entry — auto-runs after every step)
+## 2. `CypressSanityPostProcessor` — post-processor (no YAML entry — auto-runs after every step)
 
 Registered globally — runs after **every** agent step, not just `cypress-automation-agent`.
 The guard `if (outputs.get("test_scripts.md") == null) return;` at the top of `process()` means
@@ -730,7 +1295,8 @@ Warnings — log but don't fail:
 
 ---
 
-### 8. `CypressExecutionWorker` — non-LLM worker (yaml id: `cypress-execution-agent`)
+
+## 3. `CypressExecutionWorker` — non-LLM worker (yaml id: `cypress-execution-agent`)
 
 **Advisory mode** (default when `FACTORY_TAF_HAS_ENV_CONFIG` is not `true`): produces `test_results.md` with `mode: ADVISORY`, all cases `NOT_EXECUTED`.
 
@@ -740,13 +1306,13 @@ buckets). Writes specs and any new fragment stubs to their final paths in the TA
 (`cypress/e2e/` for specs, `cypress/support/fragments/` for fragments), then runs Cypress.
 Both artifacts must be declared in the step's `inputs:` in the YAML.
 
-#### Why `environments.js` is not used
+### Why `environments.js` is not used
 
 `environments.js` is gitignored — the factory cannot rely on it being present or correctly
 configured on the execution host. Instead, the worker passes all env params explicitly via
 command-line flags, bypassing the TAF's local-dev mechanism entirely.
 
-#### Split runs: regular vs ECS
+### Split runs: regular vs ECS
 
 Regular and ECS tests require different environments and env params and cannot run together.
 The worker splits the bundle into two buckets using the `ecs_enabled` flag per case in
@@ -783,7 +1349,7 @@ the end. Skip a bucket entirely if it has no specs.
 **Prerequisite:** Allure CLI must be available on the execution host (`allure` on PATH). Install
 via `npm install -g allure-commandline` or system package manager.
 
-#### Allure report output and serving
+### Allure report output and serving
 
 The worker generates the HTML report to:
 ```
@@ -806,7 +1372,7 @@ allure_report_path: /absolute/path/to/stripes-testing/allure-report
    and lets the factory UI render a "View Allure Report" link on the execution page.
    See Effort Estimate — this is listed as an optional add-on.
 
-#### `cypress-exec.yaml` — the execution config file
+### `cypress-exec.yaml` — the execution config file
 
 Lives at `factory-flow-cypress/src/main/resources/cypress-exec.yaml`. Checked in, team-specific.
 Each factory deployment owns this file and sets it to match their FOLIO environments:
@@ -834,7 +1400,7 @@ ecs:
     ecsEnabled: true
 ```
 
-#### Three-tier precedence (highest wins)
+### Three-tier precedence (highest wins)
 
 ```
 1. Gate 2 per-run override   — reviewer types key=val,key=val into the review form
@@ -845,7 +1411,7 @@ ecs:
 Tier 2 env vars let CI/CD inject real credentials without modifying the committed file.
 Tier 1 handles one-off edge cases without touching config or restarting the server.
 
-#### Gate 2 execution section
+### Gate 2 execution section
 
 When `FACTORY_TAF_HAS_ENV_CONFIG=true`, Gate 2 renders an **Execution Plan** section beneath
 the spec review (invisible in advisory mode). It shows the resolved commands — with all params
@@ -876,7 +1442,8 @@ Parse `cypress/results/*.xml` (JUnit output). Timeout: 30 minutes minimum per ru
 
 ---
 
-### 9. `CypressFinalizerWorker` — non-LLM worker (yaml id: `cypress-finalizer`)
+
+## 4. `CypressFinalizerWorker` — non-LLM worker (yaml id: `cypress-finalizer`)
 
 Adapted from `TestFactoryFinalizerWorker`. Case creation is already done by
 `TestRailSyncAgentWorker`, so this worker handles the remaining GitHub and reporting work:
@@ -892,151 +1459,8 @@ Adapted from `TestFactoryFinalizerWorker`. Case creation is already done by
 
 ---
 
-## Reuse Summary
 
-| Component | Source | Action |
-|---|---|---|
-| `triage-agent` worker + prompts | Flow A | Reuse unchanged |
-| `E2eSpecAgentWorker` / `e2e-spec-agent` | Flow A `TestSpecAgentWorker` (copy as template) | **New class, new worker ID** — copy Java structure; system prompt built from write-testrail-cases content; Flow A's `test-spec-agent` is untouched |
-| HITL gate mechanism | Core engine | Reuse unchanged |
-| HITL web console + review UI | `factory-app` | Reuse unchanged |
-| TestRail Java connector | `factory-connectors` | Reuse; add `getSection(sectionId)` method for hierarchy lookup |
-| GitHub connector | `factory-connectors` | Reuse; added `getFileContent(repo, branch, path)` (context file loading) and `listDirectory(repo, branch, path)` (fragment fallback) |
-| `ArtifactStore`, `ExecutionEngine`, poller | `factory-core` | Reuse unchanged |
-| `FrontmatterCodec`, `ScriptBundleCodec` | `factory-agents` | Reuse unchanged; `CypressSanityPostProcessor` checks `.cy.js` extension (the codec itself supports any file type) |
-| `write-testrail-cases/SKILL.md` writing guidelines | MQA skill | Embed in `e2e-spec-agent` system prompt (source of truth for case authoring) |
-| Area context files (19 × `references/context/*.md`) | MQA skill | Loaded at runtime by `ContextLoaderWorker` — auto-sync, no re-embed needed |
-| `CLAUDE.md` content | TAF | Embed in `cypress-automation-agent` system prompt |
-| `ecs-user-setup/SKILL.md` content | TAF `.github/skills/` | Embed in `cypress-automation-agent` system prompt |
-| Agent logic from `.github/agents/*.md` | TAF | Inform worker design; not imported directly |
-| TestRail MCP server | TAF (IDE tool) | Not used by factory; stays in IDE |
-| `HitlRetryService` | factory-app (new, `hitl/`) | Reject-and-re-generate: rejects original execution, creates retry execution starting at test-spec, seeds carry-over + `hitl_feedback.md` + `previous_test_plan.md`; records `HITL_RETRY` audit event |
-| `optional_inputs` engine feature | factory-core (`StepDescriptor`) | Engine loads listed artifacts if present, skips silently if absent; used by test-spec step for retry-only artifacts |
-
----
-
-## Environment Variables
-
-| Variable | Purpose |
-|---|---|
-| TAF path | Auto-managed: `TafSyncService` clones to `{user.dir}/cypressTafClone` on startup — no env var needed |
-| `FACTORY_CYPRESS_FOLIO_AI_REPO` | GitHub repo (`owner/name`) containing the FOLIO AI skills (e.g. `folio-org/folio-eureka-ai-dev`); used by `ContextLoaderWorker` to fetch area context files and by `CypressExamplesLoaderWorker` to fetch `examples.md` at runtime |
-| `FACTORY_CYPRESS_TARGET_REPO` | GitHub repo (`owner/name`) where generated Cypress specs are committed (e.g. `folio-org/stripes-testing`) |
-| `FACTORY_CYPRESS_BASE_BRANCH` | Base branch in `TARGET_REPO` (default: `master`) |
-| `FACTORY_CYPRESS_TESTRAIL_SECTION_ID` | Fallback TestRail section ID (long integer); used when `testrail_section` is absent from both `scenario_list.md` and `scope_manifest.md` |
-| `FACTORY_CYPRESS_TESTRAIL_CASE_TYPE_ID` | TestRail case type ID (e.g. `1`=Functional on foliotest); code default `1`=Functional — override to change |
-| `FACTORY_CYPRESS_TESTRAIL_PRIORITY_ID` | TestRail priority ID (default: `3`=Medium) |
-| `FACTORY_CYPRESS_TESTRAIL_LABEL` | Label title applied to every created case (default: `cypress-flow-delete-case`); resolved to a label ID at runtime via `getOrCreateLabel` |
-| `FACTORY_CYPRESS_MAX_REVIEW_ITERATIONS` | Max agent review iterations inside `E2eSpecAgentWorker` per run (default `3`). Set to `0` to skip automated review entirely. |
-| `FACTORY_CONNECTORS_TESTRAIL_BASE_URL` | TestRail instance base URL |
-| `FACTORY_CONNECTORS_TESTRAIL_USERNAME` | TestRail username (email) |
-| `FACTORY_CONNECTORS_TESTRAIL_API_KEY` | TestRail API key |
-| `FACTORY_CONNECTORS_TESTRAIL_PROJECT_ID` | TestRail project ID (integer) |
-| `FACTORY_CONNECTORS_TESTRAIL_SUITE_ID` | TestRail suite ID (integer; required on multi-suite projects) |
-| `FACTORY_CONNECTORS_GITHUB_TOKEN` | GitHub personal access token (read for context/examples fetch; write for finalizer PR) |
-| `FACTORY_CONNECTORS_GITHUB_BASE_URL` | GitHub API base URL (default: `https://api.github.com`; override for GHE) |
-| `FACTORY_TAF_HAS_ENV_CONFIG` | Set `true` to enable execution mode in `CypressExecutionWorker` (Phase 3+) |
-| `FACTORY_CYPRESS_EXEC_CONFIG` | Path to `cypress-exec.yaml`; defaults to bundled `src/main/resources/cypress-exec.yaml` |
-| `FACTORY_CYPRESS_REGULAR_ENV` | Deploy-time override for regular-test env params (`key=val,key=val`); merged on top of `cypress-exec.yaml` regular block |
-| `FACTORY_CYPRESS_ECS_ENV` | Deploy-time override for ECS-test env params (`key=val,key=val`); merged on top of `cypress-exec.yaml` ecs block |
-
----
-
-## Open Tasks / Prerequisites
-
-These gaps must be resolved before or during Phase 1. They are not implementation details — they
-are missing pieces that will block the flow from working correctly if left unaddressed.
-
----
-
-### TASK: Add `ecs_enabled` to `ScopeManifest`
-
-**Status:** DONE — `ecsEnabled` field present in `ScopeManifest.java`; triage prompt instructs detection from labels/description.
-
-**Problem:** The plan references `ecs_enabled` throughout (context loader, test-spec agent prompt,
-E2E spec agent, cypress-execution, YAML). However, the Java record
-`factory-flow-test-factory/.../model/ScopeManifest.java` has no such field today:
-
-```java
-// Current fields: issueKey, summary, components, endpoints, riskLevel, ambiguities, analysis
-// Missing: ecs_enabled
-```
-
-Without this field, `scope_manifest.md` will never carry the ECS flag, and any worker or prompt
-that reads it will have no signal to split cases/specs by tenant type.
-
-**Required changes:**
-
-1. **`ScopeManifest.java`** — add field:
-   ```java
-   boolean ecsEnabled,
-   ```
-
-2. **Triage agent `system.md`** — add explicit instruction to set the flag:
-   ```
-   ## ECS Detection
-   Set ecs_enabled: true if ANY of the following is present in the Jira story:
-   - label "ecs" or "multi-tenant", "consortia'
-   - AC or description language like "as a member/central library/tenant/affiliation", "consortial", "shared/local record/instance"
-   Otherwise set ecs_enabled: false.
-   ```
-
-3. **Triage agent `user.md`** — no change needed; it already passes raw `{{issue_json}}` which
-   contains labels, components, and description.
-
-4. **Verify** the field appears in `scope_manifest.md` after a triage run. Example expected output:
-   ```yaml
-   issueKey: ERM-1001
-   components: [ERM]
-   ecs_enabled: true
-   ```
-
-**Who:** whoever implements Phase 1, Step 3 (fragment scanner) onwards — the ECS field is first
-consumed by the context-loader in Phase 1, so this task must be done before Phase 1 end-to-end
-testing.
-
----
-
-## Implementation Phases
-
-### Phase 1 — Test cases + Gate 1 (no Cypress yet)
-
-**Goal: Gate 1 works end-to-end; cases published to TestRail with real IDs after approval.**
-
-**Implemented steps:**
-
-1. ✅ Create `factory-flow-cypress` Maven module
-2. ✅ Implement `ContextLoaderWorker` (area detection + context file load + thin-context flag)
-3. ✅ Implement `TafSyncService` (auto-clone to `cypressTafClone/`) + `FragmentScannerWorker` (keyword scoring, GitHub API fallback, permissions matching → `fragment_library.md`)
-4. ✅ Implement `CypressExamplesLoaderWorker` (runtime GitHub fetch + classpath fallback; 4 golden cases incl. ECS)
-5. ✅ Implement `CoverageLoaderWorker` (getCases API; title summary + permission extraction from preconditions; graceful degradation → `existing_coverage.md`)
-6. ✅ Implement `ScenarioAnalysisAgentWorker` (LLM; categorized scenario proposals + coverage matrix; reads `existing_coverage.md`)
-7. ✅ Write `cypress-scenario-analysis/system.md` + `user.md` (incl. coverage matrix AC→Scenario→Status, EXISTING flagging)
-8. ✅ Write `cypress-e2e-spec-agent/system.md` (House Style + Step Patterns + active-extraction pre-generation step 4 + extended self-review gate)
-9. ✅ Write `cypress-e2e-spec-agent/user.md` (with `{{examples}}` + `{{scenario_list}}` + `{{existing_coverage}}` sections)
-10. ✅ Implement `TestRailSyncAgentWorker` (push cases → collect real IDs → write back)
-11. ✅ Write `cypress-factory.yaml`:
-    triage → context-load → fragment-scan → examples-load → coverage-load → scenario-analysis →
-    gate-0-scenarios → test-spec → gate-1-review → testrail-sync
-    Gate-0 reviewed: [scenario_list.md, scope_manifest.md, context.md, existing_coverage.md]
-    Gate-1 reviewed: [test_plan.md, testcase_review.md, scenario_list.md, scope_manifest.md, context.md, hitl_feedback.md, previous_test_plan.md]
-    test-spec step: `optional_inputs: [hitl_feedback.md, previous_test_plan.md]` (absent on fresh runs, present on HITL retries)
-12. ✅ Wire `CypressFlowConfiguration`, add to `factory-app/pom.xml`
-13. ✅ Implement generate→review loop in `E2eSpecAgentWorker` (up to 3 iterations; `cypress-testcase-reviewer` prompts; `testcase_review.md` output; `drainUsage()` for multi-call token accounting)
-14. ✅ Implement HITL Gate-1 Reject and Re-generate: `HitlRetryService`, `HITL_RETRY` audit event, `optional_inputs` engine feature, "Reject and Re-generate" button in `review.html` (disabled until comments non-empty; cypress-factory + gate-1-test-cases only), retry banner for subsequent review runs
-
-**Milestone:** Gate 0 confirms scenario coverage; Gate 1 reviews test cases; after approval,
-cases appear in TestRail and `test_plan.md` carries real `C######` IDs.
-
-**Verify:** Open `/executions/{id}`. Gate 0 shows `scenario_list.md` with categorized S-NN
-proposals. Gate 1 shows `context.md` with `areas:` frontmatter and `test_plan.md` with body
-sections `## TC-X: Title` per case, each with automatable/testGroup/userJourney/preconditions/steps. After Gate 1
-approval: TestRail cases created with the configured AI label and `refs` set to the Jira key;
-`test_plan.md` body headings updated to `## C######: Title`.
-
----
-
-### Phase 2 — Cypress spec generation + Gate 2
+## Phase 2 — Cypress spec generation + Gate 2
 
 **Goal: Gate 2 produces a reviewable `.cy.js` bundle with real C###### IDs (already in place).**
 
@@ -1057,15 +1481,16 @@ approval: TestRail cases created with the configured AI label and `refs` set to 
 with `tags: ['extendedPath', 'spitfire', 'C627249']` style tags, `AT_C627249_` prefixed variable
 names, and no raw `cy.get('` calls (sanity post-processor should have caught those already).
 
-**Iteration expected:** Plan for 3-5 prompt tuning rounds for both `e2e-spec-agent` and
-`cypress-automation-agent`. For `e2e-spec-agent`, the context files + SKILL.md writing
+**Iteration expected:** Plan for 3-5 prompt tuning rounds on `cypress-automation-agent`, the
+same way test case generation needed them. For case generation, the context files + SKILL.md
+writing
 guidelines are the highest-leverage knob — they provide FOLIO-specific factual grounding
 (exact UI texts, business rules, capability sets) that the LLM cannot reliably produce from
 training data alone. Few-shot examples are the highest-leverage knob for `cypress-automation-agent`.
 
 ---
 
-### Phase 3 — Execution and finalize
+## Phase 3 — Execution and finalize
 
 **Goal: Specs run (or skip), PR opens in stripes-testing, Jira gets a comment.**
 
@@ -1083,14 +1508,17 @@ and the Allure HTML opens correctly.
 
 ---
 
-## Risks and Mitigations
+
+## Risks — Cypress automation
+
+Part I's risks are in Part I §9. These are specific to the phases below.
 
 ### Fragment accuracy (highest LLM quality risk for spec generation)
-The `FragmentScannerWorker` mitigates this significantly. Even with the index, the LLM may use
+`FragmentPrefetch` mitigates this significantly. Even with the index, the LLM may use
 wrong method names. The Gate 2 HITL review and the resulting PR review in stripes-testing are
 the safety nets — not the automated checks.
 
-### Area detection accuracy (new risk from context-loader)
+### Area detection accuracy (spec generation)
 The keyword-matching table from the skill handles most stories. Ambiguous stories (touching multiple
 modules) may detect the wrong area. Mitigations:
 - Show `detected_area` and `confidence` in Gate 1 review — the QA reviewer can catch and
@@ -1121,7 +1549,7 @@ duplicate TestRail entries.
 - Some cases fail → write a `testrail_failures` list into `test_plan.md` frontmatter so
   `cypress-automation-agent` can skip or flag those cases rather than treating `TC-X` as real.
 
-### `e2e-spec-agent` quality
+### Test case quality feeding spec generation
 The `write-testrail-cases/SKILL.md` writing guidelines and area context files are a significant
 upgrade from the generic Flow A prompts. The context files provide verbatim UI texts, verified
 business rules, and exact capability set names — the factual grounding that previously had to
@@ -1132,62 +1560,28 @@ Remaining mitigations:
 - Non-automatable cases still go to TestRail; just skipped by the automation agent
 - The `test_scripts.md` bundle will have fewer specs than test cases in `test_plan.md`; this is expected (non-automatable cases are skipped) and noted in `sync_report.md`
 
-### `examples.md` gap — RESOLVED
-`CypressExamplesLoaderWorker` fetches `examples.md` from `folio-eureka-ai-dev` at runtime
-(branch `master`); classpath fallback when GitHub is unavailable. Injected via `{{examples}}`
-in `user.md`. Classpath copy at `src/main/resources/references/examples.md` is updated manually.
-
-### `CoverageLoaderWorker` cap not enforced at case level — KNOWN BUG (unresolved)
-
-`MAX_CASES = 150` is checked before fetching each *section*, not after each *case* is added.
-If the last matched section returns N cases and the map already contains 149 entries, all N cases
-are added, pushing the total past 150. Additionally, the "limit reached" note appended to
-`existing_coverage.md` triggers only when `cases.size() == MAX_CASES` (exactly 150); totals
-above 150 produce no note.
-
-**Fix (pending):** enforce the cap inside the inner case loop and change the note condition to
-`>= MAX_CASES`:
-```java
-if (!caseMap.containsKey(c.id()) && caseMap.size() < MAX_CASES) {
-    caseMap.put(c.id(), c);
-    caseSection.put(c.id(), sec.fullPath());
-}
-```
-Note condition: `if (cases.size() >= MAX_CASES)`.
-
-Until fixed, `existing_coverage.md` may contain more than 150 cases with no "limit reached" warning.
-The over-limit content is harmless for the LLM (more context is not worse) but the cap stops
-being a reliable guard against context-window pressure.
-
----
-
 ## Effort Estimate
+
+Part I is built, so only the remaining phases are estimated here.
 
 | What | Estimate |
 |---|---|
-| `factory-flow-cypress` skeleton + pom.xml | 0.5 day |
-| `ContextLoaderWorker` (area detection + context file load) | 0.5 day |
-| `FragmentScannerWorker` (scan + export parse) | 1 day |
-| `e2e-spec-agent/system.md` (from write-testrail-cases + examples) | 1-2 days |
-| `TestRailSyncAgentWorker` | 1 day |
-| `cypress-factory.yaml` (all phases) | 0.5 day |
 | `cypress-automation-agent/system.md` (initial + 3-5 tuning rounds) | 2-3 days |
 | `CypressAutomationAgentWorker` + `CypressSanityPostProcessor` | 1 day |
 | `CypressExecutionWorker` (advisory mode) | 0.5 day |
 | `CypressExecutionWorker` (real execution) | 1 day |
 | `CypressFinalizerWorker` | 1 day |
-| Phase 1-3 end-to-end testing | 2-3 days |
+| Gate 2 + `cypress-factory.yaml` extension | 0.5 day |
+| Phase 2-3 end-to-end testing | 2 days |
 | Allure report serving endpoint in `factory-app` (optional) | 0.5 day |
 
-**Total: ~12-14 days for a working Phase 1-3 flow** (+ 0.5 day optional Allure serving)
+**Total: ~8-9 days for Phases 2-3** (+ 0.5 day optional Allure serving)
 
-Starting from `write-testrail-cases/SKILL.md` (MQA's tested instructions) for e2e-spec-agent
-and from `CLAUDE.md` (TAF's tested instructions) for cypress-automation-agent saves meaningful
-prompt engineering time and should produce better first-run quality than starting from zero.
-Context files auto-sync at runtime, so the area-specific factual grounding stays current with
-no maintenance burden on the factory team.
+Starting from `CLAUDE.md` (TAF's tested instructions) for `cypress-automation-agent` saves
+meaningful prompt engineering time, the same way starting from MQA's `SKILL.md` did for Part I.
 
 ---
+
 
 ## Implementation Reference — How to Actually Write the Workers
 
@@ -1223,83 +1617,6 @@ never touches any of that.
 
 ---
 
-### Non-LLM worker: `ContextLoaderWorker`
-
-Copy the shape of `TestExecutionWorker`. No `ChatClient`, no prompt files — just `implements AgentWorker`.
-
-```java
-// factory-flow-cypress/src/main/java/.../worker/ContextLoaderWorker.java
-
-public class ContextLoaderWorker implements AgentWorker {
-
-    public static final String ID = "context-loader";
-
-    private final CypressFlowProperties properties;   // holds FACTORY_CYPRESS_FOLIO_AI_REPO
-    private final GitHubConnector gitHub;             // reused — same connector as finalizer
-    private final FrontmatterCodec frontmatterCodec;  // shared codec from factory-agents
-
-    public ContextLoaderWorker(CypressFlowProperties properties,
-                               GitHubConnector gitHub,
-                               FrontmatterCodec frontmatterCodec) {
-        this.properties = properties;
-        this.gitHub = gitHub;
-        this.frontmatterCodec = frontmatterCodec;
-    }
-
-    @Override
-    public String id() { return ID; }
-
-    @Override
-    public AgentResult execute(AgentContext context) throws AgentExecutionException {
-
-        // 1. Read your input artifact — always requireInput(), never null-check manually
-        String scopeManifest = context.requireInput("scope_manifest.md").content();
-
-        // 2. Do your logic
-        String detectedArea = detectArea(scopeManifest);            // keyword matching
-        String contextBody  = loadContextFile(detectedArea);        // read .md from disk
-
-        // 3. Assemble output as Markdown-with-YAML-frontmatter
-        Map<String, Object> meta = Map.of(
-            "detected_area", detectedArea,
-            "confidence",    "HIGH",
-            "context_file",  detectedArea + ".md"
-        );
-        String output = frontmatterCodec.render(meta, contextBody);
-
-        // 4. Return — key must match the artifact name declared in cypress-factory.yaml
-        return AgentResult.of("context.md", output);
-    }
-
-    private String detectArea(String scopeManifest) {
-        // keyword matching against the 19-area table from SKILL.md
-        // return "inventory", "orders", etc., or "unknown" if nothing matches
-    }
-
-    private String loadContextFile(String area) throws AgentExecutionException {
-        // fetch single file from GitHub — no local checkout needed
-        String path = "skills/write-testrail-cases/references/context/" + area + ".md";
-        try {
-            return gitHub.getFileContent(properties.folioAiRepo(),
-                                         "master", path);
-        } catch (NotFoundException e) {
-            return "";   // produce context.md with empty body; log a warning
-        } catch (Exception e) {
-            throw new AgentExecutionException("Cannot read context file: " + path, e);
-        }
-    }
-}
-```
-
-`FragmentScannerWorker` follows the exact same shape: reads `context.md` (areas) and
-`scope_manifest.md` (keywords), uses `TafSyncService.tafRoot()` for local filesystem scoring
-or `GitHubConnector.listDirectory()` as fallback, returns `AgentResult.of("fragment_library.md", output)`.
-
-`TestRailSyncAgentWorker` also follows this shape but additionally calls the `TestRailConnector`
-— look at `TestFactoryFinalizerWorker.syncTestRail()` for the exact connector API. It writes real
-IDs back into `test_plan.md` (one `id: C######` field per case); no bundle is touched.
-
----
 
 ### LLM worker: `CypressAutomationAgentWorker`
 
@@ -1329,14 +1646,14 @@ public class CypressAutomationAgentWorker extends AbstractLlmAgentWorker {
 
         // 1. Read inputs
         String testPlan       = context.requireInput("test_plan.md").content();
-        String fragmentLibrary = context.requireInput("fragment_library.md").content();
+        String fragmentLibrary = fragmentPrefetch.scan(areas, summary);
 
         // 2. Call the LLM — vars map becomes {{placeholder}} substitutions in user.md
         //    callForEntity parses the LLM's JSON response into a ScriptBundle record
         ScriptBundle bundle = callForEntity(
             Map.of(
                 "test_plan",       testPlan,
-                "fragment_library", fragmentLibrary
+                "fragments", fragmentLibrary
             ),
             ScriptBundle.class   // ← the record the LLM must produce; defined in your model package
         );
@@ -1353,7 +1670,7 @@ public class CypressAutomationAgentWorker extends AbstractLlmAgentWorker {
 The prompt files live at:
 ```
 src/main/resources/prompts/cypress-automation-agent/system.md   ← static instructions
-src/main/resources/prompts/cypress-automation-agent/user.md     ← template with {{test_plan}}, {{fragment_library}}
+src/main/resources/prompts/cypress-automation-agent/user.md     ← template with {{test_plan}}, {{fragments}}
 ```
 
 The base class loads them by `workerId` automatically — the file names are the contract.
@@ -1361,33 +1678,6 @@ The base class loads them by `workerId` automatically — the file names are the
 
 ---
 
-### LLM worker: `E2eSpecAgentWorker`
-
-Same shape as `CypressAutomationAgentWorker` above — `extends AbstractLlmAgentWorker`, same
-constructor pattern, same `callForEntity` call. Only three things differ:
-
-```java
-public static final String ID = "e2e-spec-agent";
-
-// Inputs: scope_manifest + area context (not test_plan + fragment_library)
-String scopeManifest = context.requireInput("scope_manifest.md").content();
-String areaContext   = context.requireInput("context.md").content();
-
-// Different record type and output artifact
-TestPlan plan = callForEntity(
-    Map.of("scope_manifest", scopeManifest, "context", areaContext),
-    TestPlan.class   // ← your model record; fields: id, title, automatable, testGroup, userJourney, ecs_enabled, steps…
-);
-return AgentResult.of("test_plan.md", frontmatterCodec.render(metadata, renderBody(plan)));
-```
-
-Prompt files: `prompts/e2e-spec-agent/system.md` + `user.md` (placeholders `{{scope_manifest}}`,
-`{{context}}`).
-
-`TestPlan` is a new record you define in the model package — same idea as Flow A's `TestPlan`
-but shaped to match the Cypress flow's case fields.
-
----
 
 ### Post-processor: `CypressSanityPostProcessor`
 
@@ -1434,9 +1724,10 @@ exception burns one retry from the step's `retry_policy`. Warnings are free.
 
 ---
 
+
 ### Non-LLM worker with external connector: `TestRailSyncAgentWorker`
 
-Copy the shape of `ContextLoaderWorker` (non-LLM), but also inject `TestRailConnector`.
+Same shape as any non-LLM worker, but with `TestRailConnector` injected.
 
 ```java
 // factory-flow-cypress/src/main/java/.../worker/TestRailSyncAgentWorker.java
@@ -1482,6 +1773,7 @@ The `getSection(sectionId)` method needs to be added to `TestRailConnector` (one
 
 ---
 
+
 ### Non-LLM worker with GitHub + Jira connectors: `CypressFinalizerWorker`
 
 Copy the shape of `TestFactoryFinalizerWorker`. The key difference: case creation already
@@ -1508,10 +1800,10 @@ public class CypressFinalizerWorker implements AgentWorker {
 
         ScriptBundle bundle        = bundleCodec.parse(context.requireInput("test_scripts.md").content());
         String testResultsRaw      = context.requireInput("test_results.md").content();
-        String scopeManifestRaw    = context.requireInput("scope_manifest.md").content();
+        String testPlanRaw         = context.requireInput("test_plan.md").content();
 
         // 1. Commit all files (specs + any fragment stubs) to a new branch in stripes-testing
-        String issueKey = parseIssueKey(scopeManifestRaw);   // always present in scope_manifest.md
+        String issueKey = parseIssueKey(testPlanRaw);        // from the test_plan.md frontmatter
         String branch   = "test-factory/cypress-" + issueKey;
         String repo     = properties.targetRepo();   // FACTORY_CONNECTORS_GITHUB_* target
         github.createBranch(repo, properties.baseBranch(), branch);
@@ -1540,128 +1832,6 @@ mode was used; advisory mode → omit run summary).
 
 ---
 
-### Wiring it all: `CypressFlowConfiguration`
-
-Every worker needs to be constructed and returned as a `@Bean`. This is also where `ChatClient`
-is built and injected into LLM workers.
-
-```java
-// factory-flow-cypress/src/main/java/.../CypressFlowConfiguration.java
-
-@Configuration
-public class CypressFlowConfiguration {
-
-    // Non-LLM workers — just construct them
-    @Bean
-    public ContextLoaderWorker contextLoaderWorker(CypressFlowProperties props,
-                                                    GitHubConnector gitHub,
-                                                    FrontmatterCodec codec) {
-        return new ContextLoaderWorker(props, gitHub, codec);
-    }
-
-    @Bean
-    public FragmentScannerWorker fragmentScannerWorker(CypressFlowProperties props,
-                                                        FrontmatterCodec codec) {
-        return new FragmentScannerWorker(props, codec);
-    }
-
-    // LLM workers — need a ChatClient; copy how FlowAConfiguration builds it
-    @Bean
-    public CypressAutomationAgentWorker cypressAutomationAgentWorker(
-            ChatClient.Builder chatClientBuilder,
-            ScriptBundleCodec bundleCodec) {
-        ChatClient chatClient = chatClientBuilder.build();
-        return new CypressAutomationAgentWorker(chatClient, bundleCodec);
-    }
-
-    // ... same pattern for E2eSpecAgentWorker, TestRailSyncAgentWorker,
-    // CypressExecutionWorker, CypressFinalizerWorker
-}
-```
-
-Look at `FlowAConfiguration` in `factory-flow-test-factory` — it's 60 lines and shows exactly
-this pattern for every Flow A worker.
-
----
-
-### The flow YAML — how to declare a step
-
-Once the worker bean exists, add a step to `cypress-factory.yaml`. Match
-`worker_id` to the worker's `ID` constant exactly.
-
-```yaml
-# src/main/resources/flows/cypress-factory.yaml
-
-id: cypress-factory
-version: 1.0.0
-retry_policy:
-  max_attempts: 3
-  backoff_seconds: [30, 120, 300]
-
-steps:
-  - step_id: triage
-    type: AGENT
-    worker_id: triage-agent          # reused from Flow A — already registered
-    inputs: [$trigger]
-    outputs: [scope_manifest.md]
-
-  - step_id: context-load
-    type: AGENT
-    worker_id: context-loader        # matches ContextLoaderWorker.ID
-    inputs: [scope_manifest.md]
-    outputs: [context.md]
-
-  - step_id: fragment-scan
-    type: AGENT
-    worker_id: fragment-scanner
-    inputs: [context.md, scope_manifest.md]
-    outputs: [fragment_library.md]
-
-  - step_id: test-spec
-    type: AGENT
-    worker_id: e2e-spec-agent       # new worker — copy Java shape from TestSpecAgentWorker
-    inputs: [scope_manifest.md, context.md]
-    outputs: [test_plan.md]
-
-  - step_id: gate-1
-    type: HITL_GATE
-    review_artifacts: [test_plan.md, context.md, scope_manifest.md]
-
-  - step_id: testrail-sync
-    type: AGENT
-    worker_id: cypress-testrail-sync
-    inputs: [test_plan.md]
-    outputs: [test_plan.md]      # same artifact name, now with real C###### IDs written in
-
-  - step_id: cypress-automation
-    type: AGENT
-    worker_id: cypress-automation-agent
-    inputs: [test_plan.md, fragment_library.md]   # test_plan.md now carries real C###### IDs
-    outputs: [test_scripts.md]
-
-  - step_id: gate-2
-    type: HITL_GATE
-    review_artifacts: [test_scripts.md, test_plan.md]
-
-  - step_id: cypress-execution
-    type: AGENT
-    worker_id: cypress-execution-agent
-    inputs: [test_scripts.md, test_plan.md]   # test_plan.md needed for ecs_enabled split
-    outputs: [test_results.md]
-
-  - step_id: cypress-finalize
-    type: AGENT
-    worker_id: cypress-finalizer
-    inputs: [test_scripts.md, test_results.md, scope_manifest.md]   # scope_manifest.md for issueKey
-    outputs: [sync_report.md]
-```
-
-The engine reads `inputs:` to decide which artifacts to fetch from the store and hand to
-the worker. An artifact that isn't in `inputs:` is invisible to that worker — this is
-intentional (scope boundary). `outputs:` declares what the worker must return; the engine
-throws if a declared output is missing from `AgentResult`.
-
----
 
 ### Subprocess runner pattern (`CypressExecutionWorker`)
 
@@ -1694,18 +1864,19 @@ Parse results from the JUnit XML files Cypress writes to `cypress/results/*.xml`
 
 ---
 
-# Suggested Next Steps (Post Phase 3)
+
+## Suggested Next Steps (Post Phase 3)
 
 > These are extensions to consider after the Phase 1-3 flow is working and tested end-to-end.
 > Do not build any of this until the base pipeline is stable.
 
-### Phase 4 — Automatic fix loop for Cypress failures
+#### Phase 4 — Automatic fix loop for Cypress failures
 
 Generated specs will have failures on first run — wrong fragment method names, wrong assertion
 text, missing imports, timing issues. Phase 3 leaves these as "human fix required." A fix loop
 would let the factory self-repair the obvious ones before handing off.
 
-#### How it would work
+##### How it would work
 
 After `CypressExecutionWorker` produces `test_results.md`, extend the pipeline with:
 
@@ -1735,7 +1906,7 @@ FACTORY_CYPRESS_ENABLE_FIX_LOOP=true   # default: false
 FACTORY_CYPRESS_FIX_LOOP_MAX=2         # default: 2
 ```
 
-#### `FailureAnalyzerWorker` — non-LLM, the critical gating step
+##### `FailureAnalyzerWorker` — non-LLM, the critical gating step
 
 Reads Allure JSON files from `allure-results/` and `test_plan.md`. For each failing test,
 produces a `failure_report.md` entry with:
@@ -1743,7 +1914,7 @@ produces a `failure_report.md` entry with:
 - The test's original intent (from `test_plan.md`)
 - A category tag:
   - `FIXABLE` — structural issues an LLM can reliably fix: import errors, unknown method names
-    (cross-referenced against `fragment_library.md`), assertion text mismatches where the actual
+    (cross-referenced against the fragment library), assertion text mismatches where the actual
     value is visible in the error, wrong path depth in imports
   - `ENV_ISSUE` — credential failures, network timeouts, missing test data, tenant not found —
     no code change can fix these; skip them
@@ -1752,7 +1923,7 @@ produces a `failure_report.md` entry with:
 This step prevents the LLM from burning iterations on environment problems that will never be
 fixed by editing code.
 
-#### `SpecFixAgentWorker` — LLM, surgical fixes only
+##### `SpecFixAgentWorker` — LLM, surgical fixes only
 
 Key constraints the prompt must enforce explicitly:
 - Only modify files listed in `failure_report.md` as `FIXABLE` or `UNCLEAR` — do not touch
@@ -1760,7 +1931,7 @@ Key constraints the prompt must enforce explicitly:
 - Output a ScriptBundle containing **only the modified files** — a diff, not a full rewrite
 - Fixing a failure by removing or weakening an assertion is not a fix — flag it as `UNFIXABLE`
   instead
-- If a fix requires a new fragment method that doesn't exist in `fragment_library.md`, generate
+- If a fix requires a new fragment method that does not exist in the fragment library, generate
   a fragment stub and include it in the bundle (same pattern as the automation agent)
 
 Re-run command targets only failing specs:
@@ -1768,13 +1939,13 @@ Re-run command targets only failing specs:
 npx cypress run -b chrome --spec <previously-failing-spec-paths> ...
 ```
 
-#### What to report
+##### What to report
 
 After N iterations, any still-failing tests are surfaced in `sync_report.md` as
 `unfixed_failures` — a list of case IDs with their final error and category. These appear
 prominently in the Jira comment so engineers know exactly what needs manual attention.
 
-#### What's realistically fixable
+##### What's realistically fixable
 
 | Failure type | Auto-fixable? |
 |---|---|
@@ -1787,9 +1958,49 @@ prominently in the Jira comment so engineers know exactly what needs manual atte
 | Environment: wrong creds, missing data, network | Never — mark ENV_ISSUE and skip |
 | ECS multi-tenant setup errors | Probably not — too subtle; treat as UNCLEAR |
 
-#### Prevention is cheaper than repair
+##### Prevention is cheaper than repair
 
 Before building Phase 4, consider expanding `CypressSanityPostProcessor` to catch more
 structural issues *before* execution: unknown fragment references (cross-check against
-`fragment_library.md`), wrong import depth (verify against bundle file path), tag format
+the fragment library), wrong import depth (verify against bundle file path), tag format
 violations. Better prevention means fewer failures reach the fix loop in the first place.
+
+
+---
+
+# Appendix A — Alternatives considered and rejected
+
+Both were viable and neither was rejected on quality grounds. Idea 3 won on effort-to-first-measurement: it tests the core hypothesis ("fragmentation is the problem") without betting on tool-loop behaviour or an external process.
+
+**These stay cheap to revisit.** The step boundary and the artifact contract (Part I §6) are identical whichever of the three is used — only the internals of `TestCaseGenAgentWorker` change. A switch touches one class, not the flow, not the gate, not TestRail sync.
+
+### Idea A — spawn `claude -p` as the generation worker
+
+The worker prepares a workspace (skill clone + TAF clone + `task.md` carrying the Jira issue), runs `claude -p "<task>" --output-format json`, reads back the artifact files Claude wrote, and
+returns them as an `AgentResult`.
+
+**Why it wins:** it *is* the MQA process — same model, same tools, same skill file, same session semantics. Zero re-implementation. When MQA updates SKILL.md we inherit it for free. Highest
+quality-per-effort by a wide margin.
+
+**Cost:** external process dependency (CLI installed and authenticated on whatever runs the factory); bypasses the factory's prompt catalog, model config, and token metrics (though
+`--output-format json` returns usage); unit tests need a fake CLI on PATH. Stretches "stateless worker", though the `AgentWorker` SPI still holds.
+
+### Idea B — one tool-calling Spring AI worker
+
+One `AGENT` step. The `ChatClient` gets filesystem tools scoped to the skill + TAF workspace (`read`, `grep`, `glob`) plus connector tools (`fetchJiraIssue`, `fetchLinkedIssues`,
+`listTestRailSections`, `readSectionCases`). The system prompt is thin — "you are running the write-testrail-cases skill, start by reading SKILL.md" — and the agent drives the workflow
+itself: detect area → read context file → read examples → map rules → scenarios → cases.
+
+**Why it wins:** faithful to the adaptive part — it can read two context files when a story spans Finance and Orders, or grep the TAF for a fragment it just thought of. Stays entirely in-stack: prompt catalog, metrics and model config all keep working.
+
+**Cost:** hand-roll the tool classes (Spring AI 2.0.0 ships no `FileSystemTools`/`GrepTool`/ `GlobTool` — see Part I §5); the multi-turn loop is slower and less predictable; needs a tool-call cap
+to avoid runaway loops. Real risk: the model wanders or under-fetches without the interactive human nudges MQA gives it in a live session.
+
+### When to reopen
+
+| Signal | Move to |
+|---|---|
+| Cases are good but the area/context choice is often wrong on cross-area stories | **B** — adaptive fetching is the specific gap |
+| Cases still lag MQA's on the same story after prompt tuning | **A** — stop re-implementing a process that already works |
+| MQA changes SKILL.md often enough that our delta block keeps drifting | **A** |
+| Quality is fine and cost/latency is the complaint | Stay on Idea 3. Prompt caching is already in place; the next lever is the one-hour cache TTL (P3). |

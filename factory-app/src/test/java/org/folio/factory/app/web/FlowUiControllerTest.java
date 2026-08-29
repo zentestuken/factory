@@ -269,7 +269,7 @@ class FlowUiControllerTest {
         StepDescriptor agent = new StepDescriptor("triage", StepType.AGENT, "triage-agent",
                 null, null, List.of("$trigger"), null, List.of("scope_manifest.md"), Map.of("framework", "karate"));
         StepDescriptor gate = new StepDescriptor("qa-gate", StepType.HITL_GATE, null,
-                new HitlGateSpec("g1", "QA gate", "review it", List.of("test_plan.md")), null, null, null, null, null);
+                new HitlGateSpec("g1", "QA gate", "review it", List.of("test_plan.md"), List.of()), null, null, null, null, null);
         StepDescriptor sub = new StepDescriptor("sub", StepType.SUB_FLOW, null, null,
                 new SubFlowSpec("child-flow", Map.of("test_plan.md", "plan.md"), Map.of("out.md", "up.md")),
                 null, null, null, null);

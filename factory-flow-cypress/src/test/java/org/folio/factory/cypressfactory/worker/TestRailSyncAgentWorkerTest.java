@@ -6,8 +6,9 @@ import org.folio.factory.core.agent.AgentContext;
 import org.folio.factory.core.agent.AgentResult;
 import org.folio.factory.core.agent.ArtifactContent;
 import org.folio.factory.cypressfactory.CypressFlowProperties;
+import org.folio.factory.cypressfactory.plan.DevTeamCatalog;
+import org.folio.factory.cypressfactory.plan.TestPlanParser;
 import org.junit.jupiter.api.Test;
-import tools.jackson.databind.json.JsonMapper;
 
 import java.util.List;
 import java.util.Map;
@@ -18,7 +19,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 class TestRailSyncAgentWorkerTest {
 
     private final FrontmatterCodec codec = new FrontmatterCodec();
-    private final JsonMapper jsonMapper = JsonMapper.builder().build();
 
     // -------------------------------------------------------------------------
     // Helpers
@@ -26,7 +26,8 @@ class TestRailSyncAgentWorkerTest {
 
     private TestRailSyncAgentWorker worker(CapturingConnector connector, Long defaultSectionId) {
         CypressFlowProperties props = new CypressFlowProperties("", "main", "", defaultSectionId, null, null, null, null);
-        return new TestRailSyncAgentWorker(connector, codec, props, jsonMapper);
+        return new TestRailSyncAgentWorker(connector, codec, props, new TestPlanParser(),
+                new DevTeamCatalog());
     }
 
     private String testPlanWithOneCase() {
@@ -136,33 +137,21 @@ class TestRailSyncAgentWorkerTest {
                 "# Cypress Test Plan — ERM-1\n");
     }
 
-    private String scopeManifest(String testrailSection) {
-        return scopeManifest(testrailSection, null);
+    /** Re-renders a plan with extra frontmatter keys merged over the defaults. */
+    private String planWithMeta(String plan, String key, Object value) {
+        String body = codec.parse(plan).body();
+        Map<String, Object> meta = new java.util.LinkedHashMap<>();
+        meta.put("issue_key", "ERM-1");
+        meta.put("team", "");
+        meta.put("ecs_enabled", false);
+        meta.put("case_count", 1);
+        meta.put(key, value);
+        return codec.render(meta, body);
     }
 
-    private String scopeManifest(String testrailSection, String team) {
-        Map<String, Object> base = new java.util.LinkedHashMap<>();
-        base.put("issue_key", "ERM-1");
-        base.put("ecs_enabled", false);
-        if (testrailSection != null) base.put("testrail_section", testrailSection);
-        if (team != null) base.put("team", team);
-        return codec.render(base, "## Analysis\n");
-    }
-
-    private String scenarioList(String testrailSection) {
-        Map<String, Object> meta = testrailSection != null
-                ? Map.of("testrail_section", testrailSection)
-                : Map.of();
-        return codec.render(meta, "# Scenarios\n");
-    }
-
-    private AgentContext contextWith(String testPlan, String scopeManifest, String scenarioList) {
+    private AgentContext contextWith(String testPlan) {
         return new AgentContext(UUID.randomUUID(), "testrail-sync",
-                Map.of(
-                        "test_plan.md", new ArtifactContent("test_plan.md", 1, "text/markdown", testPlan),
-                        "scope_manifest.md", new ArtifactContent("scope_manifest.md", 1, "text/markdown", scopeManifest),
-                        "scenario_list.md", new ArtifactContent("scenario_list.md", 1, "text/markdown", scenarioList)
-                ),
+                Map.of("test_plan.md", new ArtifactContent("test_plan.md", 1, "text/markdown", testPlan)),
                 null, Map.of(), List.of("test_plan.md"));
     }
 
@@ -171,48 +160,38 @@ class TestRailSyncAgentWorkerTest {
     // -------------------------------------------------------------------------
 
     @Test
-    void usesNumericSectionIdFromScenarioList() {
+    void usesNumericSectionIdFromFrontmatter() {
         CapturingConnector connector = new CapturingConnector();
         worker(connector, null).execute(
-                contextWith(testPlanWithOneCase(), scopeManifest(null), scenarioList("200")));
+                contextWith(planWithMeta(testPlanWithOneCase(), "testrail_section", "200")));
 
         assertThat(connector.capturedSectionId).isEqualTo(200L);
     }
 
     @Test
-    void scopeManifestSectionOverridesScenarioListSection() {
+    void frontmatterSectionOverridesPropertiesDefault() {
         CapturingConnector connector = new CapturingConnector();
-        worker(connector, null).execute(
-                contextWith(testPlanWithOneCase(), scopeManifest("300"), scenarioList("200")));
+        worker(connector, 114774L).execute(
+                contextWith(planWithMeta(testPlanWithOneCase(), "testrail_section", "300")));
 
         assertThat(connector.capturedSectionId).isEqualTo(300L);
     }
 
     @Test
-    void resolvesPathStringFromScenarioListViaConnector() {
+    void resolvesPathStringFromFrontmatterViaConnector() {
         CapturingConnector connector = new CapturingConnector();
         connector.resolvedSectionId = 500L;
         worker(connector, null).execute(
-                contextWith(testPlanWithOneCase(), scopeManifest(null), scenarioList("MARC \u203a MARC authority")));
+                contextWith(planWithMeta(testPlanWithOneCase(), "testrail_section",
+                        "MARC › MARC authority")));
 
         assertThat(connector.capturedSectionId).isEqualTo(500L);
     }
 
     @Test
-    void scopeManifestPathStringOverridesScenarioListSection() {
+    void fallsBackToPropertiesDefaultWhenFrontmatterHasNoSection() {
         CapturingConnector connector = new CapturingConnector();
-        connector.resolvedSectionId = 777L;
-        worker(connector, null).execute(
-                contextWith(testPlanWithOneCase(), scopeManifest("Inventory \u203a Search"), scenarioList("200")));
-
-        assertThat(connector.capturedSectionId).isEqualTo(777L);
-    }
-
-    @Test
-    void fallsBackToPropertiesDefaultWhenNeitherArtifactHasSection() {
-        CapturingConnector connector = new CapturingConnector();
-        worker(connector, 114774L).execute(
-                contextWith(testPlanWithOneCase(), scopeManifest(null), scenarioList(null)));
+        worker(connector, 114774L).execute(contextWith(testPlanWithOneCase()));
 
         assertThat(connector.capturedSectionId).isEqualTo(114774L);
     }
@@ -223,7 +202,7 @@ class TestRailSyncAgentWorkerTest {
         String originalPlan = testPlanWithOneCase();
 
         AgentResult result = worker(connector, null).execute(
-                contextWith(originalPlan, scopeManifest(null), scenarioList(null)));
+                contextWith(originalPlan));
 
         assertThat(connector.capturedSectionId).isEqualTo(-1L);
         assertThat(result.outputs().get("test_plan.md")).isEqualTo(originalPlan);
@@ -234,19 +213,10 @@ class TestRailSyncAgentWorkerTest {
         CapturingConnector connector = new CapturingConnector();
 
         AgentResult result = worker(connector, 114774L).execute(
-                contextWith(testPlanNoCases(), scopeManifest(null), scenarioList(null)));
+                contextWith(testPlanNoCases()));
 
         assertThat(connector.capturedSectionId).isEqualTo(-1L);
         assertThat(result.outputs().get("test_plan.md")).isEqualTo(testPlanNoCases());
-    }
-
-    @Test
-    void toleratesScenarioListWithoutFrontmatter() {
-        CapturingConnector connector = new CapturingConnector();
-        worker(connector, 114774L).execute(
-                contextWith(testPlanWithOneCase(), scopeManifest(null), "# Scenarios\n\nplain markdown\n"));
-
-        assertThat(connector.capturedSectionId).isEqualTo(114774L);
     }
 
     // -------------------------------------------------------------------------
@@ -257,7 +227,7 @@ class TestRailSyncAgentWorkerTest {
     void setsDevTeamIdFromKnownTeam() {
         CapturingConnector connector = new CapturingConnector();
         worker(connector, 114774L).execute(
-                contextWith(testPlanWithOneCase(), scopeManifest(null, "Folijet"), scenarioList(null)));
+                contextWith(planWithMeta(testPlanWithOneCase(), "team", "Folijet")));
 
         assertThat(connector.capturedDevTeamId).isEqualTo(4);
     }
@@ -266,16 +236,45 @@ class TestRailSyncAgentWorkerTest {
     void setsDevTeamIdCaseInsensitive() {
         CapturingConnector connector = new CapturingConnector();
         worker(connector, 114774L).execute(
-                contextWith(testPlanWithOneCase(), scopeManifest(null, "EUREKA"), scenarioList(null)));
+                contextWith(planWithMeta(testPlanWithOneCase(), "team", "EUREKA")));
 
         assertThat(connector.capturedDevTeamId).isEqualTo(21);
+    }
+
+    @Test
+    void resolvesTeamsTheOldHardcodedMapDidNotContain() {
+        // The previous table held 10 teams; the other 17 were silently dropped even though
+        // they are real FOLIO teams with real TestRail ids.
+        for (Map.Entry<String, Integer> expected : Map.of(
+                "Bienenvolk", 2, "Odin", 17, "Fenrir", 29, "Klemming", 22, "Big FC", 23).entrySet()) {
+            CapturingConnector connector = new CapturingConnector();
+            worker(connector, 114774L).execute(
+                    contextWith(planWithMeta(testPlanWithOneCase(), "team", expected.getKey())));
+
+            assertThat(connector.capturedDevTeamId)
+                    .as("dev team id for %s", expected.getKey())
+                    .isEqualTo(expected.getValue());
+        }
+    }
+
+    @Test
+    void resolvesTheTestRailSpellingAndDecoratedValues() {
+        CapturingConnector byTestRailName = new CapturingConnector();
+        worker(byTestRailName, 114774L).execute(
+                contextWith(planWithMeta(testPlanWithOneCase(), "team", "BAMA")));
+        assertThat(byTestRailName.capturedDevTeamId).isEqualTo(14);
+
+        CapturingConnector decorated = new CapturingConnector();
+        worker(decorated, 114774L).execute(
+                contextWith(planWithMeta(testPlanWithOneCase(), "team", "Promin Team")));
+        assertThat(decorated.capturedDevTeamId).isEqualTo(27);
     }
 
     @Test
     void omitsDevTeamIdWhenTeamUnknown() {
         CapturingConnector connector = new CapturingConnector();
         worker(connector, 114774L).execute(
-                contextWith(testPlanWithOneCase(), scopeManifest(null, "unknown-squad"), scenarioList(null)));
+                contextWith(planWithMeta(testPlanWithOneCase(), "team", "unknown-squad")));
 
         assertThat(connector.capturedDevTeamId).isNull();
     }
@@ -284,7 +283,7 @@ class TestRailSyncAgentWorkerTest {
     void omitsDevTeamIdWhenTeamAbsent() {
         CapturingConnector connector = new CapturingConnector();
         worker(connector, 114774L).execute(
-                contextWith(testPlanWithOneCase(), scopeManifest(null), scenarioList(null)));
+                contextWith(testPlanWithOneCase()));
 
         assertThat(connector.capturedDevTeamId).isNull();
     }
@@ -294,12 +293,38 @@ class TestRailSyncAgentWorkerTest {
     // -------------------------------------------------------------------------
 
     @Test
-    void setsRefsToIssueKey() {
+    void refsDefaultsToIssueKeyWhenFrontmatterHasNone() {
         CapturingConnector connector = new CapturingConnector();
-        worker(connector, 114774L).execute(
-                contextWith(testPlanWithOneCase(), scopeManifest(null), scenarioList(null)));
+        worker(connector, 114774L).execute(contextWith(testPlanWithOneCase()));
 
         assertThat(connector.capturedMetadata.get("refs")).isEqualTo("ERM-1");
+    }
+
+    @Test
+    void refsPassesThroughAdditionalKeys() {
+        CapturingConnector connector = new CapturingConnector();
+        worker(connector, 114774L).execute(contextWith(
+                planWithMeta(testPlanWithOneCase(), "refs", "ERM-1, MODFIN-391")));
+
+        assertThat(connector.capturedMetadata.get("refs")).isEqualTo("ERM-1, MODFIN-391");
+    }
+
+    @Test
+    void refsRegainsIssueKeyWhenAGateAmendmentRemovedIt() {
+        CapturingConnector connector = new CapturingConnector();
+        worker(connector, 114774L).execute(contextWith(
+                planWithMeta(testPlanWithOneCase(), "refs", "MODFIN-391")));
+
+        assertThat(connector.capturedMetadata.get("refs")).isEqualTo("ERM-1, MODFIN-391");
+    }
+
+    @Test
+    void refsMatchIsCaseInsensitiveSoTheKeyIsNotDuplicated() {
+        CapturingConnector connector = new CapturingConnector();
+        worker(connector, 114774L).execute(contextWith(
+                planWithMeta(testPlanWithOneCase(), "refs", "erm-1, MODFIN-391")));
+
+        assertThat(connector.capturedMetadata.get("refs")).isEqualTo("erm-1, MODFIN-391");
     }
 
     // -------------------------------------------------------------------------
@@ -310,7 +335,7 @@ class TestRailSyncAgentWorkerTest {
     void titleIsReadFromBodyHeading() {
         CapturingConnector connector = new CapturingConnector();
         worker(connector, 114774L).execute(
-                contextWith(testPlanWithAmendedBodyTitle(), scopeManifest(null), scenarioList(null)));
+                contextWith(testPlanWithAmendedBodyTitle()));
 
         assertThat(connector.capturedTitle).isEqualTo("New Title");
     }
@@ -324,7 +349,7 @@ class TestRailSyncAgentWorkerTest {
     void htmlEscapesSpecialCharsInStepsAndPreconditions() {
         CapturingConnector connector = new CapturingConnector();
         worker(connector, 114774L).execute(
-                contextWith(testPlanWithSpecialChars(), scopeManifest(null), scenarioList(null)));
+                contextWith(testPlanWithSpecialChars()));
 
         assertThat(connector.capturedPreconds)
                 .contains("&lt;").contains("&amp;")
@@ -346,7 +371,7 @@ class TestRailSyncAgentWorkerTest {
     void parsesMultiLineExpectedResult() {
         CapturingConnector connector = new CapturingConnector();
         worker(connector, 114774L).execute(
-                contextWith(testPlanWithMultiLineExpected(), scopeManifest(null), scenarioList(null)));
+                contextWith(testPlanWithMultiLineExpected()));
 
         List<Map<String, Object>> steps =
                 (List<Map<String, Object>>) connector.capturedMetadata.get("custom_steps_separated");
@@ -365,7 +390,7 @@ class TestRailSyncAgentWorkerTest {
     void rendersNestedCapabilitySetsAsHtmlBrList() {
         CapturingConnector connector = new CapturingConnector();
         worker(connector, 114774L).execute(
-                contextWith(testPlanWithNestedPreconditions(), scopeManifest(null), scenarioList(null)));
+                contextWith(testPlanWithNestedPreconditions()));
 
         assertThat(connector.capturedPreconds)
                 .isEqualTo("<ol>" +
@@ -383,7 +408,7 @@ class TestRailSyncAgentWorkerTest {
     void mapsTestGroupSmokeToId1() {
         CapturingConnector connector = new CapturingConnector();
         worker(connector, 114774L).execute(
-                contextWith(testPlanWithTestGroup("smoke"), scopeManifest(null), scenarioList(null)));
+                contextWith(testPlanWithTestGroup("smoke")));
 
         assertThat(connector.capturedMetadata.get("custom_test_group")).isEqualTo(1);
     }
@@ -392,7 +417,7 @@ class TestRailSyncAgentWorkerTest {
     void mapsTestGroupCriticalToId2() {
         CapturingConnector connector = new CapturingConnector();
         worker(connector, 114774L).execute(
-                contextWith(testPlanWithTestGroup("critical"), scopeManifest(null), scenarioList(null)));
+                contextWith(testPlanWithTestGroup("critical")));
 
         assertThat(connector.capturedMetadata.get("custom_test_group")).isEqualTo(2);
     }
@@ -401,7 +426,7 @@ class TestRailSyncAgentWorkerTest {
     void mapsTestGroupExtendedToId3() {
         CapturingConnector connector = new CapturingConnector();
         worker(connector, 114774L).execute(
-                contextWith(testPlanWithTestGroup("extended"), scopeManifest(null), scenarioList(null)));
+                contextWith(testPlanWithTestGroup("extended")));
 
         assertThat(connector.capturedMetadata.get("custom_test_group")).isEqualTo(3);
     }
@@ -410,7 +435,7 @@ class TestRailSyncAgentWorkerTest {
     void unknownTestGroupDefaultsToCriticalPath() {
         CapturingConnector connector = new CapturingConnector();
         worker(connector, 114774L).execute(
-                contextWith(testPlanWithTestGroup("unknown-value"), scopeManifest(null), scenarioList(null)));
+                contextWith(testPlanWithTestGroup("unknown-value")));
 
         assertThat(connector.capturedMetadata.get("custom_test_group")).isEqualTo(2);
     }
@@ -423,7 +448,7 @@ class TestRailSyncAgentWorkerTest {
     void setsUserJourneyTrueWhenYes() {
         CapturingConnector connector = new CapturingConnector();
         worker(connector, 114774L).execute(
-                contextWith(testPlanWithUserJourney(true), scopeManifest(null), scenarioList(null)));
+                contextWith(testPlanWithUserJourney(true)));
 
         assertThat(connector.capturedMetadata.get("custom_user_journey")).isEqualTo(true);
     }
@@ -432,7 +457,7 @@ class TestRailSyncAgentWorkerTest {
     void setsUserJourneyFalseWhenNo() {
         CapturingConnector connector = new CapturingConnector();
         worker(connector, 114774L).execute(
-                contextWith(testPlanWithUserJourney(false), scopeManifest(null), scenarioList(null)));
+                contextWith(testPlanWithUserJourney(false)));
 
         assertThat(connector.capturedMetadata.get("custom_user_journey")).isEqualTo(false);
     }
@@ -450,7 +475,7 @@ class TestRailSyncAgentWorkerTest {
                 "- **ECS:** No\n\n" +
                 "**Steps**\n1. **Action:** click\n   **Expected:** done\n");
         worker(connector, 114774L).execute(
-                contextWith(planNoJourneyLine, scopeManifest(null), scenarioList(null)));
+                contextWith(planNoJourneyLine));
 
         assertThat(connector.capturedMetadata.get("custom_user_journey")).isEqualTo(false);
     }
@@ -464,7 +489,7 @@ class TestRailSyncAgentWorkerTest {
         CapturingConnector connector = new CapturingConnector();
         // props constructed with null typeId — CypressFlowProperties defaults it to 1L
         worker(connector, 114774L).execute(
-                contextWith(testPlanWithOneCase(), scopeManifest(null), scenarioList(null)));
+                contextWith(testPlanWithOneCase()));
 
         assertThat(connector.capturedMetadata.get("type_id")).isEqualTo(1L);
     }

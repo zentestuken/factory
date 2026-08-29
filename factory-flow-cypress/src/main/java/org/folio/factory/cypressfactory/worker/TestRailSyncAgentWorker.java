@@ -8,15 +8,19 @@ import org.folio.factory.core.agent.AgentExecutionException;
 import org.folio.factory.core.agent.AgentResult;
 import org.folio.factory.core.agent.AgentWorker;
 import org.folio.factory.cypressfactory.CypressFlowProperties;
+import org.folio.factory.cypressfactory.plan.DevTeamCatalog;
+import org.folio.factory.cypressfactory.plan.TestPlanParser;
+import org.folio.factory.cypressfactory.plan.TestPlanParser.ParsedCase;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import tools.jackson.databind.JsonNode;
-import tools.jackson.databind.json.JsonMapper;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -30,35 +34,21 @@ public class TestRailSyncAgentWorker implements AgentWorker {
             "criticalpath", 2, "critical", 2,
             "extendedpath", 3, "extended", 3,
             "medium", 2);
-    private static final Map<String, Integer> TEAM_TO_DEV_TEAM_ID = Map.of(
-            "firebird", 3, "folijet", 4, "spitfire", 6, "thunderjet", 8, "vega", 9,
-            "volaris", 13, "citation", 18, "corsair", 19, "eureka", 21, "promin", 27);
-
-    private static final Pattern CASE_HEADING = Pattern.compile("^## (.+?):\\s+(.+)$");
-    private static final Pattern ATTR_LINE = Pattern.compile("^- \\*\\*(.+?):\\*\\*\\s*(.*)$");
-    private static final Pattern STEP_ACTION = Pattern.compile("^\\d+\\.\\s+\\*\\*Action:\\*\\*\\s*(.*)$");
-    private static final Pattern STEP_EXPECTED = Pattern.compile("^\\*\\*Expected:\\*\\*\\s*(.*)$");
-
     private final TestRailConnector testRail;
     private final FrontmatterCodec frontmatterCodec;
     private final CypressFlowProperties properties;
-    private final JsonMapper jsonMapper;
+    private final TestPlanParser parser;
+    private final DevTeamCatalog devTeams;
 
     public TestRailSyncAgentWorker(TestRailConnector testRail, FrontmatterCodec frontmatterCodec,
-                                   CypressFlowProperties properties, JsonMapper jsonMapper) {
+                                   CypressFlowProperties properties, TestPlanParser parser,
+                                   DevTeamCatalog devTeams) {
         this.testRail = testRail;
         this.frontmatterCodec = frontmatterCodec;
         this.properties = properties;
-        this.jsonMapper = jsonMapper;
+        this.parser = parser;
+        this.devTeams = devTeams;
     }
-
-    private record ParsedCase(
-            String id, String title, String testGroup, boolean userJourney, boolean automatable,
-            boolean ecsEnabled, List<String> preconditions, List<StepRow> steps, String automationNotes) {
-        private record StepRow(String action, String expected) {}
-    }
-
-    private enum ParseState { ATTRS, PRECONDITIONS, STEPS, DONE }
 
     @Override
     public String id() {
@@ -68,36 +58,33 @@ public class TestRailSyncAgentWorker implements AgentWorker {
     @Override
     public AgentResult execute(AgentContext context) {
         String testPlan = context.requireInput("test_plan.md").content();
-        String scopeManifest = context.requireInput("scope_manifest.md").content();
-        String scenarioList = context.requireInput("scenario_list.md").content();
 
         Frontmatter fm = frontmatterCodec.parse(testPlan);
-        JsonNode scopeFm = frontmatterCodec.parse(scopeManifest).metadata();
-        JsonNode scenarioFm = scenarioList.stripLeading().startsWith(FrontmatterCodec.DELIMITER)
-                ? frontmatterCodec.parse(scenarioList).metadata()
-                : jsonMapper.createObjectNode();
-        boolean planEcs = scopeFm.path("ecs_enabled").asBoolean(false);
+        JsonNode planFm = fm.metadata();
+        boolean planEcs = planFm.path("ecs_enabled").asBoolean(false);
 
-        List<ParsedCase> cases = parseCasesFromBody(fm.body());
+        List<ParsedCase> cases = parser.parse(fm.body());
         if (cases.isEmpty()) {
-            log.info("No cases found in test_plan.md body - skipping TestRail sync");
+            log.info("No cases found under '{}' in test_plan.md - skipping TestRail sync",
+                    TestPlanParser.CASES_HEADING);
             return AgentResult.of("test_plan.md", testPlan);
         }
 
-        long sectionId = resolveSectionId(scopeFm, scenarioFm);
+        long sectionId = resolveSectionId(planFm);
         if (sectionId == 0L) {
-            log.info("TestRail section not configured (set FACTORY_CYPRESS_TESTRAIL_SECTION_ID or add testrail_section to scope_manifest.md frontmatter) - skipping TestRail sync");
+            log.info("TestRail section not configured (set FACTORY_CYPRESS_TESTRAIL_SECTION_ID or add testrail_section to test_plan.md frontmatter) - skipping TestRail sync");
             return AgentResult.of("test_plan.md", testPlan);
         }
 
         long cypressLabelId = resolveCypressLabel();
-        Integer devTeamId = resolveDevTeamId(scopeFm.path("team").asString(""));
-        String issueKey = scopeFm.path("issue_key").asString("");
+        Integer devTeamId = resolveDevTeamId(planFm.path("team").asString(""));
+        String issueKey = planFm.path("issue_key").asString("");
+        String refs = resolveRefs(planFm.path("refs").asString(""), issueKey);
 
         Map<String, String> idMap = new HashMap<>();
         for (ParsedCase tc : cases) {
             boolean tcEcs = planEcs || tc.ecsEnabled();
-            Map<String, Object> metadata = buildMetadata(tc, tcEcs, cypressLabelId, devTeamId, issueKey);
+            Map<String, Object> metadata = buildMetadata(tc, tcEcs, cypressLabelId, devTeamId, refs);
             try {
                 long caseId = testRail.addCaseWithMetadata(
                         sectionId, tc.title(), null, null, metadata);
@@ -114,18 +101,49 @@ public class TestRailSyncAgentWorker implements AgentWorker {
         return AgentResult.of("test_plan.md", updatedContent);
     }
 
-    private long resolveSectionId(JsonNode scopeFm, JsonNode scenarioFm) {
-        String override = scopeFm.path("testrail_section").asString("");
-        if (!override.isBlank()) return parseOrResolveSectionRef(override.trim());
-        String suggestion = scenarioFm.path("testrail_section").asString("");
-        if (!suggestion.isBlank()) return parseOrResolveSectionRef(suggestion.trim());
+    private long resolveSectionId(JsonNode planFm) {
+        String section = planFm.path("testrail_section").asString("");
+        if (!section.isBlank()) return parseOrResolveSectionRef(section.trim());
         Long defaultId = properties.testrailSectionId();
         return defaultId != null ? defaultId : 0L;
     }
 
+    /**
+     * TestRail's References field must never lose the originating ticket. The generator
+     * already guarantees this, but a reviewer can edit the frontmatter at gate 1, so the
+     * key is re-asserted here.
+     */
+    static String resolveRefs(String refs, String issueKey) {
+        if (issueKey == null || issueKey.isBlank()) return refs == null ? "" : refs.strip();
+        if (refs == null || refs.isBlank()) return issueKey;
+        boolean present = Arrays.stream(refs.split(","))
+                .map(String::strip)
+                .anyMatch(k -> k.equalsIgnoreCase(issueKey));
+        return present ? refs.strip() : issueKey + ", " + refs.strip();
+    }
+
+    /**
+     * Three outcomes, deliberately distinguished. An unset field is invisible in TestRail, so
+     * the only thing worse than getting the team wrong is dropping it without saying so.
+     */
     private Integer resolveDevTeamId(String team) {
-        if (team == null || team.isBlank()) return null;
-        return TEAM_TO_DEV_TEAM_ID.get(team.toLowerCase().trim());
+        if (team == null || team.isBlank()) {
+            log.warn("No dev team on the test plan - TestRail Dev Team will be left unset");
+            return null;
+        }
+        Optional<DevTeamCatalog.DevTeam> known = devTeams.find(team);
+        if (known.isEmpty()) {
+            log.warn("Dev team '{}' is not in references/dev-teams.md - TestRail Dev Team left "
+                    + "unset. Add the team there if it is a real FOLIO team.", team);
+            return null;
+        }
+        Integer id = known.get().testRailId();
+        if (id == null) {
+            log.warn("Dev team '{}' has no TestRail id in references/dev-teams.md - TestRail Dev "
+                    + "Team left unset. Fill the TestRail ID column in for this team.",
+                    known.get().jiraName());
+        }
+        return id;
     }
 
     private long parseOrResolveSectionRef(String ref) {
@@ -153,7 +171,7 @@ public class TestRailSyncAgentWorker implements AgentWorker {
     }
 
     private Map<String, Object> buildMetadata(ParsedCase tc, boolean ecsEnabled, long cypressLabelId,
-                                               Integer devTeamId, String issueKey) {
+                                               Integer devTeamId, String refs) {
         Map<String, Object> meta = new HashMap<>();
         meta.put("template_id", 2);
         meta.put("custom_automation_type", 2);
@@ -164,8 +182,8 @@ public class TestRailSyncAgentWorker implements AgentWorker {
         if (devTeamId != null) {
             meta.put("custom_dev_team", devTeamId);
         }
-        if (!issueKey.isBlank()) {
-            meta.put("refs", issueKey);
+        if (!refs.isBlank()) {
+            meta.put("refs", refs);
         }
         if (!tc.preconditions().isEmpty()) {
             meta.put("custom_preconds", toHtmlList(tc.preconditions()));
@@ -213,12 +231,6 @@ public class TestRailSyncAgentWorker implements AgentWorker {
         return sb.toString();
     }
 
-    private static void flushPendingStep(List<ParsedCase.StepRow> steps, String action, StringBuilder expected) {
-        if (action == null) return;
-        String exp = expected != null ? expected.toString() : "";
-        steps.add(new ParsedCase.StepRow(action, exp));
-    }
-
     private static String wrap(String text) {
         if (text == null || text.isEmpty()) return "<p></p>";
         if (!text.contains("\n")) return "<p>" + htmlEscape(text) + "</p>";
@@ -255,96 +267,6 @@ public class TestRailSyncAgentWorker implements AgentWorker {
     private static String htmlEscape(String text) {
         if (text == null || text.isEmpty()) return text == null ? "" : text;
         return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
-    }
-
-    private List<ParsedCase> parseCasesFromBody(String body) {
-        if (body == null || body.isBlank()) return List.of();
-        List<ParsedCase> result = new ArrayList<>();
-        String[] sections = body.split("(?m)^(?=## )");
-        for (String section : sections) {
-            String[] lines = section.split("\n", -1);
-            if (lines.length == 0) continue;
-            Matcher heading = CASE_HEADING.matcher(lines[0].strip());
-            if (!heading.matches()) continue;
-
-            String caseId = heading.group(1).strip();
-            String title = heading.group(2).strip();
-            String testGroup = "critical";
-            boolean userJourney = false;
-            boolean automatable = false;
-            boolean ecsEnabled = false;
-            List<String> preconditions = new ArrayList<>();
-            List<ParsedCase.StepRow> steps = new ArrayList<>();
-            String automationNotes = "";
-            String pendingAction = null;
-            StringBuilder pendingExpected = null;
-            ParseState state = ParseState.ATTRS;
-
-            for (int i = 1; i < lines.length; i++) {
-                String stripped = lines[i].strip();
-                if (stripped.isEmpty()) continue;
-
-                switch (state) {
-                    case ATTRS -> {
-                        if (stripped.startsWith("**Preconditions**")) {
-                            state = ParseState.PRECONDITIONS;
-                        } else if (stripped.startsWith("**Steps**")) {
-                            state = ParseState.STEPS;
-                        } else {
-                            Matcher attr = ATTR_LINE.matcher(stripped);
-                            if (attr.matches()) {
-                                switch (attr.group(1).toLowerCase()) {
-                                    case "test group" -> testGroup = attr.group(2).strip();
-                                    case "user journey" -> userJourney = attr.group(2).strip().equalsIgnoreCase("yes");
-                                    case "automatable" -> automatable = attr.group(2).strip().equalsIgnoreCase("yes");
-                                    case "ecs" -> ecsEnabled = attr.group(2).strip().equalsIgnoreCase("yes");
-                                }
-                            }
-                        }
-                    }
-                    case PRECONDITIONS -> {
-                        if (stripped.startsWith("**Steps**")) {
-                            state = ParseState.STEPS;
-                        } else if (lines[i].startsWith("  - ")) {
-                            if (!preconditions.isEmpty()) {
-                                String last = preconditions.remove(preconditions.size() - 1);
-                                preconditions.add(last + "\n- " + stripped.substring(2).strip());
-                            }
-                        } else if (stripped.startsWith("- ")) {
-                            preconditions.add(stripped.substring(2).strip());
-                        }
-                    }
-                    case STEPS -> {
-                        if (stripped.startsWith("**Automation notes:**")) {
-                            flushPendingStep(steps, pendingAction, pendingExpected);
-                            pendingAction = null; pendingExpected = null;
-                            automationNotes = stripped.replaceFirst("^\\*\\*Automation notes:\\*\\*\\s*", "");
-                            state = ParseState.DONE;
-                        } else {
-                            Matcher actionMatcher = STEP_ACTION.matcher(stripped);
-                            Matcher expectedMatcher = STEP_EXPECTED.matcher(stripped);
-                            if (actionMatcher.matches()) {
-                                flushPendingStep(steps, pendingAction, pendingExpected);
-                                pendingAction = actionMatcher.group(1).strip();
-                                pendingExpected = null;
-                            } else if (expectedMatcher.matches() && pendingAction != null) {
-                                pendingExpected = new StringBuilder(expectedMatcher.group(1).strip());
-                            } else if (pendingExpected != null && (stripped.startsWith("- ") || !stripped.startsWith("**"))) {
-                                pendingExpected.append("\n").append(stripped);
-                            } else if (pendingAction != null && pendingExpected == null && (stripped.startsWith("- ") || !stripped.startsWith("**"))) {
-                                pendingAction = pendingAction + "\n" + stripped;
-                            }
-                        }
-                    }
-                    case DONE -> { /* nothing */ }
-                }
-            }
-            flushPendingStep(steps, pendingAction, pendingExpected);
-            pendingAction = null; pendingExpected = null;
-            result.add(new ParsedCase(caseId, title, testGroup, userJourney, automatable, ecsEnabled,
-                    preconditions, steps, automationNotes));
-        }
-        return result;
     }
 
     private String replaceIds(String body, Map<String, String> idMap) {

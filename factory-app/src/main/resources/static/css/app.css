@@ -381,6 +381,65 @@ tbody tr:hover { background: hsl(var(--muted) / 0.4); }
   color: hsl(var(--success));
 }
 
+/* Referenced by review.html's retry banner; previously undefined, so it rendered bare. */
+.alert-info {
+  border-color: hsl(var(--primary) / 0.4);
+  border-left-color: hsl(var(--primary));
+  background: hsl(var(--primary) / 0.06);
+}
+
+/* Gate review: instruction blocks, the automated-checks note and the decision legend. */
+.instruction-list {
+  margin: 0 0 0.75rem;
+  padding-left: 1.25rem;
+  line-height: 1.6;
+}
+.instruction-list li { margin-bottom: 0.25rem; }
+.instruction-list li:last-child { margin-bottom: 0; }
+
+.reference-prompts { margin: 0; line-height: 1.6; }
+.reference-prompts strong { color: hsl(var(--foreground)); }
+/* The global rule is `a { color: inherit; text-decoration: none }`, which inside a .muted
+   paragraph renders a link as ordinary grey prose — unrecognisable until hover. Links that
+   sit in running text need to announce themselves. */
+.reference-prompts a {
+  color: hsl(var(--link));
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  font-weight: 500;
+}
+.reference-prompts a:visited { color: hsl(var(--link-visited)); }
+.reference-prompts a:hover { text-decoration-thickness: 2px; }
+.reference-prompts code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8125rem;
+  background: hsl(var(--muted));
+  padding: 0.05rem 0.3rem;
+  border-radius: 3px;
+  word-break: break-all;
+}
+
+.decision-legend {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+.decision-legend th,
+.decision-legend td {
+  padding: 0.5rem 0.75rem;
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid hsl(var(--border));
+}
+.decision-legend tr:last-child th,
+.decision-legend tr:last-child td { border-bottom: none; }
+.decision-legend th {
+  white-space: nowrap;
+  font-weight: 600;
+  width: 1%;
+}
+.decision-legend td { color: hsl(var(--muted-foreground)); }
+
 /* ---------- dialog ---------- */
 .dialog {
   margin: auto;

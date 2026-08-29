@@ -150,6 +150,36 @@ either start the CodeMie desktop app / CLI proxy, or export `ANTHROPIC_API_KEY`.
 
 ---
 
+## Prompt caching through the proxy
+
+The cypress flow's generation call asks Anthropic to cache its system prompt (~25k tokens of
+SKILL.md plus the golden examples). This matters here because the proxy sits in the middle of
+that request.
+
+Nothing about the proxy setup disables it: this integration only overrides
+`spring.ai.anthropic.base-url`, so `spring.ai.model.chat` stays `anthropic`, and Spring AI sends
+the same `cache_control` blocks it would send to `api.anthropic.com` directly. Whether caching
+actually takes effect depends on the proxy:
+
+- If it forwards request and response bodies unchanged, caching works and the usage response
+  carries `cache_creation_input_tokens` / `cache_read_input_tokens`.
+- If it strips unknown fields, rewrites the body, or drops those usage counters, the request
+  still succeeds and simply is not cached — or is cached but unreportable.
+
+**This has not been verified against the CodeMie proxy.** To check, run the flow with
+`FACTORY_DEBUG_ENABLED=true` and look at the `STEP_COMPLETED` audit entry for `testcase-gen`:
+
+| What you see | Meaning |
+|---|---|
+| `cacheWriteTokens` then `cacheReadTokens` on later calls | Caching works through the proxy. |
+| `cacheWriteTokens` every call, never a read | Reaching the API but not being reused — check whether the proxy rewrites the request body. |
+| Neither counter, ever | The proxy is not returning the cache usage fields. Caching may still be happening; you just cannot measure it from here. Compare cost against a direct-key run before concluding either way. |
+
+The third case is indistinguishable from "caching is off" using our metrics alone, so do not
+treat missing counters as proof that caching failed.
+
+---
+
 ## Notes for future upstream merges
 
 - These changes are isolated to `FactoryApplication.java` and `application.yaml`.

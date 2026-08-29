@@ -63,6 +63,7 @@ public class HitlGateOpener {
         reviewPackage.put("title", gate.title());
         reviewPackage.put("instructions", gate.reviewInstructions());
         reviewPackage.put("flowId", execution.getFlowId());
+        reviewPackage.put("referencePrompts", gate.referencePrompts());
         reviewPackage.put("artifacts", artifactRefs(execution, gate.reviewedArtifacts()));
 
         HitlReview review = new HitlReview(execution.getId(), gate.gateId(),

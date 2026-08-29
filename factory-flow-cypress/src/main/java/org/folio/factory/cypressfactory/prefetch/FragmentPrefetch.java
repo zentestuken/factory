@@ -1,15 +1,10 @@
-package org.folio.factory.cypressfactory.worker;
+package org.folio.factory.cypressfactory.prefetch;
 
-import org.folio.factory.agents.artifact.Frontmatter;
-import org.folio.factory.agents.artifact.FrontmatterCodec;
 import org.folio.factory.connectors.ConnectorHealth;
 import org.folio.factory.connectors.github.GitHubConnector;
-import org.folio.factory.core.agent.AgentContext;
-import org.folio.factory.core.agent.AgentResult;
-import org.folio.factory.core.agent.AgentWorker;
+import org.folio.factory.cypressfactory.worker.TafSyncService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import tools.jackson.databind.JsonNode;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -19,6 +14,7 @@ import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
@@ -27,21 +23,16 @@ import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 /**
- * Scans the TAF (stripes-testing) for Cypress fragment files and permissions that match
- * the story's feature area and keywords.
+ * Scans the TAF (stripes-testing) for Cypress fragments and permissions matching the
+ * story's area and keywords.
  *
- * When TafSyncService has a ready local clone it searches the filesystem directly,
- * scoring candidates by both filename and content keyword matches. When the clone
- * is not yet ready it falls back to the GitHub contents API.
- *
- * Output: fragment_library.md with matched fragment source files and a permissions
- * list extracted from cypress/support/dictionary/permissions.js.
+ * <p>Demoted from the former {@code cypress-fragment-scanner} worker; scoring and the
+ * GitHub fallback are unchanged. Fragments are a soft dependency — when they are
+ * unavailable, test case content is unaffected and only automation hints degrade.</p>
  */
-public class FragmentScannerWorker implements AgentWorker {
+public class FragmentPrefetch {
 
-    public static final String ID = "cypress-fragment-scanner";
-
-    private static final Logger log = LoggerFactory.getLogger(FragmentScannerWorker.class);
+    private static final Logger log = LoggerFactory.getLogger(FragmentPrefetch.class);
 
     private static final String TAF_REPO = "folio-org/stripes-testing";
     private static final String TAF_BRANCH = "master";
@@ -56,10 +47,7 @@ public class FragmentScannerWorker implements AgentWorker {
             "this", "which", "add", "new", "edit", "update", "display", "show", "create",
             "delete", "remove", "save", "view", "use", "set", "get", "has", "have"));
 
-    /**
-     * Maps factory area names to actual stripes-testing fragment directory names.
-     * Only areas where the names differ are listed; all others use the area name directly.
-     */
+    /** Factory area names → stripes-testing fragment directory names, where they differ. */
     private static final Map<String, String> AREA_TO_DIR = Map.ofEntries(
             Map.entry("check-in", "checkin"),
             Map.entry("check-out", "checkout"),
@@ -73,10 +61,7 @@ public class FragmentScannerWorker implements AgentWorker {
             Map.entry("patron-notices", "circulation")
     );
 
-    /**
-     * Maps factory area names to gui value prefixes found in permissions.js.
-     * The permissions.js file is flat — permissions are matched by gui value prefix.
-     */
+    /** Factory area names → gui value prefixes in the flat permissions.js. */
     private static final Map<String, List<String>> AREA_GUI_PREFIXES = Map.ofEntries(
             Map.entry("agreements", List.of("Agreements:")),
             Map.entry("bulk-edit", List.of("Bulk Edit:", "Bulk edit:", "Settings (Bulk edit):")),
@@ -107,38 +92,30 @@ public class FragmentScannerWorker implements AgentWorker {
             Map.entry("users", List.of("Users:", "User management:"))
     );
 
-    private static final Pattern GUI_PATTERN =
-            Pattern.compile("gui:\\s*['\"]([^'\"]+)['\"]");
+    private static final Pattern GUI_PATTERN = Pattern.compile("gui:\\s*['\"]([^'\"]+)['\"]");
 
     private final TafSyncService tafSync;
     private final GitHubConnector gitHub;
-    private final FrontmatterCodec frontmatterCodec;
 
-    public FragmentScannerWorker(TafSyncService tafSync, GitHubConnector gitHub,
-                                  FrontmatterCodec frontmatterCodec) {
+    public FragmentPrefetch(TafSyncService tafSync, GitHubConnector gitHub) {
         this.tafSync = tafSync;
         this.gitHub = gitHub;
-        this.frontmatterCodec = frontmatterCodec;
     }
 
-    @Override
-    public String id() {
-        return ID;
-    }
-
-    @Override
-    public AgentResult execute(AgentContext context) {
-        Frontmatter contextFm = frontmatterCodec.parse(context.requireInput("context.md").content());
-        List<String> areas = readAreas(contextFm.metadata());
-        if (areas.isEmpty()) {
-            log.info("No areas in context.md - skipping fragment scan");
-            return emptyResult();
+    /** Never throws — fragments are a soft dependency. */
+    public String scan(List<String> areas, String summary) {
+        try {
+            return doScan(areas, summary);
+        } catch (Exception e) {
+            log.warn("[fragments] Scan failed: {} - continuing without a fragment library", e.getMessage());
+            return unavailable("scan failed: " + e.getMessage());
         }
+    }
 
-        String summary = frontmatterCodec.parse(context.requireInput("scope_manifest.md").content())
-                .metadata().path("summary").asString("");
+    private String doScan(List<String> areas, String summary) {
+        if (areas == null || areas.isEmpty()) return unavailable("no area detected");
+
         List<String> keywords = extractKeywords(summary);
-
         StringBuilder md = new StringBuilder("# Fragment Library\n\n");
 
         if (tafSync.isReady()) {
@@ -148,10 +125,9 @@ public class FragmentScannerWorker implements AgentWorker {
                 appendAreaSectionLocal(md, area, keywords);
             }
         } else {
-            log.info("TAF clone not ready - using GitHub API fallback");
+            log.info("[fragments] TAF clone not ready - using GitHub API fallback");
             if (gitHub instanceof ConnectorHealth ch && !ch.isConfigured()) {
-                log.info("GitHub connector also not configured - fragment library will be empty");
-                return emptyResult();
+                return unavailable("TAF clone not ready and GitHub connector not configured");
             }
             md.append("TAF: `").append(TAF_REPO).append("` branch `").append(TAF_BRANCH)
               .append("` — GitHub API (local clone in progress or unavailable)\n\n");
@@ -159,8 +135,13 @@ public class FragmentScannerWorker implements AgentWorker {
                 appendAreaSectionRemote(md, area, keywords);
             }
         }
+        return md.toString();
+    }
 
-        return AgentResult.of("fragment_library.md", md.toString());
+    private static String unavailable(String reason) {
+        return "# Fragment Library\n\n_Unavailable — " + reason + ". "
+                + "Automation notes and the `automatable` flag are best-effort; "
+                + "flag this in `# Analysis` so the reviewer verifies them._\n";
     }
 
     // ── Local filesystem path ──────────────────────────────────────────────────
@@ -201,8 +182,9 @@ public class FragmentScannerWorker implements AgentWorker {
                 .sorted(Comparator.comparingInt(ScoredFile::score).reversed())
                 .toList();
 
-        List<ScoredFile> toFetch = scored.subList(0, Math.min(MAX_FETCHED_FILES, scored.size()));
-        List<ScoredFile> others  = scored.subList(Math.min(MAX_FETCHED_FILES, scored.size()), scored.size());
+        int cut = Math.min(MAX_FETCHED_FILES, scored.size());
+        List<ScoredFile> toFetch = scored.subList(0, cut);
+        List<ScoredFile> others = scored.subList(cut, scored.size());
 
         for (ScoredFile sf : toFetch) {
             try {
@@ -211,7 +193,7 @@ public class FragmentScannerWorker implements AgentWorker {
                 md.append("### ").append(relPath).append("\n\n");
                 md.append("```js\n").append(content).append("\n```\n\n");
             } catch (IOException e) {
-                log.debug("Could not read {}: {}", sf.path(), e.getMessage());
+                log.debug("[fragments] Could not read {}: {}", sf.path(), e.getMessage());
             }
         }
 
@@ -227,7 +209,7 @@ public class FragmentScannerWorker implements AgentWorker {
         String filename = normalizeFilename(file.getFileName().toString());
         String content;
         try {
-            content = Files.readString(file).toLowerCase();
+            content = Files.readString(file).toLowerCase(Locale.ROOT);
         } catch (IOException e) {
             content = "";
         }
@@ -251,11 +233,9 @@ public class FragmentScannerWorker implements AgentWorker {
                 md.append("\n");
             }
         } catch (IOException e) {
-            log.debug("Could not read permissions.js: {}", e.getMessage());
+            log.debug("[fragments] Could not read permissions.js: {}", e.getMessage());
         }
     }
-
-    // ── Permissions matching ───────────────────────────────────────────────────
 
     private List<String> matchPermissions(String content, String area) {
         List<String> prefixes = AREA_GUI_PREFIXES.getOrDefault(area, List.of());
@@ -293,8 +273,9 @@ public class FragmentScannerWorker implements AgentWorker {
         List<String> ranked = jsFiles.stream()
                 .sorted(Comparator.comparingInt((String f) -> scoreRemote(f, keywords)).reversed())
                 .toList();
-        List<String> toFetch = ranked.subList(0, Math.min(MAX_FETCHED_FILES, ranked.size()));
-        List<String> others  = ranked.subList(Math.min(MAX_FETCHED_FILES, ranked.size()), ranked.size());
+        int cut = Math.min(MAX_FETCHED_FILES, ranked.size());
+        List<String> toFetch = ranked.subList(0, cut);
+        List<String> others = ranked.subList(cut, ranked.size());
 
         for (String filename : toFetch) {
             String content = gitHub.getFileContent(TAF_REPO, TAF_BRANCH, dirPath + "/" + filename);
@@ -308,8 +289,6 @@ public class FragmentScannerWorker implements AgentWorker {
             others.forEach(f -> md.append("- `").append(f).append("`\n"));
             md.append("\n");
         }
-
-        // permissions not available in API-only mode (permissions.js is large; skip for fallback)
     }
 
     private int scoreRemote(String filename, List<String> keywords) {
@@ -324,35 +303,18 @@ public class FragmentScannerWorker implements AgentWorker {
 
     // ── Shared helpers ─────────────────────────────────────────────────────────
 
-    private List<String> readAreas(JsonNode metadata) {
-        JsonNode areasNode = metadata.path("areas");
-        List<String> areas = new ArrayList<>();
-        if (areasNode.isArray()) {
-            for (JsonNode n : areasNode) {
-                String v = n.asString("");
-                if (!v.isBlank()) areas.add(v);
-            }
-        }
-        return areas;
-    }
-
     private List<String> extractKeywords(String summary) {
         if (summary == null || summary.isBlank()) return List.of();
-        return Arrays.stream(summary.toLowerCase().split("[^a-z0-9]+"))
+        return Arrays.stream(summary.toLowerCase(Locale.ROOT).split("[^a-z0-9]+"))
                 .filter(w -> w.length() >= 3 && !STOPWORDS.contains(w))
                 .distinct()
                 .toList();
     }
 
     private String normalizeFilename(String filename) {
-        return filename.replaceAll("\\.js$", "").toLowerCase()
+        return filename.replaceAll("\\.js$", "").toLowerCase(Locale.ROOT)
                 .replaceAll("([a-z])([A-Z])", "$1 $2")
                 .replaceAll("[_\\-]", " ");
-    }
-
-    private AgentResult emptyResult() {
-        return AgentResult.of("fragment_library.md",
-                "# Fragment Library\n\n_TAF not available and GitHub fallback not configured._\n");
     }
 
     private record ScoredFile(Path path, int score) {}

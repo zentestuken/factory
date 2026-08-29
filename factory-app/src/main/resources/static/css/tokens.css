@@ -11,6 +11,7 @@
   --warning: 33 92% 33%;           --warning-foreground: 0 0% 98%;
   --border: 240 5.9% 90%;          --input: 240 5.9% 90%;
   --ring: 240 10% 3.9%;            --radius: 0.5rem;
+  --link: 217 91% 40%;             --link-visited: 271 60% 42%;
   --chart-1: 220 70% 50%; --chart-2: 160 60% 45%; --chart-3: 30 80% 55%;
   --chart-4: 280 65% 60%; --chart-5: 340 75% 55%;
   --sidebar: 240 4.8% 97%;         --sidebar-foreground: 240 5.9% 10%;
@@ -25,6 +26,7 @@ html[data-theme="dark"] {
   --accent: 240 3.7% 15.9%;        --accent-foreground: 0 0% 98%;
   --destructive: 0 63% 51%;        --success: 142 60% 45%;  --warning: 38 92% 55%;
   --border: 240 3.7% 15.9%;        --input: 240 3.7% 15.9%; --ring: 240 4.9% 83.9%;
+  --link: 213 94% 68%;             --link-visited: 271 76% 76%;
   --sidebar: 240 6% 7%;            --sidebar-foreground: 0 0% 98%;
   --destructive-foreground: 0 0% 98%;
   --success-foreground: 144 76% 9%;
