@@ -17,6 +17,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Pattern;
 
 /**
  * Loads area context file(s) and, when SKILL.md step 1b fires, lightweight enrichment.
@@ -33,6 +34,7 @@ public class ContextPrefetch {
     private static final String BRANCH = "master";
     private static final int THIN_CONTEXT_KBR_THRESHOLD = 10;
     private static final String KBR_MARKER = "## Key Business Rule";
+    private static final Pattern NUMBERED_RULE = Pattern.compile("^\\s*\\d+\\.\\s+\\S");
     private static final int MAX_CONTENT_BYTES = 150 * 1024;
     private static final int MAX_TRANSLATION_ENTRIES = 50;
 
@@ -81,7 +83,15 @@ public class ContextPrefetch {
      * @param missingAreas  areas with no context file at all (SKILL.md's sanctioned soft path)
      * @param enriched      whether step 1b enrichment ran
      */
-    public record ContextBundle(String text, String sourceNote, List<String> missingAreas, boolean enriched) {}
+    /**
+     * @param qualityNote what the assessment found, whether enrichment ran and what answered it —
+     *                    restated in {@code # Analysis} so the gate reviewer can see how much of
+     *                    the domain knowledge came from a maintained file versus a live scrape.
+     */
+    public record ContextBundle(String text, String sourceNote, List<String> missingAreas,
+                                boolean enriched, String qualityNote) {}
+
+    private record Enrichment(String text, List<String> sources) {}
 
     private final SkillWorkspaceService skills;
     private final GitHubConnector gitHub;
@@ -118,18 +128,42 @@ public class ContextPrefetch {
         String text = combined.toString().strip();
 
         String permissions = buildPermissionsBlock(areas);
-        if (permissions != null) {
+        boolean havePermissions = permissions != null;
+        if (havePermissions) {
             text = text + "\n\n" + permissions;
         }
 
+        List<String> shortfalls = assess(text);
+        StringBuilder quality = new StringBuilder();
         boolean enriched = false;
-        if (isThinContext(text)) {
-            log.info("[context] Areas {} are thin - running lightweight enrichment", areas);
-            text = text + "\n\n" + buildEnrichment(areas, extractKeywords(issue), issue);
+
+        if (shortfalls.isEmpty()) {
+            log.info("[context] Areas {} are complete on every check - skipping live enrichment", areas);
+            quality.append("complete on every check (")
+                   .append(countKeyBusinessRules(text)).append(" key business rules); "
+                           + "no enrichment needed");
+        } else {
+            log.info("[context] Areas {} incomplete ({}) - running live enrichment", areas, shortfalls);
+            Enrichment enrichment = buildEnrichment(areas, extractKeywords(issue), issue);
+            text = text + "\n\n" + enrichment.text();
             enriched = true;
+            quality.append("incomplete \u2014 ").append(String.join("; ", shortfalls))
+                   .append(". Live enrichment ran, ")
+                   .append(enrichment.sources().isEmpty()
+                           ? "but returned no additional data"
+                           : "adding " + String.join(", ", enrichment.sources()));
         }
 
-        return new ContextBundle(text, String.join(" · ", notes), List.copyOf(missing), enriched);
+        // Always fetched, independently of the assessment, so it is reported separately -
+        // otherwise a run shows "enrichment ran, adding translations" and reads as though the
+        // permissions were skipped.
+        quality.append(havePermissions
+                ? ". package.json permissions loaded"
+                : ". No package.json permissions (no GitHub repo mapped for this area, or the "
+                        + "fetch failed)");
+
+        return new ContextBundle(text, String.join(" · ", notes), List.copyOf(missing),
+                enriched, quality.toString());
     }
 
     /** SKILL.md's own wording for a missing context file — the soft, sanctioned path. */
@@ -141,15 +175,37 @@ public class ContextPrefetch {
     }
 
     // -------------------------------------------------------------------------
-    // Thin-context detection (SKILL.md step 1b — enrichment fires when ANY is true)
+    // Context quality assessment (SKILL.md step 1b)
+    //
+    // Enrichment fires when ANY check fails, so it is skipped only for a file that is complete
+    // on every dimension. That bias is deliberate: enrichment is cheap, and more grounding data
+    // is worth more than the tokens it costs.
     // -------------------------------------------------------------------------
 
     boolean isThinContext(String content) {
-        return isDraftContext(content)
-                || countKeyBusinessRules(content) < THIN_CONTEXT_KBR_THRESHOLD
-                || !content.contains("## Exact UI Texts")
-                || countToastsInUiTexts(content) < 3
-                || countKnownGaps(content) > 5;
+        return !assess(content).isEmpty();
+    }
+
+    /**
+     * The five SKILL.md step-1b checks, reported rather than collapsed to a boolean. Any
+     * shortfall triggers enrichment, so an empty list means the file is complete on every axis.
+     */
+    List<String> assess(String content) {
+        List<String> shortfalls = new ArrayList<>();
+        if (isDraftContext(content)) shortfalls.add("marked DRAFT");
+        int rules = countKeyBusinessRules(content);
+        if (rules < THIN_CONTEXT_KBR_THRESHOLD) {
+            shortfalls.add(rules + " key business rules (want " + THIN_CONTEXT_KBR_THRESHOLD + ")");
+        }
+        if (!content.contains("## Exact UI Texts")) {
+            shortfalls.add("no `## Exact UI Texts` section");
+        } else {
+            int toasts = countToastsInUiTexts(content);
+            if (toasts < 3) shortfalls.add(toasts + " confirmed toasts (want 3)");
+        }
+        int gaps = countKnownGaps(content);
+        if (gaps > 5) shortfalls.add(gaps + " known gaps (want 5 or fewer)");
+        return shortfalls;
     }
 
     private boolean isDraftContext(String content) {
@@ -158,13 +214,18 @@ public class ContextPrefetch {
         return end > 0 && content.substring(3, end).toUpperCase(Locale.ROOT).contains("DRAFT");
     }
 
+    /**
+     * Counts the rules, not the heading. Every context file carries exactly one
+     * {@code ## Key Business Rules...} heading with the rules as a numbered list beneath it, so
+     * counting heading occurrences returned 1 for every file — below the threshold, which made
+     * the whole assessment a constant {@code true} and enrichment unconditional.
+     */
     private int countKeyBusinessRules(String content) {
-        int count = 0, idx = 0;
-        while ((idx = content.indexOf(KBR_MARKER, idx)) != -1) {
-            count++;
-            idx += KBR_MARKER.length();
-        }
-        return count;
+        int start = content.indexOf(KBR_MARKER);
+        if (start < 0) return 0;
+        int end = content.indexOf("\n## ", start + KBR_MARKER.length());
+        String section = end > 0 ? content.substring(start, end) : content.substring(start);
+        return (int) section.lines().filter(l -> NUMBERED_RULE.matcher(l).find()).count();
     }
 
     private int countToastsInUiTexts(String content) {
@@ -212,7 +273,7 @@ public class ContextPrefetch {
                 .toList();
     }
 
-    private String buildEnrichment(List<String> areas, List<String> keywords, JiraIssue issue) {
+    private Enrichment buildEnrichment(List<String> areas, List<String> keywords, JiraIssue issue) {
         StringBuilder content = new StringBuilder();
         Set<String> sources = new LinkedHashSet<>();
 
@@ -232,7 +293,7 @@ public class ContextPrefetch {
                             + "Run `build-app-context` to make the enrichment permanent.\n\n");
         }
         sb.append(content);
-        return sb.toString();
+        return new Enrichment(sb.toString(), List.copyOf(sources));
     }
 
     private String buildPermissionsBlock(List<String> areas) {

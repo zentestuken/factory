@@ -5,7 +5,10 @@ import org.folio.factory.agents.llm.StubChatModel;
 import org.folio.factory.connectors.UnconfiguredConnectors;
 import org.folio.factory.connectors.jira.JiraConnector;
 import org.folio.factory.connectors.jira.JiraIssue;
+import org.folio.factory.connectors.testrail.TestRailCase;
 import org.folio.factory.connectors.testrail.TestRailConnector;
+import org.folio.factory.connectors.testrail.TestRailSectionRef;
+import org.folio.factory.connectors.testrail.TestRailStep;
 import org.folio.factory.core.agent.AgentContext;
 import org.folio.factory.core.agent.AgentExecutionException;
 import org.folio.factory.core.agent.AgentResult;
@@ -32,6 +35,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -107,6 +111,8 @@ class TestCaseGenAgentWorkerTest {
             - TC001 [R7] Step 2 expected: "" — empty expected result
             """;
 
+    private static final String MODEL = "claude-sonnet-4-6";
+
     private final FrontmatterCodec codec = new FrontmatterCodec();
     private final JsonMapper jsonMapper = JsonMapper.builder().build();
 
@@ -136,11 +142,16 @@ class TestCaseGenAgentWorkerTest {
     }
 
     private CypressFlowProperties properties(int maxReviewIterations) {
-        return new CypressFlowProperties("", "main", "", null, null, null, null, maxReviewIterations);
+        return new CypressFlowProperties("", "main", "", null, null, null, null, maxReviewIterations, null);
     }
 
     private TestCaseGenAgentWorker worker(StubChatModel model) {
         return worker(model, 3, new UnconfiguredConnectors.TestRail());
+    }
+
+    private TestCaseGenAgentWorker worker(StubChatModel model, String llmModel) {
+        return worker(model, 3, new UnconfiguredConnectors.TestRail(),
+                new PromptDump(false, Path.of("target", "unused-prompt-dump")), llmModel);
     }
 
     private TestCaseGenAgentWorker worker(StubChatModel model, int maxReviewIterations,
@@ -161,11 +172,17 @@ class TestCaseGenAgentWorkerTest {
                 new CoveragePrefetch(new UnconfiguredConnectors.TestRail(), props),
                 new ExamplesPrefetch(skills),
                 codec, new TestPlanParser(), new DevTeamCatalog(),
-                new PromptDump(false, Path.of("target", "unused-prompt-dump")), props);
+                new PromptDump(false, Path.of("target", "unused-prompt-dump")), props, MODEL);
     }
 
     private TestCaseGenAgentWorker worker(StubChatModel model, int maxReviewIterations,
                                           TestRailConnector testRail, PromptDump promptDump) {
+        return worker(model, maxReviewIterations, testRail, promptDump, MODEL);
+    }
+
+    private TestCaseGenAgentWorker worker(StubChatModel model, int maxReviewIterations,
+                                          TestRailConnector testRail, PromptDump promptDump,
+                                          String llmModel) {
         CypressFlowProperties props = properties(maxReviewIterations);
         SkillWorkspaceService skills = skills();
         return new TestCaseGenAgentWorker(
@@ -176,7 +193,7 @@ class TestCaseGenAgentWorkerTest {
                 new FragmentPrefetch(new TafSyncService(), new UnconfiguredConnectors.GitHub()),
                 new CoveragePrefetch(testRail, props),
                 new ExamplesPrefetch(skills),
-                codec, new TestPlanParser(), new DevTeamCatalog(), promptDump, props);
+                codec, new TestPlanParser(), new DevTeamCatalog(), promptDump, props, llmModel);
     }
 
     // ── Contexts ─────────────────────────────────────────────────────────────
@@ -345,30 +362,56 @@ class TestCaseGenAgentWorkerTest {
 
     // ── refs: the ticket key is non-negotiable ───────────────────────────────
 
+    private static final Set<String> NO_EXCLUSIONS = Set.of();
+    private static final Set<String> EXCLUDE_FAT = Set.of("FAT");
+
     @Test
     void refsAlwaysLeadsWithTheOriginatingTicket() {
-        assertThat(TestCaseGenAgentWorker.buildRefs("ERM-1", List.of("MODFIN-391")))
+        assertThat(TestCaseGenAgentWorker.buildRefs("ERM-1", List.of("MODFIN-391"), NO_EXCLUSIONS).kept())
                 .containsExactly("ERM-1", "MODFIN-391");
     }
 
     @Test
     void refsSurvivesARouterThatOmitsTheTicket() {
-        assertThat(TestCaseGenAgentWorker.buildRefs("ERM-1", List.of()))
+        assertThat(TestCaseGenAgentWorker.buildRefs("ERM-1", List.of(), NO_EXCLUSIONS).kept())
                 .containsExactly("ERM-1");
     }
 
     @Test
     void refsDropsMalformedRouterValues() {
         assertThat(TestCaseGenAgentWorker.buildRefs("ERM-1",
-                List.of("the story", "ERM", "123", "MODFIN-391", "not a key")))
+                List.of("the story", "ERM", "123", "MODFIN-391", "not a key"), NO_EXCLUSIONS).kept())
                 .containsExactly("ERM-1", "MODFIN-391");
     }
 
     @Test
     void refsDeduplicatesCaseInsensitively() {
         assertThat(TestCaseGenAgentWorker.buildRefs("ERM-1",
-                List.of("erm-1", "MODFIN-391", "modfin-391")))
+                List.of("erm-1", "MODFIN-391", "modfin-391"), NO_EXCLUSIONS).kept())
                 .containsExactly("ERM-1", "MODFIN-391");
+    }
+
+    @Test
+    void refsSkipsExcludedProjectsAndReportsThem() {
+        TestCaseGenAgentWorker.Refs refs = TestCaseGenAgentWorker.buildRefs("ERM-1",
+                List.of("FAT-4021", "MODFIN-391", "fat-4022"), EXCLUDE_FAT);
+        assertThat(refs.kept()).containsExactly("ERM-1", "MODFIN-391");
+        assertThat(refs.excluded()).containsExactly("FAT-4021", "FAT-4022");
+        assertThat(refs.originatingExcluded()).isFalse();
+    }
+
+    @Test
+    void refsKeepsAnOriginatingTicketFromAnExcludedProjectButFlagsIt() {
+        TestCaseGenAgentWorker.Refs refs =
+                TestCaseGenAgentWorker.buildRefs("FAT-4021", List.of("MODFIN-391"), EXCLUDE_FAT);
+        assertThat(refs.kept()).containsExactly("FAT-4021", "MODFIN-391");
+        assertThat(refs.originatingExcluded()).isTrue();
+    }
+
+    @Test
+    void refsMatchesTheProjectKeyExactlyNotAsAPrefix() {
+        assertThat(TestCaseGenAgentWorker.buildRefs("ERM-1", List.of("FATBOY-1"), EXCLUDE_FAT).kept())
+                .containsExactly("ERM-1", "FATBOY-1");
     }
 
     @Test
@@ -382,6 +425,30 @@ class TestCaseGenAgentWorkerTest {
     }
 
     // ── testrail_section is validated, never trusted blindly ────────────────
+
+    private static final String TRIAGE_OK = "CANDIDATES: C900\n";
+    private static final String TRIAGE_NONE = "CANDIDATES: none\n";
+
+    /**
+     * The trap from the design note: a title that reads as a match for a create story, but whose
+     * body is edit-only. Triage must be able to nominate it and the generator must see its body.
+     */
+    private static TestRailConnector coverageTestRail() {
+        return new TestRailConnector() {
+            @Override public long addCase(long s, String t, String steps, String exp) { return 0; }
+            @Override public long addRun(String n, List<Long> ids) { return 0; }
+            @Override public void addResults(long r, Map<Long, Boolean> res, String c) { }
+            @Override public List<TestRailSectionRef> getSections() {
+                return List.of(new TestRailSectionRef(7L, "MARC Authority \u203a Browse"));
+            }
+            @Override public List<TestRailCase> getCases(long sectionId) {
+                return List.of(new TestRailCase(900L, "Clicking \"Save\" on a record",
+                        "An authority record exists and is open in edit mode.\nUser has edit permission.",
+                        List.of(new TestRailStep("Click Actions \u2192 Edit", "Edit form opens"),
+                                new TestRailStep("Click Save", "Record is updated"))));
+            }
+        };
+    }
 
     private static TestRailConnector resolvingTestRail() {
         return new TestRailConnector() {
@@ -687,6 +754,40 @@ class TestCaseGenAgentWorkerTest {
     }
 
     @Test
+    void effortIsSentOnlyOnOpusTierOrAboveAndOnlyForTheReviewer() {
+        for (String capable : List.of("claude-opus-5", "claude-opus-4-8", "claude-fable-5",
+                "claude-mythos-5")) {
+            assertThat(((AnthropicChatOptions) worker(new StubChatModel(), capable)
+                    .chatOptions("cypress-testcase-reviewer").build()).getOutputConfig())
+                    .as(capable).isNotNull();
+        }
+
+        TestCaseGenAgentWorker opus = worker(new StubChatModel(), "claude-opus-5");
+        assertThat(((AnthropicChatOptions) opus.chatOptions("cypress-testcase-gen").build())
+                .getOutputConfig()).isNull();
+
+        TestCaseGenAgentWorker sonnet = worker(new StubChatModel(), "claude-sonnet-4-6");
+        assertThat(((AnthropicChatOptions) sonnet.chatOptions("cypress-testcase-reviewer").build())
+                .getOutputConfig()).isNull();
+    }
+
+    @Test
+    void theReviewerGetsAHigherCeilingThanGeneration() {
+        TestCaseGenAgentWorker worker = worker(new StubChatModel());
+
+        AnthropicChatOptions review =
+                (AnthropicChatOptions) worker.chatOptions("cypress-testcase-reviewer").build();
+        AnthropicChatOptions generate =
+                (AnthropicChatOptions) worker.chatOptions("cypress-testcase-gen").build();
+
+        assertThat(review.getMaxTokens()).isEqualTo(32768);
+        assertThat(generate.getMaxTokens()).isEqualTo(16384);
+        // Caching still applies to every call, whichever prompt it is.
+        assertThat(review.getCacheOptions().getStrategy())
+                .isEqualTo(AnthropicCacheStrategy.SYSTEM_ONLY);
+    }
+
+    @Test
     void passOnSecondAttemptReportsTwoIterations() {
         StubChatModel model = new StubChatModel()
                 .enqueue(ROUTER_OK)
@@ -868,5 +969,264 @@ class TestCaseGenAgentWorkerTest {
 
         assertThat(result.metrics().get("promptTokens")).isEqualTo(370L);
         assertThat(result.metrics().get("completionTokens")).isEqualTo(485L);
+    }
+
+    // ── Coverage depth: triage + full candidate read ─────────────────────────
+
+    @Test
+    void coverageIndexCarriesTruncatedPreconditions() {
+        StubChatModel model = new StubChatModel()
+                .enqueue(ROUTER_OK).enqueue(TRIAGE_NONE).enqueue(PLAN).enqueue(REVIEW_PASS);
+
+        worker(model, 3, coverageTestRail()).execute(freshContext());
+
+        assertThat(model.receivedPrompts().get(2).getContents())
+                .contains("**C900**")
+                .contains("_Preconditions:_ An authority record exists and is open in edit mode.");
+    }
+
+    @Test
+    void nominatedCandidatesReachTheGenerationPromptInFull() {
+        StubChatModel model = new StubChatModel()
+                .enqueue(ROUTER_OK).enqueue(TRIAGE_OK).enqueue(PLAN).enqueue(REVIEW_PASS);
+
+        worker(model, 3, coverageTestRail()).execute(freshContext());
+
+        assertThat(model.receivedPrompts().get(2).getContents())
+                .contains("## Candidate cases read in full")
+                .contains("**Action:** Click Actions \u2192 Edit")
+                .contains("**Expected:** Record is updated");
+    }
+
+    @Test
+    void triageSeesTheIndexButNotTheCandidateBlock() {
+        StubChatModel model = new StubChatModel()
+                .enqueue(ROUTER_OK).enqueue(TRIAGE_OK).enqueue(PLAN).enqueue(REVIEW_PASS);
+
+        worker(model, 3, coverageTestRail()).execute(freshContext());
+
+        String triagePrompt = model.receivedPrompts().get(1).getContents();
+        assertThat(triagePrompt).contains("**C900**");
+        assertThat(triagePrompt).doesNotContain("## Candidate cases read in full");
+    }
+
+    @Test
+    void triageIsSkippedWhenThereIsNoCoverage() {
+        StubChatModel model = new StubChatModel()
+                .enqueue(ROUTER_OK).enqueue(PLAN).enqueue(REVIEW_PASS);
+
+        worker(model).execute(freshContext());
+
+        assertThat(model.receivedPrompts()).hasSize(3);
+    }
+
+    @Test
+    void aFailedTriageStillProducesAPlan() {
+        StubChatModel model = new StubChatModel()
+                .enqueue(ROUTER_OK).enqueue("no candidates line here").enqueue(PLAN).enqueue(REVIEW_PASS);
+
+        AgentResult result = worker(model, 3, coverageTestRail()).execute(freshContext());
+
+        assertThat(result.outputs()).containsKey("test_plan.md");
+        assertThat(model.receivedPrompts().get(2).getContents())
+                .doesNotContain("## Candidate cases read in full");
+    }
+
+    @Test
+    void candidateIdsAreParsedFromTheCandidatesLine() {
+        assertThat(TestCaseGenAgentWorker.parseCandidateIds("CANDIDATES: C900, C1201, 1500"))
+                .containsExactly(900L, 1201L, 1500L);
+    }
+
+    @Test
+    void noneAndGarbageYieldNoCandidates() {
+        assertThat(TestCaseGenAgentWorker.parseCandidateIds("CANDIDATES: none")).isEmpty();
+        assertThat(TestCaseGenAgentWorker.parseCandidateIds("I could not decide.")).isEmpty();
+    }
+
+    @Test
+    void candidateSelectionDropsUnknownIdsAndCaps() {
+        CoveragePrefetch.Coverage coverage = new CoveragePrefetch.Coverage("index",
+                Map.of(1L, new TestRailCase(1L, "a", "", List.of()),
+                        2L, new TestRailCase(2L, "b", "", List.of())),
+                Map.of());
+
+        assertThat(coverage.select(List.of(1L, 99L, 2L, 1L), 15)).containsExactly(1L, 2L);
+        assertThat(coverage.select(List.of(1L, 2L), 1)).containsExactly(1L);
+    }
+
+    // ── Test Group fallbacks are reported, not silent ────────────────────────
+
+    private static TestPlanParser.ParsedCase caseWithTier(String id, String tier) {
+        return new TestPlanParser.ParsedCase(id, "t", tier, false, true, false,
+                List.of(), List.of(), "");
+    }
+
+    @Test
+    void aMissingTestGroupIsNamedInTheNotes() {
+        assertThat(TestCaseGenAgentWorker.testGroupNotes(
+                List.of(caseWithTier("TC001", ""), caseWithTier("TC002", "smoke"))))
+                .singleElement().asString()
+                .contains("TC001").contains("defaulted to Critical Path");
+    }
+
+    @Test
+    void anUnrecognisedTestGroupIsNamedWithItsValue() {
+        assertThat(TestCaseGenAgentWorker.testGroupNotes(List.of(caseWithTier("TC003", "urgent"))))
+                .singleElement().asString()
+                .contains("TC003").contains("urgent");
+    }
+
+    @Test
+    void knownTiersProduceNoNotes() {
+        assertThat(TestCaseGenAgentWorker.testGroupNotes(List.of(
+                caseWithTier("TC001", "smoke"),
+                caseWithTier("TC002", "Critical Path"),
+                caseWithTier("TC003", "extended"))))
+                .isEmpty();
+    }
+
+    @Test
+    void factoryNotesLandAtTheEndOfAnalysis() {
+        String plan = "# Analysis" + "\n" + "\n" + "Some analysis." + "\n" + "\n"
+                + "# Test Cases" + "\n" + "\n" + "## TC001: x" + "\n";
+
+        String out = TestCaseGenAgentWorker.appendFactoryNotes(plan, List.of("something happened"));
+
+        assertThat(out.indexOf("## Factory notes")).isGreaterThan(out.indexOf("Some analysis."));
+        assertThat(out.indexOf("## Factory notes")).isLessThan(out.indexOf("# Test Cases"));
+        assertThat(out).contains("- something happened");
+    }
+
+    @Test
+    void noNotesLeavesThePlanUntouched() {
+        String plan = "# Analysis" + "\n" + "\n" + "# Test Cases" + "\n";
+        assertThat(TestCaseGenAgentWorker.appendFactoryNotes(plan, List.of())).isEqualTo(plan);
+    }
+
+    // ── Automation notes never reach the reviewer ────────────────────────────
+
+    @Test
+    void automationNotesAreStrippedBeforeReview() {
+        String cases = "## TC001: x" + "\n"
+                + "**Steps**" + "\n"
+                + "1. **Action:** Click Save" + "\n"
+                + "   **Expected:** Toast appears" + "\n"
+                + "**Automation notes:** marcAuthority.js, edit(), Select('Source')" + "\n";
+
+        String out = TestCaseGenAgentWorker.forReview(cases);
+
+        assertThat(out).doesNotContain("marcAuthority.js").doesNotContain("Select('Source')");
+        assertThat(out).contains("**Action:** Click Save").contains("Toast appears");
+    }
+
+    @Test
+    void aCaseWithoutAutomationNotesIsUnchanged() {
+        String cases = "## TC001: x" + "\n" + "1. **Action:** Click Save" + "\n";
+        assertThat(TestCaseGenAgentWorker.forReview(cases)).isEqualTo(cases);
+    }
+
+    // ── Coverage matrix accounting ───────────────────────────────────────────
+
+    private static String scenarioPlan(String matrix) {
+        return "# Analysis" + "\n" + "\n"
+                + "## Scenarios" + "\n" + "\n"
+                + "1. Defaults appear on create" + "\n"
+                + "2. Values survive a save" + "\n"
+                + "3. A changed default persists" + "\n" + "\n"
+                + matrix
+                + "# Test Cases" + "\n" + "\n" + "## TC001: x" + "\n";
+    }
+
+    @Test
+    void everyScenarioAccountedForProducesNoNote() {
+        String matrix = "## Coverage matrix" + "\n" + "\n"
+                + "| Scenario | Outcome |" + "\n"
+                + "| 1. Defaults | TC001 |" + "\n"
+                + "| 2. Save | MERGED into TC001 |" + "\n"
+                + "| 3. Changed | TC002 |" + "\n" + "\n";
+        assertThat(TestCaseGenAgentWorker.coverageMatrixNotes(scenarioPlan(matrix))).isEmpty();
+    }
+
+    @Test
+    void aScenarioMissingFromTheMatrixIsNamed() {
+        String matrix = "## Coverage matrix" + "\n" + "\n"
+                + "| 1. Defaults | TC001 |" + "\n"
+                + "| 3. Changed | TC002 |" + "\n" + "\n";
+        assertThat(TestCaseGenAgentWorker.coverageMatrixNotes(scenarioPlan(matrix)))
+                .singleElement().asString().contains("Scenario(s) 2");
+    }
+
+    @Test
+    void aMissingMatrixIsReportedWithTheScenarioCount() {
+        assertThat(TestCaseGenAgentWorker.coverageMatrixNotes(scenarioPlan("")))
+                .singleElement().asString().contains("3 numbered scenario");
+    }
+
+    @Test
+    void anAnalysisReplacedByAFixSummaryIsFlagged() {
+        // What a re-generated plan looked like: the whole analysis swapped for a changelog.
+        assertThat(TestCaseGenAgentWorker.coverageMatrixNotes(
+                "# Analysis" + "\n" + "\n"
+                        + "## Fix applied (attempt 3)" + "\n" + "\n"
+                        + "TC002 step 3 reworded." + "\n" + "\n"
+                        + "# Test Cases" + "\n"))
+                .singleElement().asString().contains("No `## Scenarios`");
+    }
+
+    // ── Empty headings left by the promoted-field strip ──────────────────────
+
+    @Test
+    void anEmptyHeadingLeftByStrippingIsRemoved() {
+        String body = "# Analysis" + "\n" + "\n"
+                + "## Metadata fields" + "\n" + "\n"
+                + "testrail_section: A > B" + "\n"
+                + "team: Promin" + "\n"
+                + "ecs_enabled: false" + "\n" + "\n"
+                + "---" + "\n" + "\n"
+                + "# Test Cases" + "\n" + "## TC001: x" + "\n";
+
+        String out = TestCaseGenAgentWorker.stripPromotedFields(body);
+
+        assertThat(out).doesNotContain("## Metadata fields").doesNotContain("team: Promin");
+        assertThat(out).contains("# Test Cases").contains("## TC001: x");
+    }
+
+    @Test
+    void aHeadingWithRealContentSurvives() {
+        String body = "# Analysis" + "\n" + "\n"
+                + "## Story summary" + "\n" + "\n"
+                + "It changes defaults." + "\n" + "\n"
+                + "# Test Cases" + "\n";
+        assertThat(TestCaseGenAgentWorker.stripPromotedFields(body))
+                .contains("## Story summary").contains("It changes defaults.");
+    }
+
+    // ── An empty reviewer response must not burn the retry budget ────────────
+
+    @Test
+    void anEmptyReviewStopsTheLoopInsteadOfRegenerating() {
+        StubChatModel model = new StubChatModel()
+                .enqueue(ROUTER_OK).enqueue(PLAN).enqueue("");
+
+        AgentResult result = worker(model).execute(freshContext());
+
+        // router + generate + review = 3. A 4th call would mean it regenerated on an empty review.
+        assertThat(model.receivedPrompts()).hasSize(3);
+        assertThat(result.outputs().get("test_plan.md")).contains("NOT CHECKED");
+    }
+
+    @Test
+    void anEmptyReviewSaysTheCasesWereNotChecked() {
+        StubChatModel model = new StubChatModel()
+                .enqueue(ROUTER_OK).enqueue(PLAN).enqueue("");
+
+        String plan = worker(model).execute(freshContext()).outputs().get("test_plan.md");
+
+        assertThat(plan)
+                .contains("returned no usable response")
+                .contains("Review them manually")
+                .doesNotContain("Remaining issues");
+        assertThat(plan).contains("review_passed: false");
     }
 }

@@ -32,6 +32,17 @@ import java.util.stream.Stream;
  */
 public class FragmentPrefetch {
 
+    /**
+     * @param sourceNote which tier answered and how much it found - reported in the provenance
+     *                   block, because "no warning" is not the same as "the clone was there".
+     */
+    public record Fragments(String text, String sourceNote) {
+        public boolean unavailable() {
+            return text.contains("_Unavailable —");
+        }
+    }
+
+
     private static final Logger log = LoggerFactory.getLogger(FragmentPrefetch.class);
 
     private static final String TAF_REPO = "folio-org/stripes-testing";
@@ -103,7 +114,7 @@ public class FragmentPrefetch {
     }
 
     /** Never throws — fragments are a soft dependency. */
-    public String scan(List<String> areas, String summary) {
+    public Fragments scan(List<String> areas, String summary) {
         try {
             return doScan(areas, summary);
         } catch (Exception e) {
@@ -112,7 +123,7 @@ public class FragmentPrefetch {
         }
     }
 
-    private String doScan(List<String> areas, String summary) {
+    private Fragments doScan(List<String> areas, String summary) {
         if (areas == null || areas.isEmpty()) return unavailable("no area detected");
 
         List<String> keywords = extractKeywords(summary);
@@ -124,6 +135,7 @@ public class FragmentPrefetch {
             for (String area : areas) {
                 appendAreaSectionLocal(md, area, keywords);
             }
+            return new Fragments(md.toString(), describe("local clone", md));
         } else {
             log.info("[fragments] TAF clone not ready - using GitHub API fallback");
             if (gitHub instanceof ConnectorHealth ch && !ch.isConfigured()) {
@@ -135,13 +147,25 @@ public class FragmentPrefetch {
                 appendAreaSectionRemote(md, area, keywords);
             }
         }
-        return md.toString();
+        return new Fragments(md.toString(), describe("GitHub API", md));
     }
 
-    private static String unavailable(String reason) {
-        return "# Fragment Library\n\n_Unavailable — " + reason + ". "
+    /** Counts what actually made it into the block, so the note reflects content, not intent. */
+    private static String describe(String tier, StringBuilder md) {
+        long inlined = md.toString().lines().filter(l -> l.startsWith("### ")
+                && !l.startsWith("### Permissions")
+                && !l.startsWith("### Legacy Okapi")).count();
+        long listed = md.toString().lines().filter(l -> l.startsWith("- `")).count();
+        boolean permissions = md.indexOf("### Legacy Okapi permissions") >= 0;
+        return "%s — %d fragment(s) inlined, %d listed%s"
+                .formatted(tier, inlined, listed, permissions ? ", permissions matched" : "");
+    }
+
+    private static Fragments unavailable(String reason) {
+        return new Fragments("# Fragment Library\n\n_Unavailable — " + reason + ". "
                 + "Automation notes and the `automatable` flag are best-effort; "
-                + "flag this in `# Analysis` so the reviewer verifies them._\n";
+                + "flag this in `# Analysis` so the reviewer verifies them._\n",
+                "unavailable — " + reason);
     }
 
     // ── Local filesystem path ──────────────────────────────────────────────────
@@ -227,8 +251,11 @@ public class FragmentPrefetch {
         try {
             List<String> matched = matchPermissions(Files.readString(permFile), area);
             if (!matched.isEmpty()) {
-                md.append("### Permissions\n\n");
-                md.append("Use the exact `gui` string in test case preconditions:\n\n");
+                md.append("### Legacy Okapi permissions (cross-reference only)\n\n");
+                md.append("`gui` labels from the TAF permission dictionary. These are **permissions, "
+                        + "not Capability Sets**. Use them in preconditions only when the area "
+                        + "context file offers no Capability Sets, and then label them as "
+                        + "permissions:\n\n");
                 matched.forEach(p -> md.append("- `").append(p).append("`\n"));
                 md.append("\n");
             }

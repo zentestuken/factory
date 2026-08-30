@@ -2,7 +2,7 @@
 
 For anyone who pulls or rebases onto `main` after this branch lands.
 
-**TL;DR:** three record components added (a compile error each, one line per call site), two
+**TL;DR:** four record components added (a compile error each, one line per call site), two
 connector interfaces gained an abstract method (only bites custom implementations), and two
 behaviour changes that are both improvements. Everything else in `factory-core`,
 `factory-agents` and `factory-connectors` is additive and backward compatible at runtime.
@@ -11,7 +11,7 @@ Scope, so you can stop reading early:
 
 | Section | Who it affects |
 |---|---|
-| §1 records + connector interfaces | **Everyone** who pulls hits §1a-c (compile error until fixed). §1d only if you wrote a custom Jira/GitHub connector. |
+| §1 records + connector interfaces | **Everyone** who pulls hits §1a-c (compile error until fixed). §1e only if you construct `TestRailCase`. §1d only if you wrote a custom Jira/GitHub connector. |
 | §2 gate retry | Anyone whose flow has a HITL gate. Nothing to do, but the "Reject and Re-generate" button now appears on your gates too — read it. |
 | §3 additive changes | Nobody — listed so you do not have to re-derive that they are safe. |
 | §4 cypress deletions | Only if you reused a cypress `worker_id`, or you have parallel work on the cypress flow. Flow modules do not depend on each other, so building a *different* flow is unaffected. |
@@ -19,7 +19,7 @@ Scope, so you can stop reading early:
 
 ---
 
-## 1. REQUIRED — three records gained a component, two interfaces gained a method
+## 1. REQUIRED — four records gained a component, two interfaces gained a method
 
 Java records have no optional or defaulted constructor parameters: the component list *is* the
 canonical constructor signature, so positional construction must pass something for every
@@ -105,6 +105,28 @@ new TestRailProperties(baseUrl, username, apiKey, projectId, null);   // ← sui
 
 `suiteId` selects the TestRail suite for multi-suite projects; `null` keeps the previous
 single-suite behaviour.
+
+### 1e. `TestRailCase` — `steps`
+
+**Who is affected:** anyone constructing `TestRailCase` positionally — in practice tests, since
+the only production call site is `TestRailRestConnector.getCases`.
+
+```java
+// before — 3 components
+new TestRailCase(id, title, preconditions);
+
+// after — 4 components
+new TestRailCase(id, title, preconditions, List.of());   // ← steps
+```
+
+`steps` is `List<TestRailStep>` (`TestRailStep(action, expected)`, also new). The compact
+constructor normalises `null` to an empty list, so `null` is valid.
+
+Nothing about fetching changed: `get_cases` already returned step content and the connector
+simply discarded it. The Cypress flow now reads it so duplicate detection can judge a case on
+its body rather than its title. `TestRailRestConnector` handles both step templates —
+`custom_steps_separated` (structured) and a `custom_steps` blob, which becomes one step with an
+empty `expected`.
 
 ### 1d. `JiraConnector` and `GitHubConnector` gained an abstract method
 
@@ -193,6 +215,7 @@ opt-out on the gate rather than re-introducing a flow-id check.
 | `--link` / `--link-visited` CSS tokens | Added to `tokens.css` in both theme blocks. New tokens only — no existing token or rule changed. They exist because the global `a { color: inherit; text-decoration: none }` made links inside muted prose unrecognisable. |
 | `AbstractLlmAgentWorker.callForText(Map)` now applies `chatOptions()` | **Small behaviour change.** This overload previously bypassed option building entirely, so it silently ignored `maxTokens()`. It has no callers anywhere in the repo, but if you added one on your branch it will now get the worker's options applied — which is what it should always have done. The `callForText(promptId, …)` overload already behaved this way. |
 | `TestRailConnector` gained 7 methods | All `default`, throwing `UnsupportedOperationException`. A custom implementation still compiles; it only fails if a flow calls the new surface. The 3 pre-existing abstract methods are unchanged. |
+| `TestRailRestConnector.resolveSectionByPath` — `parent_id: 0` fix | TestRail occasionally returns `parent_id: 0` for root sections instead of `null`. The previous code only treated `null`/missing as the sentinel, so affected root sections were stored under key `0L` but looked up under `-1L`, silently failing every path that started from a root section. Fixed to treat `0` the same as `null`. No interface change; no call-site impact. |
 | `JiraConnector.getLinkedIssues`, `GitHubConnector.listDirectory` | **Not additive if you wrote your own connector** — these are abstract, not `default`. Implemented by the shipped REST and `UnconfiguredConnectors` beans, so stock users are unaffected. See §1d. |
 | `ExecutionEngine` retry log now passes the exception | Stack traces appear on step-retry warnings. No control-flow change. |
 | `DebugPartialRunController` | `@ConditionalOnProperty(factory.debug.enabled)` — the bean does not exist unless you set it. |

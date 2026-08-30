@@ -99,6 +99,12 @@ flow keeps no per-step artifacts, only the finished plan and, on a retry, the hu
      │    CoveragePrefetch.load(areas)                            → existing coverage
      │      ── area-matched TestRail sections; dedup by case ID; cap 150
      │      ── placement-fallback section excluded by design (non-thematic)
+     │      ── index = title + section + preconditions (truncated 200 chars)
+     │
+     │    cypress-coverage-triage over that index                  small LLM call
+     │      ── nominates the cases whose titles could be a false match, cap 15
+     │      ── Java renders those in full: preconditions + steps + expected results
+     │      ── ids outside the index dropped; any failure → index only, never fails
      │
      │    testRail.listSectionPaths()                             → section list
      │
@@ -311,7 +317,7 @@ currently **18,577 bytes** against **27,467** live — already ~33% behind, sile
 | `AreaDetector` | No | **Validator + fallback** for the router call: resolves returned area names against the 29 real context files; keyword-scores story text + Jira prefix when the router fails or returns something unknown. |
 | `ContextPrefetch` | No | Reads area context file(s) from the skill clone; runs the 5 thin-context triggers; enriches from GitHub/Jira when triggered. |
 | `FragmentPrefetch` | No | Lists + keyword-scores TAF fragments for the detected area. |
-| `CoveragePrefetch` | No | Area-matched TestRail sections → existing cases; dedup by case id, cap 150. |
+| `CoveragePrefetch` | No | Area-matched TestRail sections → existing cases; dedup by case id, cap 150. Renders a title + precondition index, and full bodies for triage-nominated candidates. |
 | `ExamplesPrefetch` | No | Reads `references/examples.md` from the skill clone; GitHub then classpath fallback. |
 | `DevTeamCatalog` | No | The 27 FOLIO teams, parsed from `references/dev-teams.md`. Used by **both** workers, like `TestPlanParser`: the generator canonicalises the team it read off the ticket, sync turns that name into TestRail's `custom_dev_team` option id. Data lives in a resource so filling in a new team is an edit, not a release. |
 | **`TestCaseGenAgentWorker`** | **Yes** | Fetches the Jira issue, runs the router call, assembles the mega-prompt, one call → markdown plan, then the reviewer loop. |
@@ -559,7 +565,7 @@ produce no artifacts.
 | `AreaDetector` | `resolve(List<String> routerAreas, JsonNode issue) → List<String>`<br>`areaTable() → String` (the 29-row table for the router prompt) |
 | `ContextPrefetch` | `load(List<String> areas, JsonNode issue) → ContextBundle(text, enriched, enrichmentNote)` |
 | `FragmentPrefetch` | `scan(List<String> areas, String summary) → String` |
-| `CoveragePrefetch` | `load(List<String> areas) → String` |
+| `CoveragePrefetch` | `load(List<String> areas) → Coverage(index, cases, sections)`<br>`Coverage.select(List<Long>, int cap)`, `Coverage.renderCandidates(List<Long>)` |
 | `ExamplesPrefetch` | `load() → String` |
 
 Notes:
@@ -1044,6 +1050,7 @@ The system prompts are plain `.md` files checked into the factory repo:
 ```
 factory-flow-cypress/src/main/resources/prompts/cypress-testcase-gen/system.md
 factory-flow-cypress/src/main/resources/prompts/cypress-area-router/system.md
+factory-flow-cypress/src/main/resources/prompts/cypress-coverage-triage/system.md
 factory-flow-cypress/src/main/resources/prompts/cypress-testcase-reviewer/system.md
 factory-flow-cypress/src/main/resources/prompts/cypress-automation-agent/system.md   (Part III)
 ```
@@ -1139,6 +1146,9 @@ factory-flow-cypress/
     prompts/cypress-testcase-gen/
       system.md
       user.md
+    prompts/cypress-coverage-triage/
+      system.md
+      user.md
     prompts/cypress-testcase-reviewer/
       system.md
       user.md
@@ -1183,6 +1193,7 @@ Part III additionally reuses `ScriptBundleCodec` (`factory-agents`) and TAF's `C
 | `FACTORY_CYPRESS_TESTRAIL_PRIORITY_ID` | TestRail priority ID (default: `3`=Medium) |
 | `FACTORY_CYPRESS_TESTRAIL_LABEL` | Label title applied to every created case (default: `cypressFlow-delete`); resolved to a label ID at runtime via `getOrCreateLabel` |
 | `FACTORY_CYPRESS_MAX_REVIEW_ITERATIONS` | Max agent review iterations inside `TestCaseGenAgentWorker` per run (default `3`). Set to `0` to skip automated review entirely. |
+| `FACTORY_CYPRESS_REFS_EXCLUDED_PROJECTS` | Comma-separated Jira project keys never added to `refs` (default `FAT`). The originating ticket is always kept; anything dropped is named in `# Analysis`. |
 | `FACTORY_CONNECTORS_TESTRAIL_BASE_URL` | TestRail instance base URL |
 | `FACTORY_CONNECTORS_TESTRAIL_USERNAME` | TestRail username (email) |
 | `FACTORY_CONNECTORS_TESTRAIL_API_KEY` | TestRail API key |

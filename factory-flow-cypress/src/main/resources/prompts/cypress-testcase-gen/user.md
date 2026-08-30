@@ -14,7 +14,7 @@ Generate the test plan for the story below.
 
 {{linked_issues}}
 
-## Cypress fragment library (for the Automatable flag and automation notes)
+## Cypress fragment library (exact UI labels, the Automatable flag, automation notes)
 
 {{fragments}}
 

@@ -116,11 +116,13 @@ public class CypressFlowConfiguration {
                                                           TestPlanParser testPlanParser,
                                                           DevTeamCatalog devTeamCatalog,
                                                           PromptDump promptDump,
-                                                          CypressFlowProperties properties) {
+                                                          CypressFlowProperties properties,
+                                                          @Value("${spring.ai.anthropic.chat.options.model:}")
+                                                          String anthropicModel) {
         return new TestCaseGenAgentWorker(chatClientBuilder.build(), jiraConnector, testRailConnector,
                 skillWorkspaceService, areaDetector, contextPrefetch, fragmentPrefetch,
                 coveragePrefetch, examplesPrefetch, frontmatterCodec, testPlanParser, devTeamCatalog,
-                promptDump, properties);
+                promptDump, properties, anthropicModel);
     }
 
     @Bean

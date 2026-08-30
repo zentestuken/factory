@@ -1,6 +1,7 @@
 package org.folio.factory.cypressfactory.prefetch;
 
 import org.folio.factory.connectors.testrail.TestRailCase;
+import org.folio.factory.connectors.testrail.TestRailStep;
 import org.folio.factory.connectors.testrail.TestRailConnector;
 import org.folio.factory.connectors.testrail.TestRailSectionRef;
 import org.folio.factory.cypressfactory.CypressFlowProperties;
@@ -32,6 +33,7 @@ public class CoveragePrefetch {
     private static final Logger log = LoggerFactory.getLogger(CoveragePrefetch.class);
     private static final int MAX_CASES = 150;
     private static final int MIN_KEYWORD_LENGTH = 3;
+    private static final int PRECONDITION_PREVIEW = 200;
 
     private static final Pattern PERM_LINE = Pattern.compile(
             "^[-*\\d.\\s]*([A-Z][A-Za-z /&-]{2,40}:\\s+[A-Za-z][^\\n]{3,80})$");
@@ -45,7 +47,7 @@ public class CoveragePrefetch {
     }
 
     /** Never throws — coverage is a soft dependency. */
-    public String load(List<String> areas) {
+    public Coverage load(List<String> areas) {
         try {
             return doLoad(areas);
         } catch (Exception e) {
@@ -54,7 +56,7 @@ public class CoveragePrefetch {
         }
     }
 
-    private String doLoad(List<String> areas) {
+    private Coverage doLoad(List<String> areas) {
         List<String> meaningful = areas == null ? List.of()
                 : areas.stream().filter(a -> !"generic".equals(a)).toList();
         if (meaningful.isEmpty()) {
@@ -117,7 +119,9 @@ public class CoveragePrefetch {
         }
 
         log.info("[coverage] Loaded {} existing case(s) from {} section(s)", caseMap.size(), matched.size());
-        return render(new ArrayList<>(caseMap.values()), caseSection, meaningful, matched);
+        return new Coverage(
+                render(new ArrayList<>(caseMap.values()), caseSection, meaningful, matched),
+                caseMap, caseSection);
     }
 
     private List<TestRailSectionRef> findMatchingSections(List<String> areas, List<TestRailSectionRef> all) {
@@ -156,11 +160,18 @@ public class CoveragePrefetch {
             String section = caseSection.get(c.id());
             if (section != null) sb.append(" _(").append(section).append(")_");
             sb.append('\n');
+            String preconds = preview(c.preconditions());
+            if (!preconds.isEmpty()) {
+                sb.append("  _Preconditions:_ ").append(preconds).append('\n');
+            }
         }
 
         Set<String> permissions = extractPermissions(cases);
         if (!permissions.isEmpty()) {
-            sb.append("\n## Permissions referenced in existing cases\n\n");
+            sb.append("\n## Access strings seen in existing case preconditions\n\n");
+            sb.append("Mixed vintage - some are Eureka Capability Sets, some are legacy Okapi "
+                    + "permission display names. Decide which a string is before reusing it, and "
+                    + "label it accordingly.\n\n");
             for (String p : permissions) sb.append("- ").append(p).append('\n');
         }
 
@@ -183,7 +194,95 @@ public class CoveragePrefetch {
         return s.replace("›", ">");
     }
 
-    private String empty(String reason) {
-        return "# Existing Test Coverage\n\n_" + reason + ". No existing coverage loaded._\n";
+    private Coverage empty(String reason) {
+        return Coverage.empty("# Existing Test Coverage\n\n_" + reason
+                + ". No existing coverage loaded._\n");
+    }
+
+    /**
+     * Flattens and truncates a precondition block to one line. Preconditions exist in the index
+     * to let triage rule a case out cheaply ("an existing record is open in edit mode" drops a
+     * create-story candidate) — the full text is rendered only for nominated candidates.
+     */
+    static String preview(String text) {
+        if (text == null || text.isBlank()) return "";
+        String flat = text.replaceAll("\\s+", " ").strip();
+        return flat.length() <= PRECONDITION_PREVIEW
+                ? flat
+                : flat.substring(0, PRECONDITION_PREVIEW).strip() + "\u2026";
+    }
+
+    /**
+     * The loaded coverage: the index every run sees, plus the case bodies kept in memory so a
+     * candidate can be rendered in full without a second TestRail call — {@code get_cases}
+     * already returned everything.
+     */
+    public record Coverage(String index, Map<Long, TestRailCase> cases, Map<Long, String> sections) {
+
+        public Coverage {
+            cases = cases == null ? Map.of() : Map.copyOf(cases);
+            sections = sections == null ? Map.of() : Map.copyOf(sections);
+        }
+
+        static Coverage empty(String index) {
+            return new Coverage(index, Map.of(), Map.of());
+        }
+
+        public boolean isEmpty() {
+            return cases.isEmpty();
+        }
+
+        /**
+         * Keeps only ids this run actually loaded, de-duplicated and capped. Triage nominates
+         * from the index, so an id outside it is a model error, not a case we should fetch.
+         */
+        public List<Long> select(List<Long> nominated, int cap) {
+            if (nominated == null) return List.of();
+            List<Long> kept = new ArrayList<>();
+            for (Long id : nominated) {
+                if (id != null && cases.containsKey(id) && !kept.contains(id)) {
+                    kept.add(id);
+                    if (kept.size() >= cap) break;
+                }
+            }
+            return kept;
+        }
+
+        /** Full preconditions, steps and expected results — the tier that settles the verdict. */
+        public String renderCandidates(List<Long> ids) {
+            if (ids == null || ids.isEmpty()) return "";
+            StringBuilder sb = new StringBuilder(
+                    "\n## Candidate cases read in full\n\n"
+                    + "These titles look close to this story. Judge EXISTING against the content "
+                    + "below, not the title — a matching title with different preconditions or a "
+                    + "different entry point is NOT coverage.\n\n");
+            for (Long id : ids) {
+                TestRailCase c = cases.get(id);
+                if (c == null) continue;
+                sb.append("### C").append(c.id()).append(" — ").append(c.title());
+                String section = sections.get(c.id());
+                if (section != null) sb.append(" _(").append(section).append(")_");
+                sb.append("\n\n");
+
+                sb.append("**Preconditions:**\n");
+                sb.append(c.preconditions().isBlank() ? "_None recorded._\n"
+                        : c.preconditions().strip() + "\n");
+
+                sb.append("\n**Steps:**\n");
+                if (c.steps().isEmpty()) {
+                    sb.append("_None recorded._\n");
+                } else {
+                    int n = 0;
+                    for (TestRailStep step : c.steps()) {
+                        sb.append(++n).append(". **Action:** ").append(step.action()).append('\n');
+                        if (!step.expected().isBlank()) {
+                            sb.append("   **Expected:** ").append(step.expected()).append('\n');
+                        }
+                    }
+                }
+                sb.append('\n');
+            }
+            return sb.toString();
+        }
     }
 }

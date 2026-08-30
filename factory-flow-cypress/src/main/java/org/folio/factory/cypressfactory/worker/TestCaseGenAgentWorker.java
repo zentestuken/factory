@@ -23,6 +23,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.ai.anthropic.AnthropicCacheOptions;
 import org.springframework.ai.anthropic.AnthropicCacheStrategy;
 import org.springframework.ai.anthropic.AnthropicCacheTtl;
+import com.anthropic.models.messages.OutputConfig;
 import org.springframework.ai.anthropic.AnthropicChatOptions;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.messages.MessageType;
@@ -35,6 +36,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -63,6 +66,27 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
     private static final String ROUTER_PROMPT_ID = "cypress-area-router";
     private static final String GEN_PROMPT_ID = "cypress-testcase-gen";
     private static final String REVIEWER_PROMPT_ID = "cypress-testcase-reviewer";
+    private static final String TRIAGE_PROMPT_ID = "cypress-coverage-triage";
+
+    /** Read in full per run. Triage is told to over-select; this is the hard ceiling. */
+    private static final int MAX_COVERAGE_CANDIDATES = 15;
+
+    /**
+     * The reviewer answers in two lines but reasons over every case first, and on a reasoning
+     * model that reasoning is billed against the output ceiling. At the generation ceiling it
+     * could spend the whole budget thinking and return no text at all - a call that looks
+     * successful and yields nothing.
+     */
+    private static final int REVIEWER_MAX_TOKENS = 32768;
+
+    /**
+     * Opus tier and above - Opus 4.5+, Fable and Mythos. Effort is an allow-list rather than a
+     * deny-list because older models reject the parameter outright: an unrecognised model id gets
+     * no effort at all, which every model accepts, so a new or unusual id degrades to the previous
+     * behaviour instead of a 400 that would fail the step.
+     */
+    private static final Pattern OPUS_TIER_OR_ABOVE =
+            Pattern.compile("(?i)(opus-(4-5|4-6|4-7|4-8|5)|fable-5|mythos-5|mythos-preview)\\b");
 
     private static final Logger log = LoggerFactory.getLogger(TestCaseGenAgentWorker.class);
 
@@ -70,6 +94,23 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
     private static final Pattern ROUTER_AREAS = Pattern.compile("(?m)^\\s*AREAS:\\s*(.+)$");
     private static final Pattern ROUTER_REFS = Pattern.compile("(?m)^\\s*REFS:\\s*(.+)$");
     private static final Pattern ROUTER_WHY = Pattern.compile("(?m)^\\s*WHY:\\s*(.+)$");
+    private static final Pattern TRIAGE_CANDIDATES = Pattern.compile("(?m)^\\s*CANDIDATES:\\s*(.+)$");
+    private static final Pattern CASE_ID = Pattern.compile("C?(\\d{1,12})");
+
+    /** `**Automation notes:**` lines, which legitimately carry helper and interactor names. */
+    /** `## Scenarios` / `## Coverage matrix`, and the numbered scenario lines under the former. */
+    private static final Pattern SCENARIOS_HEADING =
+            Pattern.compile("(?mi)^##+[ ]*Scenario(?:s| analysis)[ ]*$");
+    private static final Pattern MATRIX_HEADING =
+            Pattern.compile("(?mi)^##+[ ]*Coverage matrix[ ]*$");
+    private static final Pattern SCENARIO_ITEM =
+            Pattern.compile("(?m)^[ \\t]*(\\d{1,2})[.)][ ]+\\S");
+    /** An `## Xxx` heading with nothing but blank lines or a stray `---` under it. */
+    private static final Pattern EMPTY_HEADING = Pattern.compile(
+            "(?m)^##+[ ][^\\n]+\\R(?:[ \\t]*\\R)*(?:-{3,}[ \\t]*\\R(?:[ \\t]*\\R)*)?(?=##|#[ ]|\\z)");
+
+    private static final Pattern AUTOMATION_NOTES =
+            Pattern.compile("(?mi)^[ \\t]*\\*+Automation notes:\\*+.*(?:\\R|$)");
     private static final Pattern ANALYSIS_TEAM = Pattern.compile("(?mi)^\\s*\\**team\\**:\\s*(.+?)\\s*$");
     private static final Pattern ANALYSIS_ECS = Pattern.compile("(?mi)^\\s*\\**ecs_enabled\\**:\\s*(\\w+)");
     /** The three delta-4 fields, once promoted to frontmatter, are removed from the prose. */
@@ -96,6 +137,7 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
     private final DevTeamCatalog devTeams;
     private final PromptDump promptDump;
     private final CypressFlowProperties properties;
+    private final String model;
     private final int maxReviewIterations;
 
     public TestCaseGenAgentWorker(ChatClient chatClient, JiraConnector jira, TestRailConnector testRail,
@@ -104,7 +146,7 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
                                   CoveragePrefetch coveragePrefetch, ExamplesPrefetch examplesPrefetch,
                                   FrontmatterCodec frontmatterCodec, TestPlanParser parser,
                                   DevTeamCatalog devTeams, PromptDump promptDump,
-                                  CypressFlowProperties properties) {
+                                  CypressFlowProperties properties, String model) {
         super(chatClient);
         this.jira = jira;
         this.testRail = testRail;
@@ -119,6 +161,7 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
         this.devTeams = devTeams;
         this.promptDump = promptDump;
         this.properties = properties;
+        this.model = model == null ? "" : model;
         this.maxReviewIterations = properties.maxReviewIterations();
     }
 
@@ -148,12 +191,34 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
      */
     @Override
     protected ChatOptions.Builder<?> chatOptions() {
-        return AnthropicChatOptions.builder()
-                .maxTokens(maxTokens())
+        return chatOptions(null);
+    }
+
+    @Override
+    protected ChatOptions.Builder<?> chatOptions(String promptId) {
+        boolean reviewing = REVIEWER_PROMPT_ID.equals(promptId);
+        AnthropicChatOptions.Builder builder = AnthropicChatOptions.builder()
+                .maxTokens(reviewing ? REVIEWER_MAX_TOKENS : maxTokens());
+        if (reviewing) {
+            reviewerEffort().ifPresent(builder::effort);
+        }
+        return builder
                 .cacheOptions(AnthropicCacheOptions.builder()
                         .strategy(AnthropicCacheStrategy.SYSTEM_ONLY)
                         .messageTypeTtl(MessageType.SYSTEM, AnthropicCacheTtl.FIVE_MINUTES)
                         .build());
+    }
+
+    /**
+     * Low effort for the reviewer, on Opus tier and above. Checking cases against a fixed checklist is a
+     * scan, not deep reasoning, so the depth buys nothing - and on a reasoning model the thinking
+     * it saves is thinking that would otherwise be charged against the same output ceiling as the
+     * verdict. Deliberately not configurable: it follows the model, which is already configured.
+     */
+    private Optional<OutputConfig.Effort> reviewerEffort() {
+        return OPUS_TIER_OR_ABOVE.matcher(model).find()
+                ? Optional.of(OutputConfig.Effort.LOW)
+                : Optional.empty();
     }
 
     @Override
@@ -173,14 +238,20 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
         RouterResult route = route(issue, linked, dump);
         totalUsage[0] = totalUsage[0].plus(drainUsage());
         List<String> areas = areaDetector.resolve(route.areas(), issue);
-        List<String> refs = buildRefs(issueKey, route.refs());
-        log.info("[{}] Area(s) {} · refs {} · {}", ID, areas, refs, route.why());
+        Refs refs = buildRefs(issueKey, route.refs(), properties.refsExcludedProjects());
+        log.info("[{}] Area(s) {} · refs {} · {}", ID, areas, refs.kept(), route.why());
+        if (!refs.excluded().isEmpty()) {
+            log.info("[{}] Excluded from refs: {} (projects {})",
+                    ID, refs.excluded(), properties.refsExcludedProjects());
+        }
 
         // ── B · Prefetch ─────────────────────────────────────────────────────
         ContextPrefetch.ContextBundle ctx = contextPrefetch.load(areas, issue);
         ExamplesPrefetch.Examples examples = examplesPrefetch.load();
-        String fragments = fragmentPrefetch.scan(areas, issue.summary());
-        String coverage = coveragePrefetch.load(areas);
+        FragmentPrefetch.Fragments fragments = fragmentPrefetch.scan(areas, issue.summary());
+        CoveragePrefetch.Coverage coverage = coveragePrefetch.load(areas);
+        String coverageBlock = coverage.index()
+                + triageCoverage(coverage, issue, dump, totalUsage);
         String sections = buildSectionsBlock();
 
         ArtifactContent previousPlan = context.inputs().get("test_plan.md");
@@ -190,14 +261,14 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
         vars.put("skill", skill);
         vars.put("examples", examples.text());
         vars.put("context_files", ctx.text());
-        vars.put("enrichment", buildProvenanceBlock(route, areas, ctx, examples, fragments, skill));
+        vars.put("enrichment", buildProvenanceBlock(route, areas, refs, ctx, examples, fragments, skill));
         vars.put("issue", renderIssue(issue));
         vars.put("dev_teams", devTeams.nameList());
         vars.put("linked_issues", renderLinkedIssues(linked));
-        vars.put("fragments", fragments);
-        vars.put("coverage", coverage);
+        vars.put("fragments", fragments.text());
+        vars.put("coverage", coverageBlock);
         vars.put("sections", sections);
-        vars.put("refs", String.join(", ", refs));
+        vars.put("refs", refs.joined());
         vars.put("hitl_feedback_block", buildHitlFeedbackBlock(hitlFeedback));
         vars.put("previous_plan_block", buildPreviousPlanBlock(previousPlan));
         vars.put("review_feedback", "");
@@ -222,7 +293,8 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
                 cases = parser.parse(plan);
                 log.info("[{}] Generated {} test case(s), running quality review...", ID, cases.size());
 
-                feedback = reviewTestCases(parser.casesSection(plan), renderIssue(issue), attempt, dump);
+                feedback = reviewTestCases(forReview(parser.casesSection(plan)),
+                        renderIssue(issue), attempt, dump);
                 totalUsage[0] = totalUsage[0].plus(drainUsage());
                 if (feedback.passed()) {
                     log.info("[{}] Quality review PASSED on attempt {}/{}", ID, attempt, maxReviewIterations);
@@ -230,6 +302,19 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
                 }
                 long issueCount = feedback.issuesBlock().lines()
                         .filter(l -> l.strip().startsWith("-")).count();
+                if (issueCount == 0) {
+                    // Nothing actionable came back, so a re-generation would be told to fix an
+                    // empty list and would rewrite blind - strictly worse than keeping this plan.
+                    log.warn("[{}] Quality review on attempt {}/{} returned no verdict and no "
+                            + "issues - keeping this plan and stopping the loop. The reviewer "
+                            + "response was empty or unparseable; see the gate for the raw text.",
+                            ID, attempt, maxReviewIterations);
+                    feedback = new ReviewFeedback(false, "",
+                            "The automated reviewer returned no usable response on attempt "
+                            + attempt + " of " + maxReviewIterations + ", so these cases were not "
+                            + "checked against the quality rules. Review them manually.");
+                    break;
+                }
                 log.info("[{}] Quality review FAILED on attempt {}/{} ({} issue(s)) - retrying",
                         ID, attempt, maxReviewIterations, issueCount);
                 String prior = (String) vars.get("review_feedback");
@@ -248,7 +333,7 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
         String analysis = sectionOf(plan, "# Analysis");
         Map<String, Object> metadata = new LinkedHashMap<>();
         metadata.put("issue_key", issueKey);
-        metadata.put("refs", String.join(", ", refs));
+        metadata.put("refs", refs.joined());
         metadata.put("team", resolveTeam(analysis, issue));
         metadata.put("ecs_enabled", resolveEcs(analysis));
         metadata.put("testrail_section", resolveSection(analysis));
@@ -256,8 +341,11 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
         metadata.put("review_passed", feedback.passed());
         metadata.put("review_iterations", attempt);
 
-        String body = stripPromotedFields(
+        String cleaned = stripPromotedFields(
                 replaceReviewSection(plan, renderReviewSection(feedback, attempt)));
+        List<String> notes = new ArrayList<>(testGroupNotes(cases));
+        notes.addAll(coverageMatrixNotes(cleaned));
+        String body = appendFactoryNotes(cleaned, notes);
 
         Map<String, Object> metrics = !totalUsage[0].isEmpty()
                 ? totalUsage[0].toMetrics()
@@ -278,7 +366,95 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
         String tail = cases < 0 ? "" : body.substring(cases);
         String stripped = PROMOTED_FIELD.matcher(head).replaceAll("");
         stripped = EMPTY_FENCE.matcher(stripped).replaceAll("");
+        // Removing the delta-4 lines can leave their heading behind with nothing under it
+        // ("## Metadata fields" followed by a stray `---`), which ships to every reviewer.
+        stripped = EMPTY_HEADING.matcher(stripped).replaceAll("");
         return BLANK_RUN.matcher(stripped).replaceAll("\n\n") + tail;
+    }
+
+    /**
+     * Names every case whose {@code Test Group} the factory had to fall back on, so a reviewer
+     * at the gate sees it instead of discovering it in TestRail. Two silent defaults used to
+     * stack here: a missing attribute became "critical" in the parser, and an unrecognised value
+     * became Critical Path again at sync time.
+     */
+    static List<String> testGroupNotes(List<TestPlanParser.ParsedCase> cases) {
+        List<String> missing = new ArrayList<>();
+        List<String> unknown = new ArrayList<>();
+        for (TestPlanParser.ParsedCase c : cases) {
+            if (c.testGroup().isBlank()) {
+                missing.add(c.id());
+            } else if (!TestRailSyncAgentWorker.isKnownTier(c.testGroup())) {
+                unknown.add(c.id() + " (\"" + c.testGroup() + "\")");
+            }
+        }
+        List<String> notes = new ArrayList<>();
+        if (!missing.isEmpty()) {
+            notes.add("No `Test Group` on " + String.join(", ", missing)
+                    + " - defaulted to Critical Path. Set it explicitly if that is wrong.");
+        }
+        if (!unknown.isEmpty()) {
+            notes.add("Unrecognised `Test Group` on " + String.join(", ", unknown)
+                    + " - defaulted to Critical Path. Valid values: Smoke, Critical Path, Extended.");
+        }
+        return notes;
+    }
+
+    /**
+     * Checks that every numbered scenario is accounted for in the coverage matrix. A scenario
+     * silently folded into another case reads as lost coverage - the plan says three scenarios
+     * and two cases, and the reviewer has to diff the two lists by hand to find out which.
+     */
+    static List<String> coverageMatrixNotes(String body) {
+        Matcher scenarios = SCENARIOS_HEADING.matcher(body);
+        if (!scenarios.find()) {
+            // A regeneration that replaced `# Analysis` with a fix summary drops the scenarios
+            // and the matrix together, so an absent section is not the same as "nothing to check".
+            return List.of("No `## Scenarios` section in `# Analysis` - the scenario analysis and "
+                    + "coverage matrix are missing. On a re-generated plan this usually means the "
+                    + "analysis was replaced by a summary of the fixes.");
+        }
+
+        int start = scenarios.end();
+        int end = nextHeading(body, start);
+        List<String> numbers = new ArrayList<>();
+        Matcher item = SCENARIO_ITEM.matcher(body.substring(start, end));
+        while (item.find()) {
+            if (!numbers.contains(item.group(1))) numbers.add(item.group(1));
+        }
+        if (numbers.isEmpty()) return List.of();
+
+        Matcher matrix = MATRIX_HEADING.matcher(body);
+        if (!matrix.find()) {
+            return List.of("No `## Coverage matrix` for " + numbers.size()
+                    + " numbered scenario(s). Each scenario should name the case that covers it, "
+                    + "the case it was merged into, or why it is not covered.");
+        }
+        String matrixText = body.substring(matrix.end(), nextHeading(body, matrix.end()));
+        List<String> unaccounted = numbers.stream()
+                .filter(n -> !Pattern.compile("(?m)^[^\\S\\r\\n]*[|]?[^\\S\\r\\n]*" + n + "[.)]")
+                        .matcher(matrixText).find())
+                .toList();
+        return unaccounted.isEmpty() ? List.of()
+                : List.of("Scenario(s) " + String.join(", ", unaccounted)
+                        + " are not in the coverage matrix - confirm they were merged, already "
+                        + "covered, or deliberately skipped.");
+    }
+
+    private static int nextHeading(String body, int from) {
+        Matcher m = Pattern.compile("(?m)^#{1,3}[ ]").matcher(body);
+        return m.find(from) ? m.start() : body.length();
+    }
+
+    /** Appends factory-side observations to the end of `# Analysis`, above `# Test Cases`. */
+    static String appendFactoryNotes(String body, List<String> notes) {
+        if (notes.isEmpty()) return body;
+        StringBuilder block = new StringBuilder("\n## Factory notes\n\n");
+        for (String note : notes) block.append("- ").append(note).append('\n');
+
+        int cases = body.indexOf(TestPlanParser.CASES_HEADING);
+        if (cases < 0) return body.stripTrailing() + "\n" + block;
+        return body.substring(0, cases).stripTrailing() + "\n" + block + "\n" + body.substring(cases);
     }
 
     // ── A · Fetch & route ────────────────────────────────────────────────────
@@ -328,15 +504,28 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
     private record RouterResult(List<String> areas, List<String> refs, String why) {}
 
     /**
+     * {@code kept} always leads with the originating ticket - it is never dropped, even when its
+     * own project is excluded, because a case with no reference is orphaned in TestRail.
+     * {@code excluded} is what the exclusion list removed, so the reviewer can see it at the gate.
+     */
+    record Refs(List<String> kept, List<String> excluded, boolean originatingExcluded) {
+        String joined() {
+            return String.join(", ", kept);
+        }
+    }
+
+    /**
      * SKILL.md steps 1 and 3 are judgment, not keyword matching. Any failure here degrades
      * to {@link AreaDetector}'s keyword scoring — the router must never break the run.
      */
     private RouterResult route(JiraIssue issue, List<JiraIssue> linked, PromptDump.Run dump) {
         try {
+            Set<String> excluded = properties.refsExcludedProjects();
             Map<String, Object> routerVars = Map.of(
                     "issue", renderIssue(issue),
                     "linked_issues", renderLinkedIssues(linked),
-                    "area_table", areaDetector.areaTable());
+                    "area_table", areaDetector.areaTable(),
+                    "excluded_projects", excluded.isEmpty() ? "(none)" : String.join(", ", excluded));
             dump.write("router", ROUTER_PROMPT_ID, routerVars);
             String response = callForText(ROUTER_PROMPT_ID, routerVars);
             if (response == null || response.isBlank()) {
@@ -355,21 +544,83 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
     }
 
     /**
+     * Picks which existing cases are read in full before the generator judges duplicates.
+     *
+     * <p>The index carries only titles and truncated preconditions, and a title that looks
+     * like a match is exactly what produces a wrong EXISTING verdict — so the cases at risk
+     * are the ones triage nominates. Selection is the model's; the bounds are not. Ids outside
+     * this run's index are dropped, the count is capped, and any failure degrades to the index
+     * alone rather than failing the step.</p>
+     */
+    private String triageCoverage(CoveragePrefetch.Coverage coverage, JiraIssue issue,
+                                  PromptDump.Run dump, TokenUsage[] totalUsage) {
+        if (coverage.isEmpty()) return "";
+        try {
+            Map<String, Object> triageVars = Map.of(
+                    "issue", renderIssue(issue),
+                    "coverage", coverage.index());
+            dump.write("coverage-triage", TRIAGE_PROMPT_ID, triageVars);
+            String response = callForText(TRIAGE_PROMPT_ID, triageVars);
+            totalUsage[0] = totalUsage[0].plus(drainUsage());
+
+            List<Long> ids = coverage.select(parseCandidateIds(response), MAX_COVERAGE_CANDIDATES);
+            if (ids.isEmpty()) {
+                log.info("[{}] Coverage triage nominated no cases - judging on titles and "
+                        + "preconditions alone", ID);
+                return "";
+            }
+            log.info("[{}] Coverage triage nominated {} of {} case(s) for a full read: {}",
+                    ID, ids.size(), coverage.cases().size(), ids);
+            return coverage.renderCandidates(ids);
+        } catch (Exception e) {
+            log.warn("[{}] Coverage triage failed ({}) - continuing with titles and "
+                    + "preconditions only", ID, e.getMessage());
+            return "";
+        }
+    }
+
+    /** {@code CANDIDATES: C12345, C12408} - anything else on the line is ignored. */
+    static List<Long> parseCandidateIds(String response) {
+        String line = firstGroup(TRIAGE_CANDIDATES, response);
+        if (line.isBlank() || line.strip().equalsIgnoreCase("none")) return List.of();
+        List<Long> ids = new ArrayList<>();
+        Matcher m = CASE_ID.matcher(line);
+        while (m.find()) {
+            try {
+                ids.add(Long.parseLong(m.group(1)));
+            } catch (NumberFormatException ignored) {
+                // a token too long for a case id is not one
+            }
+        }
+        return ids;
+    }
+
+    /**
      * The originating ticket is always first and can never be dropped: the router is purely
      * additive, and anything that is not a well-formed Jira key is discarded.
      */
-    static List<String> buildRefs(String issueKey, List<String> routerRefs) {
+    static Refs buildRefs(String issueKey, List<String> routerRefs, Set<String> excludedProjects) {
+        Set<String> excluded = excludedProjects == null ? Set.of() : excludedProjects;
         List<String> refs = new ArrayList<>();
         refs.add(issueKey);
+        List<String> dropped = new ArrayList<>();
         if (routerRefs != null) {
             for (String extra : routerRefs) {
                 String k = extra.strip().toUpperCase(Locale.ROOT);
-                if (JIRA_KEY.matcher(k).matches() && !refs.contains(k)) {
+                if (!JIRA_KEY.matcher(k).matches() || refs.contains(k) || dropped.contains(k)) continue;
+                if (excluded.contains(projectKey(k))) {
+                    dropped.add(k);
+                } else {
                     refs.add(k);
                 }
             }
         }
-        return refs;
+        return new Refs(refs, dropped, excluded.contains(projectKey(issueKey)));
+    }
+
+    private static String projectKey(String jiraKey) {
+        int dash = jiraKey == null ? -1 : jiraKey.lastIndexOf('-');
+        return dash < 0 ? "" : jiraKey.substring(0, dash).toUpperCase(Locale.ROOT);
     }
 
     // ── C/D · Generate + validate ────────────────────────────────────────────
@@ -416,6 +667,18 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
 
     // ── E · Review ───────────────────────────────────────────────────────────
 
+    /**
+     * Drops the automation notes before review. They are addressed to an automation engineer and
+     * are required by delta 5 to name real helpers - `marcAuthority.js`, `Select('Source')`,
+     * `edit()` - which is exactly the shape R5 bans in executor-facing text. Leaving them in the
+     * slice produced a whole run of false positives that the generator could not fix by editing,
+     * so the loop burned every iteration and still reported FAIL. The prompt says not to flag
+     * them; this makes it impossible.
+     */
+    static String forReview(String casesSection) {
+        return AUTOMATION_NOTES.matcher(casesSection).replaceAll("");
+    }
+
     private ReviewFeedback reviewTestCases(String casesSection, String issue, int attempt,
                                            PromptDump.Run dump) {
         Map<String, Object> reviewVars = Map.of(
@@ -441,6 +704,11 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
                 + "The previous version failed the automated quality review. "
                 + "**Edit the previous version shown below - fix only the flagged steps; "
                 + "do not change steps or cases that had no issues.**\n\n"
+                + "**Reproduce `# Analysis` in full, exactly as it was.** It is not a changelog: "
+                + "the provenance, Key Business Rules, coverage audit, scenarios and coverage "
+                + "matrix must all still be there. Do not replace it with a summary of what you "
+                + "fixed - if a fix changes something in it, edit that part and leave the rest "
+                + "untouched.\n\n"
                 + "Banned patterns found (must not appear anywhere - not just in the listed instances):\n\n"
                 + issuesBlock + "\n\n"
                 + "Rule reminders:\n"
@@ -453,7 +721,10 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
                 + "- R11: Three or more named items listed inline - lead-in line + bullet list\n"
                 + "- R6: Step actions - imperative style, never \"User clicks\"\n"
                 + "- R7: Every step must have a non-empty expected result\n"
-                + "- R10: At least one step per case must assert a concrete domain value, not only navigation\n";
+                + "- R10: At least one step per case must assert a concrete domain value, not only navigation\n"
+                + "- R12: Double-quote every on-screen string anywhere in the case - labels AND option/status/message values; backticks do not count\n"
+                + "- R13: Capability Sets and permissions - label correctly, one kind per list\n"
+                + "- R14: One expected result asserting several separate checks - lead-in + bullet list\n";
     }
 
     private String buildPreviousAttemptSection(String plan, int attempt) {
@@ -554,6 +825,13 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
         if (feedback.passed()) {
             sb.append("**Result:** PASSED after ").append(iterations).append(" iteration(s)\n\n");
             sb.append(feedback.fullText());
+        } else if (feedback.issuesBlock().isBlank()) {
+            // No issues to list means the reviewer never produced a verdict, so the cases are
+            // unchecked rather than defective - saying "remaining issues" with an empty list
+            // would tell the reviewer at the gate exactly the wrong thing.
+            sb.append("**Result:** NOT CHECKED after ").append(iterations)
+              .append(" iteration(s)\n\n");
+            sb.append(feedback.fullText());
         } else {
             sb.append("**Result:** FAILED after ").append(iterations).append(" iteration(s)\n\n");
             sb.append("Remaining issues (amend the cases above at gate-1):\n\n");
@@ -571,24 +849,38 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
 
     // ── Prompt blocks ────────────────────────────────────────────────────────
 
-    private String buildProvenanceBlock(RouterResult route, List<String> areas,
+    private String buildProvenanceBlock(RouterResult route, List<String> areas, Refs refs,
                                         ContextPrefetch.ContextBundle ctx,
-                                        ExamplesPrefetch.Examples examples, String fragments,
-                                        String skill) {
+                                        ExamplesPrefetch.Examples examples,
+                                        FragmentPrefetch.Fragments fragments, String skill) {
         StringBuilder sb = new StringBuilder("## Provenance (state this verbatim at the top of `# Analysis`)\n\n");
         sb.append("- Area(s): ").append(String.join(", ", areas));
         if (!route.why().isBlank()) sb.append(" — ").append(route.why());
         sb.append('\n');
+        sb.append("- Refs: ").append(refs.joined()).append('\n');
+        if (!refs.excluded().isEmpty()) {
+            sb.append("- Excluded from refs: ").append(String.join(", ", refs.excluded()))
+              .append(" — project(s) ").append(String.join(", ", properties.refsExcludedProjects()))
+              .append(" are never referenced by test cases.\n");
+        }
+        if (refs.originatingExcluded()) {
+            sb.append("- ⚠️ The originating ticket is in an excluded project but is kept in "
+                    + "`refs` — a case with no reference is orphaned in TestRail. Ask the "
+                    + "reviewer whether these cases belong against a different ticket.\n");
+        }
         sb.append("- Context: ").append(ctx.sourceNote()).append('\n');
         sb.append("- Examples: ").append(examples.sourceNote()).append('\n');
         if (!ctx.missingAreas().isEmpty()) {
             sb.append("- ⚠️ No context file for: ").append(String.join(", ", ctx.missingAreas()))
               .append(" — generate from the User Story alone for that area and say so.\n");
         }
-        if (ctx.enriched()) {
-            sb.append("- Context was thin; live enrichment ran (see the Live Enrichment section).\n");
+        if (!ctx.qualityNote().isBlank()) {
+            sb.append("- Context quality: ").append(ctx.qualityNote());
+            if (ctx.enriched()) sb.append(" (see the Live Enrichment section)");
+            sb.append(".\n");
         }
-        if (fragments.contains("_Unavailable —")) {
+        sb.append("- TAF fragments: ").append(fragments.sourceNote()).append('\n');
+        if (fragments.unavailable()) {
             sb.append("- ⚠️ Fragment library unavailable — `Automatable` flags and automation notes "
                     + "are best-effort; ask the reviewer to verify them.\n");
         }

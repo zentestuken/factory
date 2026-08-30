@@ -34,6 +34,9 @@ different Jira projects (e.g. `UIF-525, UIF-526, MODFIN-391`).
   subtasks, review tasks.
 - The originating ticket is added automatically — you do not need to repeat it, and you
   cannot remove it. List only *additional* keys.
+- **Never list a ticket from an excluded project:** {{excluded_projects}}. Those projects track
+  test/automation work, not product behaviour, so a test case must not reference them. The
+  factory drops them anyway; leaving them out keeps your `WHY` line honest.
 - If there are no additional keys, write `REFS: none`.
 
 ---

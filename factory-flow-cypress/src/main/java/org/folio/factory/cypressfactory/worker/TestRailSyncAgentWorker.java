@@ -19,6 +19,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.regex.Matcher;
@@ -209,7 +210,20 @@ public class TestRailSyncAgentWorker implements AgentWorker {
     }
 
     private int mapTestGroup(String testGroup) {
-        return TIER_TO_TEST_GROUP.getOrDefault(testGroup.toLowerCase().replace(" ", ""), 2);
+        Integer id = TIER_TO_TEST_GROUP.get(normalizeTier(testGroup));
+        if (id != null) return id;
+        log.warn("Test Group '{}' is not a known tier - defaulting to Critical Path. "
+                + "Valid values: Smoke, Critical Path, Extended.", testGroup);
+        return 2;
+    }
+
+    /** Shared with the generation worker so both agree on what counts as a known tier. */
+    public static String normalizeTier(String testGroup) {
+        return testGroup == null ? "" : testGroup.toLowerCase(Locale.ROOT).replace(" ", "");
+    }
+
+    public static boolean isKnownTier(String testGroup) {
+        return TIER_TO_TEST_GROUP.containsKey(normalizeTier(testGroup));
     }
 
     private String toHtmlList(List<String> items) {

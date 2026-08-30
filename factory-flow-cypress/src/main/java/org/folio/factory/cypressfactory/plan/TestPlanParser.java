@@ -73,7 +73,7 @@ public class TestPlanParser {
 
             String caseId = heading.group(1).strip();
             String title = heading.group(2).strip();
-            String testGroup = "critical";
+            String testGroup = "";   // blank = attribute absent; the fallback is applied downstream, and reported
             boolean userJourney = false;
             boolean automatable = false;
             boolean ecsEnabled = false;

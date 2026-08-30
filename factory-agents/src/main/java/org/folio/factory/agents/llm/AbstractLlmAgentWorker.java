@@ -14,6 +14,7 @@ import tools.jackson.core.JacksonException;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 /**
  * Base class for LLM-backed agent workers. Provider-agnostic: workers only see
@@ -104,6 +105,23 @@ public abstract class AbstractLlmAgentWorker implements AgentWorker {
     }
 
     /**
+     * Per-prompt options. Defaults to {@link #chatOptions()}, so overriding only the no-arg
+     * form keeps working unchanged.
+     *
+     * <p>Override this instead when one prompt in a multi-call worker needs different options
+     * from the rest. A short-answer call is the usual reason: a reviewer or classifier reasons
+     * over a large input and then answers in a line or two, and on a reasoning model that
+     * reasoning is charged against the same output ceiling as the answer - so the call with the
+     * smallest visible output can be the one that needs the largest ceiling.</p>
+     *
+     * @param promptId the prompt directory being called, or {@code null} for the worker's own
+     *                 {@code prompts/<worker-id>/} templates
+     */
+    protected ChatOptions.Builder<?> chatOptions(String promptId) {
+        return chatOptions();
+    }
+
+    /**
      * Calls the model and binds the response to {@code type} via Spring AI's
      * structured output support, retrying once on unparseable output.
      */
@@ -143,8 +161,12 @@ public abstract class AbstractLlmAgentWorker implements AgentWorker {
     }
 
     private ChatClient.ChatClientRequestSpec buildPrompt(String system, String user) {
+        return buildPrompt(null, system, user);
+    }
+
+    private ChatClient.ChatClientRequestSpec buildPrompt(String promptId, String system, String user) {
         ChatClient.ChatClientRequestSpec spec = chatClient.prompt();
-        ChatOptions.Builder<?> options = chatOptions();
+        ChatOptions.Builder<?> options = chatOptions(promptId);
         if (options != null) {
             spec = spec.options(options);
         }
@@ -213,10 +235,36 @@ public abstract class AbstractLlmAgentWorker implements AgentWorker {
         USAGE.remove();
         String system = PromptLoader.render(PromptLoader.load(promptId, "system"), variables);
         String user = PromptLoader.render(PromptLoader.load(promptId, "user"), variables);
-        ChatResponse response = buildPrompt(system, user).call().chatResponse();
+        ChatResponse response = buildPrompt(promptId, system, user).call().chatResponse();
         captureUsageFromResponse(response);
-        return response != null && response.getResult() != null
-                ? response.getResult().getOutput().getText()
-                : "";
+        return textOf(response, promptId);
+    }
+
+    /**
+     * Joins the text of every generation in the response rather than reading only the first.
+     *
+     * <p>A reasoning model can return a reasoning block ahead of its answer, and the two arrive
+     * as separate generations. Reading {@code getResult()} alone then yields the reasoning
+     * block's text - empty whenever the provider omits reasoning content, which is the default
+     * on current Anthropic models. The caller sees a successful call that returned nothing, and
+     * a worker looping on that response burns its whole retry budget on an empty answer.</p>
+     */
+    private String textOf(ChatResponse response, String promptId) {
+        if (response == null || response.getResults() == null) {
+            log.warn("[{}] Model call for '{}' returned no response", id(), promptId);
+            return "";
+        }
+        String text = response.getResults().stream()
+                .map(generation -> generation.getOutput() == null ? null : generation.getOutput().getText())
+                .filter(part -> part != null && !part.isBlank())
+                .collect(Collectors.joining("\n"));
+        if (text.isBlank()) {
+            log.warn("[{}] Model call for '{}' returned {} generation(s) but no text. "
+                    + "Finish reason(s): {}", id(), promptId, response.getResults().size(),
+                    response.getResults().stream()
+                            .map(g -> g.getMetadata() == null ? "?" : g.getMetadata().getFinishReason())
+                            .toList());
+        }
+        return text;
     }
 }

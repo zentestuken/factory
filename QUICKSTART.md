@@ -31,19 +31,34 @@ docker compose ps
 
 ## Step 2 — Authenticate with Anthropic
 
-**Option A — CodeMie SSO (no personal API key needed)**
+**Option A — CodeMie SSO (EPAM corporate — no personal API key needed)**
 
-Start `codemie-claude` before launching the factory. The application detects the
-running CodeMie proxy port automatically at startup and routes all LLM calls
-through it. Nothing else to configure.
+Start the CodeMie desktop app or CLI proxy. The factory auto-detects the running Node.js
+proxy process via PowerShell and routes all Anthropic API calls through it — no env vars needed.
 
-If auto-detection fails (e.g. CodeMie isn't running yet), you'll see no
-`[factory] CodeMie proxy - routing Anthropic API to http://localhost:<port>` line in the startup log — start CodeMie and
-restart the factory.
+Verification: look for this line in the startup log:
+
+```
+[factory] CodeMie proxy - routing Anthropic API to http://localhost:XXXXX
+```
+
+If you see `[factory] CodeMie proxy not found` instead, start the CodeMie proxy and restart the factory.
+
+> **Override auto-detection:** Set `ANTHROPIC_BASE_URL=http://localhost:<port>` to point at a
+> specific proxy URL instead of relying on auto-detection.
+
+> **Pitfall:** `ANTHROPIC_API_KEY` bypasses CodeMie entirely. If that variable is set in your
+> shell, the factory uses it directly — even if you commented it out of `.env`. To remove it:
+> `unset ANTHROPIC_API_KEY`.
 
 **Option B — Direct Anthropic API key**
 
 Set `ANTHROPIC_API_KEY` in your `.env` file and `source .env` in Git Bash before running.
+
+> **Pitfall:** `source .env` sets variables but never _unsets_ them. If you previously
+> sourced the file with `ANTHROPIC_API_KEY` set and then comment it out, the key stays
+> live in your current shell. To actually remove it run `unset ANTHROPIC_API_KEY` (and any
+> other variables you want gone) before restarting the factory.
 
 ---
 
@@ -185,7 +200,12 @@ mvn install -DskipTests
 Create a `.env` file in the repo root (gitignored) with your credentials:
 
 ```
-# LLM — Option A: CodeMie SSO (start codemie-claude first, no key needed)
+# LLM — Option A: CodeMie SSO (EPAM)
+# Start the CodeMie desktop app or CLI proxy — no env vars needed.
+# The factory auto-detects the running proxy process at startup.
+# ANTHROPIC_API_KEY must NOT be set (it bypasses CodeMie entirely).
+# Optional explicit override: ANTHROPIC_BASE_URL=http://localhost:<port>
+
 # LLM — Option B: direct Anthropic key
 ANTHROPIC_API_KEY=sk-ant-api03-...
 

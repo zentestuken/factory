@@ -67,15 +67,28 @@ Joining them inline — with semicolons, "and", commas, or any other connector �
 
 Detect: expected result contains two or more occurrences of ` = ` and no bullet list (`- ` lines).
 The separator is irrelevant: semicolons, "and", commas, or bare prose all trigger the rule equally.
+Quoting or backticking the field names and values does not exempt them - count the ` = ` signs.
+
+Violation: `the "008" row shows "Source" = `\ - National bibliographic agency` and "Roman" = `| - No attempt to code``
 
 Flag with: case ID, step number.
 
 ### R5 — Automation framework code in steps
-Steps and expected results must be executable by a QA engineer in a browser. No test framework
-syntax is allowed.
 
-Banned tokens: `cy.`, `cy.get(`, `cy.intercept`, `cy.wait`, `cy.visit`, `.should(`, `@alias`,
-`data-testid=`, `.find(`, `.click()`, `expect(`, `describe(`, `it(`, `beforeEach(`.
+**Scope: `**Action:**` and `**Expected:**` text only.** Those are executed by a person in a
+browser, so no test framework syntax may appear in them.
+
+Banned tokens there: `cy.`, `cy.get(`, `cy.intercept`, `cy.wait`, `cy.visit`, `.should(`,
+`@alias`, `data-testid=`, `.find(`, `.click()`, `expect(`, `describe(`, `it(`, `beforeEach(`.
+
+**NEVER flag the `**Automation notes:**` line.** It is a factory field addressed to an automation
+engineer, not to the executor, and it exists precisely to name real helpers from the fragment
+library. File names (`marcAuthority.js`), interactor calls (`Select('Source')`,
+`Select(or('Roman', 'Roman*'))`), method names (`edit()`, `verifyAfterSaveAndClose()`) and
+property names (`checkedOptionText`) are all **required** content there. Reporting them is a
+false positive that costs a whole regeneration.
+
+The same applies to the `Automatable` attribute line.
 
 Flag with: case ID, step number, exact offending token.
 
@@ -124,6 +137,82 @@ Navigation-only patterns are insufficient on their own: `pane is displayed`, `pa
 If EVERY expected result in a case is navigation-only with zero concrete assertions → flag the
 entire case.
 
+### R12 - Unquoted on-screen string
+Every literal string the executor reads off the screen must be in double quotes, anywhere in the
+case - title, preconditions, action or expected result.
+
+Covers control labels (buttons, fields, columns, tabs, accordions, menu items, checkboxes) **and
+the values too**: dropdown / multi-select / radio option text, status values, type values, and
+message text of any kind - toasts, banners, inline validation errors, empty-state text,
+confirmation-modal text, API error messages.
+
+Backticks and single quotes do not satisfy this rule. Flag `` `Source` = `\ - National
+bibliographic agency` `` - both halves belong in double quotes.
+
+Do NOT flag:
+- numbers or money: `Available = $150.00`, `3 rows`
+- placeholders and symbolic identifiers: `<barcode>`, `<value>`, `service point S`
+- generic prose that is not a label: "create instance form", "secondary style", "disabled"
+- Capability Sets and permission names in preconditions - those are R13's subject
+
+Flag with: case ID, where it appears, and the unquoted string.
+
+### R13 - Capability Sets and permissions mislabelled or mixed
+A precondition list of access rights must name what it actually contains, and every entry must be
+the same kind.
+
+A **Capability Set** reads as `Type - Resource - Action` or `Resource - Action`
+(`Data - UI-Inventory - Create`); separators vary. A **permission display name** reads as
+`Module: verb, verb noun` (`Inventory: View, create instances`, `Requests: All permissions`).
+
+Flag either of:
+- a list introduced as **Capability Sets** whose entries are permission display names, or a list
+  introduced as **permissions** whose entries are Capability Sets;
+- a single user's list containing both kinds.
+
+Do NOT flag formatting variation within one kind - separator, capitalisation, or a missing Type
+token are all acceptable. Only mislabelling and mixing are violations.
+
+Flag with: case ID and the offending entry.
+
+### R14 - Multiple assertions packed into one sentence
+An expected result that asserts two or more **distinct observable facts** must use a lead-in line
++ bullet list, even when none of them is a `Field = value` pair.
+
+Distinct facts are things an executor checks separately: a toast, a navigation outcome, a field
+value, a status, a count, a row appearing, a button becoming enabled. Joining them with
+semicolons, "and", or commas produces a sentence the executor has to take apart before they can
+verify anything.
+
+Violation:
+```
+Expected: Toast "Record created." appears; detail view of the new record opens; the "008" row
+shows "Source" = <value> and "Roman" = <value>
+```
+
+Required:
+```
+Expected:
+- Toast "Record created." appears
+- Detail view of the new record opens
+- "008" row shows "Source" = <value>
+- "008" row shows "Roman" = <value>
+```
+
+This is broader than R4 (which needs `= ` pairs) and R11 (which needs 3+ named items of one
+kind). Report the most specific rule that applies; do not report the same text under two rules.
+
+**Do NOT flag an expected result that already uses a bullet list.** If the facts are on `- `
+lines, the rule is satisfied - a lead-in clause is allowed to name the context or the screen the
+bullets describe ("The quickMARC editor opens showing the record's current "008" field;
+specifically:" followed by bullets is correct, not a violation). Only flag facts that stay joined
+in prose with no bullets under them.
+
+Do NOT flag a single assertion that merely has a subordinate clause - "Results list shows 3 rows,
+sorted by Title" is one fact with a qualifier, not two facts.
+
+Flag with: case ID, step number.
+
 ---
 
 ## Output format
@@ -144,6 +233,9 @@ Issues:
 - <CaseID> [R<N>] Step <N> expected: "<quote>" — <one-line reason>
 - <CaseID> [R10] No step asserts a concrete value — all expected results are navigation-only
 - <CaseID> [R11] Step <N> expected: "<quote>" — 3+ named items listed inline; use lead-in + bullets
+- <CaseID> [R12] Step <N> expected: <string> is an on-screen string and must be in double quotes
+- <CaseID> [R13] Preconditions: "<entry>" is a permission display name in a Capability Set list
+- <CaseID> [R14] Step <N> expected: "<quote>" - several separate checks in one sentence; use lead-in + bullets
 ```
 
 Rules:

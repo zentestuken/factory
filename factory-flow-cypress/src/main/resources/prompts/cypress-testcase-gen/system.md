@@ -72,6 +72,137 @@ and note the mismatch in one line at the top of `# Analysis` so a human can fix 
 
 6. **`refs` is handled by the factory.** Do not emit it.
 
+7. **Every literal on-screen string goes in double quotes, everywhere in the case** - titles,
+   preconditions, actions and expected results alike.
+
+   **Quote these:**
+   - control labels: buttons, fields, columns, tabs, accordions, menu items, checkboxes, links
+   - **the values as well as the labels**: dropdown, multi-select and radio option text, checkbox
+     option text, status values, type values, any option the executor picks from a list
+   - message text of any kind: toasts, banners, callouts, inline validation errors, empty-state
+     text, confirmation-modal body text, API/error response messages
+   - any other string the executor reads off the screen and compares character for character
+
+   **Use double quotes, not backticks or single quotes.** Backticks read as code; these are
+   strings a human matches against a screen.
+
+   **Do not quote:**
+   - numbers and money: `Available = $150.00`, `= 3 rows`
+   - placeholders and symbolic identifiers: `<barcode>`, `<value>`, `service point S`
+   - generic prose that is not a label: the create instance form, secondary style, disabled
+   - Capability Sets and permission names in preconditions - see delta 9, they have their own form
+
+   ```
+   ## TC001: "Save & keep editing" appears left of "Save & close" and is disabled on form open
+   ```
+
+   ```
+   Expected:
+   - Toast "Record created." appears
+   - "008" row shows "Source" = "\ - National bibliographic agency"
+   - "008" row shows "Roman" = "| - No attempt to code"
+   ```
+
+   not `Source` = `\ - National bibliographic agency`, and not Source = National bibliographic
+   agency.
+
+8. **Cypress fragments are the last source for exact UI labels.** They are page objects from
+   `stripes-testing`, so any human-readable string in them is a real rendered label. Use them
+   only to fill gaps, in this order:
+
+   1. **The area context file** — verified against real TestRail cases. Always wins.
+   2. **The story text** — but only where it quotes a literal on-screen string, not where it
+      paraphrases one.
+   3. **The supplied fragments** — where the two above are silent.
+   4. **Neither confirms it** — write the most likely exact text and flag it
+      `(verify exact wording on first execution)`.
+
+   A fragment can lag the shipped UI, which is why it ranks last. Never let it override a
+   label the context file confirms.
+
+   The interactor type also tells you which verb the step needs:
+
+   | In the fragment | Write in the step |
+   |---|---|
+   | `Button('Save & close')` | Click the "Save & close" button |
+   | `Accordion('Contributor')` | Expand the "Contributor" accordion |
+   | `Checkbox('Suppress from discovery')` | Check "Suppress from discovery" |
+   | `Select('Resource type')` | Select `<value>` from the "Resource type" dropdown |
+   | `TextField('Name')` | Enter `<value>` in the "Name" field |
+   | `Modal('Are you sure?')` | The "Are you sure?" modal opens |
+   | `KeyValue('Resource title')` | "Resource title" = `<value>` |
+
+   **Only a plain quoted string argument is a label.** Interactors can also be located by
+   filters that have no on-screen text - `Button({ id: 'clickable-save' })`,
+   `Pane({ index: 0 })`, `MultiColumnListCell({ row: 0, column: 'Name' })`, class names, or
+   any other filter the interactor defines. Those identify an element to code, not to a
+   person. Skip them: take the control type if it helps the verb, and get the label from
+   sources 1, 2 or 4 instead.
+
+   Never copy a selector, `data-testid`, element id, CSS path, interactor call or any other
+   code into a case - a manual executor cannot see it, and the quality review rejects it.
+
+
+9. **Capability Sets and permissions are different things - name them correctly and never mix
+   them in one list.**
+
+   A **Capability Set** is what Eureka grants. It reads as `Type - Resource - Action`
+   (`Data - UI-Inventory - Create`, `Settings - UI-Data-Export Settings - Edit`) or sometimes
+   just `Resource - Action`. Type is one of Data, Settings, Procedural; Action is one of View,
+   Create, Edit, Delete, Manage, Execute. Separators vary - ` - ` and ` | ` are the usual ones.
+
+   A **permission display name** is the legacy Okapi label. It reads as
+   `Module: verb, verb noun` - `Inventory: View, create instances`,
+   `Requests: All permissions`. It is NOT a Capability Set, whatever else the context calls it.
+
+   Rules:
+
+   - Use the area context file's `## Capability Sets` table when it has one. Take its strings as
+     written - the team's own formatting is correct even when it varies between files.
+   - Only if no Capability Sets are available, fall back to permission display names, and then
+     label the precondition **"User with the following permissions is logged in:"** rather than
+     calling them Capability Sets.
+   - **Every entry in one user's list must be the same kind.** Never half sets, half permissions.
+   - Never take a Capability Set from a `Permission Reference`, `package.json`, `permissionName`
+     or `displayName` table - those columns are permissions regardless of the heading above them.
+     The same applies to the TAF `gui` strings and to access strings harvested from existing
+     cases: decide what a string is before reusing it.
+   - Never invent either. If neither source covers the access a scenario needs, write the closest
+     available entry and add `(verify in Eureka)`.
+
+   The bar is that a human provisioning the test user - and the automation agent later - can tell
+   exactly what to assign. Correct labelling and one consistent kind per list is what achieves
+   that; the punctuation does not matter.
+
+
+10. **`## Coverage matrix` is mandatory, and every numbered scenario must appear in it.**
+
+    Number the scenarios in `## Scenarios`, then account for each one. A reader must never have
+    to diff the scenario list against the case list to work out what happened to a scenario.
+
+    ```
+    ## Coverage matrix
+
+    | Scenario | Outcome |
+    |---|---|
+    | 1. 008 opens with the new defaults | TC001 (steps 1-2) |
+    | 2. Values survive save and re-open | MERGED into TC001 (steps 3-5) |
+    | 3. A changed default is persisted | TC002 |
+    | 4. Import path is unaffected | EXISTING - C1332502 already covers it |
+    | 5. Bulk rollback | NOT COVERED - out of scope for this story |
+    ```
+
+    Allowed outcomes: a case id, `MERGED into TCxxx`, `EXISTING - Cxxxxxx`, or
+    `NOT COVERED - <reason>`. Nothing else. Cite the steps when a scenario is merged.
+
+    **Merging is fine; hiding it is not.** Do not split one lifecycle into per-checkpoint stubs
+    that rebuild the same preconditions - merge them into one case and record the merge here.
+
+11. **A case that merges scenarios across a save is a journey.** If a single case carries a
+    record through create → save → re-open, or otherwise spans more than one state transition,
+    set `- **User Journey:** Yes`. Atomic means one operation verified once. A case whose steps
+    cover two numbered scenarios is almost always a journey - check the flag before finalising.
+
 ---
 
 ## Output envelope — mandatory
@@ -88,7 +219,7 @@ this order. No YAML frontmatter — the factory writes it.
 ```
 
 - `# Analysis` — provenance, Key Business Rules touched, the scenario analysis, the coverage
-  matrix, AC gaps, the three fields from delta 4, and any notes.
+  matrix (mandatory - see delta 11), AC gaps, the three fields from delta 4, and any notes.
 - `# Test Cases` — nothing but case blocks in the exact format below.
 - `# Review` — leave **empty**. The factory fills it in.
 
@@ -129,8 +260,10 @@ Hard requirements:
 - Attribute lines are `- **Name:** value` — the colon is inside the bold markers.
 - Steps are numbered `1.`, `2.`, … and every `**Action:**` is followed by `**Expected:**`.
 - **Every step must have a non-empty expected result.** Never blank, never `N/A`, `-`, or `TBD`.
-- Two or more `Field = value` pairs in one expected result become a bullet list, never a
-  semicolon run-on.
+- An expected result that asserts more than one thing becomes a lead-in line + bullet list,
+  never a run-on. This covers `Field = value` pairs and any other mix of separate checks - a
+  toast, a view opening, a status, a count. One sentence per fact the executor verifies
+  separately; bullets whenever there is more than one.
 
 
 ## Golden examples — match this verification depth and style
