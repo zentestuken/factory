@@ -58,7 +58,7 @@ class TestCaseGenAgentWorkerTest {
 
             testrail_section: MARC Authority › Browse
             team: Spitfire
-            ecs_enabled: false
+            ecs_story: non-ecs
 
             ## Coverage matrix
             | AC | Scenario | Status |
@@ -247,7 +247,7 @@ class TestCaseGenAgentWorkerTest {
         assertThat(plan).contains("issue_key: \"UIMARCAUTH-553\"");
         assertThat(plan).contains("refs: \"UIMARCAUTH-553, MODELINKS-201\"");
         assertThat(plan).contains("team: \"Spitfire\"");
-        assertThat(plan).contains("ecs_enabled: false");
+        assertThat(plan).contains("ecs_story: \"non-ecs\"");
         assertThat(plan).contains("case_count: 1");
         assertThat(plan).contains("review_passed: true");
         assertThat(plan).contains("review_iterations: 1");
@@ -642,7 +642,7 @@ class TestCaseGenAgentWorkerTest {
 
                 testrail_section: MARC › MARC authority › Create
                 team: Thunderjet
-                ecs_enabled: false
+                ecs_story: non-ecs
 
                 ---
 
@@ -655,7 +655,7 @@ class TestCaseGenAgentWorkerTest {
 
         assertThat(stripped).doesNotContain("testrail_section")
                 .doesNotContain("team:")
-                .doesNotContain("ecs_enabled")
+                .doesNotContain("ecs_story")
                 .doesNotContain("---")
                 .contains("Some prose.")
                 .contains("## TC001: Something");
@@ -668,7 +668,7 @@ class TestCaseGenAgentWorkerTest {
 
                 testrail_section: MARC
                 team: Thunderjet
-                ecs_enabled: true
+                ecs_story: ecs
 
                 # Test Cases
                 """;
@@ -1182,7 +1182,7 @@ class TestCaseGenAgentWorkerTest {
                 + "## Metadata fields" + "\n" + "\n"
                 + "testrail_section: A > B" + "\n"
                 + "team: Promin" + "\n"
-                + "ecs_enabled: false" + "\n" + "\n"
+                + "ecs_story: non-ecs" + "\n" + "\n"
                 + "---" + "\n" + "\n"
                 + "# Test Cases" + "\n" + "## TC001: x" + "\n";
 

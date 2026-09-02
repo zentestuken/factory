@@ -62,7 +62,6 @@ public class TestRailSyncAgentWorker implements AgentWorker {
 
         Frontmatter fm = frontmatterCodec.parse(testPlan);
         JsonNode planFm = fm.metadata();
-        boolean planEcs = planFm.path("ecs_enabled").asBoolean(false);
 
         List<ParsedCase> cases = parser.parse(fm.body());
         if (cases.isEmpty()) {
@@ -84,7 +83,7 @@ public class TestRailSyncAgentWorker implements AgentWorker {
 
         Map<String, String> idMap = new HashMap<>();
         for (ParsedCase tc : cases) {
-            boolean tcEcs = planEcs || tc.ecsEnabled();
+            boolean tcEcs = tc.ecsEnabled();
             Map<String, Object> metadata = buildMetadata(tc, tcEcs, cypressLabelId, devTeamId, refs);
             try {
                 long caseId = testRail.addCaseWithMetadata(

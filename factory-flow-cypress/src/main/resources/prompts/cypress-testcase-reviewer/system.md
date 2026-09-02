@@ -13,7 +13,7 @@ Flag expected results that are vacuously true — ones that could pass even if t
 were completely non-functional.
 
 **Unconditionally banned phrases** (case-insensitive):
-`works correctly`, `is successful`, `is correct`, `properly`, `as expected`, `confirming`,
+`works correctly`, `is successful`, `is correct`, `properly`, `as expected`,
 `is shown` (without a quoted subject), `is displayed` (without the specific named UI element).
 
 **Navigation step carve-out — do NOT flag these as R1:**
@@ -184,13 +184,18 @@ value, a status, a count, a row appearing, a button becoming enabled. Joining th
 semicolons, "and", or commas produces a sentence the executor has to take apart before they can
 verify anything.
 
-Violation:
+Violation (with `=` pairs):
 ```
 Expected: Toast "Record created." appears; detail view of the new record opens; the "008" row
 shows "Source" = <value> and "Roman" = <value>
 ```
 
-Required:
+Violation (plain UI-state assertions — no `=` required):
+```
+Expected: "Actions" menu expands; "Send text message" entry is disabled; "Edit" remains enabled
+```
+
+Required form for both:
 ```
 Expected:
 - Toast "Record created." appears
@@ -215,6 +220,16 @@ Flag with: case ID, step number.
 
 ---
 
+### R15 — Missing ECS flag
+
+Every case must have exactly one `- **ECS:** Yes` or `- **ECS:** No` attribute line in its
+header block (between the title and `**Preconditions**`). A missing or blank `ECS` attribute
+is a violation regardless of whether the case is ECS-relevant.
+
+Flag with: case ID.
+
+---
+
 ## Output format
 
 **`REVIEW_RESULT:` must be the very first line of your response — no text before it.**
@@ -236,6 +251,7 @@ Issues:
 - <CaseID> [R12] Step <N> expected: <string> is an on-screen string and must be in double quotes
 - <CaseID> [R13] Preconditions: "<entry>" is a permission display name in a Capability Set list
 - <CaseID> [R14] Step <N> expected: "<quote>" - several separate checks in one sentence; use lead-in + bullets
+- <CaseID> [R15] Missing ECS attribute — add "- **ECS:** Yes" or "- **ECS:** No" to the case header
 ```
 
 Rules:

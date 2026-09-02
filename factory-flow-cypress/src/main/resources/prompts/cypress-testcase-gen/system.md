@@ -48,7 +48,7 @@ and note the mismatch in one line at the top of `# Analysis` so a human can fix 
    ```
    testrail_section: Parent › Child › Target
    team: <Development Team from the ticket, or unknown>
-   ecs_enabled: true|false
+   ecs_story: non-ecs|ecs|mixed
    ```
 
    Write them as three plain lines. Do **not** wrap them in `---` separators or any other
@@ -60,7 +60,15 @@ and note the mismatch in one line at the top of `# Analysis` so a human can fix 
    The implementing team owns the tests, so this must match the story. The only valid team
    names are: {{dev_teams}}.
 
-   Derive `ecs_enabled` from the story's labels and text, never from assumptions.
+   For `ecs_story`: classify the story as a whole — `ecs` if it explicitly tests
+   cross-tenant/consortia behavior; `non-ecs` if it is purely single-tenant; `mixed` if it
+   introduces changes that affect both modes in distinct ways and warrants cases of both kinds.
+   Use this to calibrate focus and the distribution of `- **ECS:** Yes|No` across cases — it
+   does not override the per-case decision. A `non-ecs` story may occasionally warrant a small
+   number of additional ECS-specific cases, but only add them when the gathered context (story
+   text, ACs, area context file) makes it unambiguous that ECS behavior needs separate
+   verification — never add them speculatively.
+
    Choose `testrail_section` from the supplied section list; if none fits precisely, use the
    closest parent rather than guessing a leaf.
 
@@ -260,10 +268,15 @@ Hard requirements:
 - Attribute lines are `- **Name:** value` — the colon is inside the bold markers.
 - Steps are numbered `1.`, `2.`, … and every `**Action:**` is followed by `**Expected:**`.
 - **Every step must have a non-empty expected result.** Never blank, never `N/A`, `-`, or `TBD`.
-- An expected result that asserts more than one thing becomes a lead-in line + bullet list,
-  never a run-on. This covers `Field = value` pairs and any other mix of separate checks - a
-  toast, a view opening, a status, a count. One sentence per fact the executor verifies
-  separately; bullets whenever there is more than one.
+- An expected result that asserts more than one thing uses a lead-in line + bullet list.
+  **A semicolon in an expected result is always wrong — split at every semicolon into a bullet.**
+  This applies to `Field = value` pairs and to any other mix of separate UI-state checks:
+  ❌ `"Actions" menu expands; "Send text message" is disabled; "Edit" remains enabled`
+  ✅ Expected:
+     - "Actions" menu expands
+     - "Send text message" entry is disabled (greyed out)
+     - "Edit" and other standard actions remain enabled
+  One bullet per fact the executor checks separately.
 
 
 ## Golden examples — match this verification depth and style

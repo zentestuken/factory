@@ -235,8 +235,8 @@ curl -s -X POST http://localhost:8080/api/debug/partial-run \
   "startStepIndex": 8,
   "triggerPayload": {"issueKey": "ERM-1234"},
   "artifacts": {
-    "test_plan.md": "---\nissue_key: ERM-1234\nteam: spitfire\necs_enabled: false\ncase_count: 1\n---\n\n## TC-1: Create purchase order\n\n- **Tier:** criticalPath\n- **Automatable:** Yes\n- **ECS:** No\n\n**Preconditions**\n- User with Acquisitions module access is logged in\n- At least one active vendor record exists in the system\n\n**Steps**\n1. **Action:** Navigate to the Orders module and open Purchase orders\n   **Expected:** Purchase orders list is displayed with New button visible\n2. **Action:** Click New to open the order creation form\n   **Expected:** Order creation form opens with all required fields empty\n3. **Action:** Fill in Vendor and Order type then click Save and close\n   **Expected:** Order is saved with status Pending and appears in the list\n",
-    "scope_manifest.md": "---\nissue_key: ERM-1234\necs_enabled: false\nteam: spitfire\n---\n\n## Analysis\n",
+    "test_plan.md": "---\nissue_key: ERM-1234\nteam: spitfire\necs_story: \"non-ecs\"\ncase_count: 1\n---\n\n## TC-1: Create purchase order\n\n- **Tier:** criticalPath\n- **Automatable:** Yes\n- **ECS:** No\n\n**Preconditions**\n- User with Acquisitions module access is logged in\n- At least one active vendor record exists in the system\n\n**Steps**\n1. **Action:** Navigate to the Orders module and open Purchase orders\n   **Expected:** Purchase orders list is displayed with New button visible\n2. **Action:** Click New to open the order creation form\n   **Expected:** Order creation form opens with all required fields empty\n3. **Action:** Fill in Vendor and Order type then click Save and close\n   **Expected:** Order is saved with status Pending and appears in the list\n",
+    "scope_manifest.md": "---\nissue_key: ERM-1234\nteam: spitfire\n---\n\n## Analysis\n",
     "scenario_list.md": "---\ntestrail_section: 114774\n---\n\n# Scenarios\n"
   }
 }
@@ -256,8 +256,8 @@ curl -s -X POST http://localhost:8080/api/debug/partial-run \
   "startStepIndex": 7,
   "triggerPayload": {"issueKey": "ERM-1234"},
   "artifacts": {
-    "test_plan.md": "---\nissue_key: ERM-1234\nteam: spitfire\necs_enabled: false\ncase_count: 1\n---\n\n## TC-1: Create purchase order\n\n- **Tier:** criticalPath\n- **Automatable:** Yes\n- **ECS:** No\n\n**Preconditions**\n- User with Acquisitions module access is logged in\n- At least one active vendor record exists in the system\n\n**Steps**\n1. **Action:** Navigate to the Orders module and open Purchase orders\n   **Expected:** Purchase orders list is displayed with New button visible\n2. **Action:** Click New to open the order creation form\n   **Expected:** Order creation form opens with all required fields empty\n3. **Action:** Fill in Vendor and Order type then click Save and close\n   **Expected:** Order is saved with status Pending and appears in the list\n",
-    "scope_manifest.md": "---\nissue_key: ERM-1234\necs_enabled: false\nteam: spitfire\n---\n\n## Analysis\n",
+    "test_plan.md": "---\nissue_key: ERM-1234\nteam: spitfire\necs_story: \"non-ecs\"\ncase_count: 1\n---\n\n## TC-1: Create purchase order\n\n- **Tier:** criticalPath\n- **Automatable:** Yes\n- **ECS:** No\n\n**Preconditions**\n- User with Acquisitions module access is logged in\n- At least one active vendor record exists in the system\n\n**Steps**\n1. **Action:** Navigate to the Orders module and open Purchase orders\n   **Expected:** Purchase orders list is displayed with New button visible\n2. **Action:** Click New to open the order creation form\n   **Expected:** Order creation form opens with all required fields empty\n3. **Action:** Fill in Vendor and Order type then click Save and close\n   **Expected:** Order is saved with status Pending and appears in the list\n",
+    "scope_manifest.md": "---\nissue_key: ERM-1234\nteam: spitfire\n---\n\n## Analysis\n",
     "scenario_list.md": "---\ntestrail_section: 114774\n---\n\n# Scenarios\n",
     "context.md": "---\nareas:\n  - orders\n---\n\n# Cypress Context: orders\n\n_No area-specific context available. Refer to the scope manifest for guidance._\n"
   }
@@ -274,7 +274,7 @@ EOF
   "startStepIndex": 9,
   "triggerPayload": {"issueKey": "ERM-1234"},
   "artifacts": {
-    "test_plan.md": "---\nissue_key: ERM-1234\nteam: spitfire\necs_enabled: false\ncase_count: 1\n---\n\n## C1234567: Create purchase order\n\n- **Tier:** criticalPath\n- **Automatable:** Yes\n- **ECS:** No\n\n**Steps**\n1. **Action:** ...\n   **Expected:** ...\n",
+    "test_plan.md": "---\nissue_key: ERM-1234\nteam: spitfire\necs_story: \"non-ecs\"\ncase_count: 1\n---\n\n## C1234567: Create purchase order\n\n- **Tier:** criticalPath\n- **Automatable:** Yes\n- **ECS:** No\n\n**Steps**\n1. **Action:** ...\n   **Expected:** ...\n",
     "fragment_library.md": "# TAF Fragments\n..."
   }
 }'
@@ -290,7 +290,7 @@ EOF
   "triggerPayload": {"issueKey": "ERM-1234"},
   "artifacts": {
     "test_scripts.md": "# Cypress Specs\n...",
-    "test_plan.md": "---\nissue_key: ERM-1234\nteam: spitfire\necs_enabled: false\ncase_count: 1\n---\n\n## C1234567: Create purchase order\n\n..."
+    "test_plan.md": "---\nissue_key: ERM-1234\nteam: spitfire\necs_story: \"non-ecs\"\ncase_count: 1\n---\n\n## C1234567: Create purchase order\n\n..."
   }
 }'
 ```

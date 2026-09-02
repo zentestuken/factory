@@ -140,7 +140,7 @@ flow keeps no per-step artifacts, only the finished plan and, on a retry, the hu
      │      refs              ← issue_key ALWAYS FIRST + router extras (union, deduped)
      │      team              ← Jira dev-team field (AUTHORITATIVE, canonicalised
      │                          via DevTeamCatalog) · else agent · else ""
-     │      ecs_enabled       ← agent · else false
+     │      ecs_story        ← agent · non-ecs|ecs|mixed
      │      testrail_section  ← agent, VALIDATED via resolveSectionByPath() · else env default
      │      case_count · review_passed · review_iterations
      ▼
@@ -342,7 +342,7 @@ independent of that choice — see Appendix A.
 issue_key: UIMARCAUTH-553
 refs: "UIMARCAUTH-553, MODELINKS-201"
 team: Spitfire
-ecs_enabled: false
+ecs_story: "non-ecs"
 testrail_section: "MARC Authority › Browse"
 case_count: 7
 review_passed: true
@@ -401,7 +401,7 @@ contributes to only three of them, and never has the last word:
 | `issue_key` | The trigger payload. |
 | `refs` | Issue key first, always, then any Jira keys the router proposed (regex-filtered). |
 | `team` | **Jira's Dev Team field is authoritative** — `customfield_10057`, which `JiraRestConnector` renames to `devTeam`. Canonicalised through `DevTeamCatalog`. The agent's reading is used only when the ticket has no team, because it has no other source and would otherwise infer one from the subject matter. |
-| `ecs_enabled` | The agent, from labels and story text. |
+| `ecs_story` | The agent, from labels and story text. `non-ecs`, `ecs`, or `mixed`. |
 | `testrail_section` | The agent's suggestion, but only if TestRail resolves it; otherwise the configured default. |
 | `case_count`, `review_passed`, `review_iterations` | The worker, from its own parse and review loop. |
 
@@ -443,7 +443,7 @@ parseable form inside `# Analysis`.
 | `issue_key` | `$trigger` payload | — (required) |
 | `refs` | **`issue_key` always, plus** router extras (SKILL.md step 3 judgment — a Bug key the case regression-covers, a Tech-Debt ticket, related keys across projects) | `issue_key` alone |
 | `team` | **Jira dev-team field first**, else the agent's reading; canonicalised via `DevTeamCatalog` | `""`, and sync logs a warning naming the team rather than dropping it silently |
-| `ecs_enabled` | agent | `false` |
+| `ecs_story` | agent | `non-ecs` |
 | `testrail_section` | agent, **validated via `testRail.resolveSectionByPath()` before writing** | config default `FACTORY_CYPRESS_TESTRAIL_SECTION_ID`; note added to `# Analysis` |
 | `case_count` | validator | — |
 | `review_passed`, `review_iterations` | reviewer loop | — |
@@ -477,7 +477,7 @@ block for per-case fields.
 | `section_id` | `testrail_section` from the frontmatter | Path string (separators `›` `|` `>` `→`, resolved via the API) or a numeric id. Falls back to `FACTORY_CYPRESS_TESTRAIL_SECTION_ID` when absent or unresolvable. |
 | `custom_test_group` | `Test Group` on the case block | 1 = smoke, 2 = criticalPath, 3 = extendedPath |
 | `custom_dev_team` | `team` from the frontmatter, mapped through `DevTeamCatalog` | Left unset when the team is unknown or has no TestRail id; both cases log a warning naming the team. |
-| `custom_ecs_enabled` | `ecs_enabled` from the frontmatter, OR the per-case `ECS` flag | Either one being true sets it. |
+| `custom_ecs_enabled` | per-case `- **ECS:** Yes/No` attribute | Set directly from the per-case flag; `ecs_story` is a generation-calibration hint only and does not override per-case decisions. |
 | `custom_automation_type` | `2` (Manual) for every case | The Cypress spec is the automation artifact; the TestRail case stays a manual record. |
 | `labels` | `[id of testrailLabel]` | Resolved at runtime via `getOrCreateLabel`; title from `FACTORY_CYPRESS_TESTRAIL_LABEL`, default `cypressFlow-delete`. |
 | `refs` | `refs` from the frontmatter | The originating `issue_key` is re-asserted here even if a Gate 1 amendment removed it. |
@@ -679,7 +679,7 @@ silent drift into a visible one-line report at Gate 1.
 >   reviews the whole document at one gate afterwards.
 > - **Never touch TestRail.** Ignore anything about asking for a Section ID, showing a posting
 >   preview, or calling the API. Placement is expressed only as `testrail_section:` in `# Analysis`.
-> - Also state `team:` and `ecs_enabled:` on their own lines in `# Analysis`.
+> - Also state `team:`, `ecs_story:` and `testrail_section:` on their own lines in `# Analysis`.
 > - Additional per-case fields not in the skill: `- **Automatable:** Yes/No` and an optional
 >   `**Automation notes:**` line referencing real helpers from the fragment library.
 > - Output envelope: exactly three top-level sections, `# Analysis`, `# Test Cases`, `# Review`
@@ -800,7 +800,7 @@ public List<Problem> validate(List<ParsedCase> cases); // zero cases / zero step
 ```
 
 `TestRailSyncAgentWorker` takes `test_plan.md` as its only input and reads `issue_key`, `refs`,
-`team`, `ecs_enabled` and `testrail_section` from the frontmatter, falling back to
+`team`, `ecs_story` and `testrail_section` from the frontmatter, falling back to
 `properties.testrailSectionId()` for the section. It delegates all parsing to `TestPlanParser`,
 and re-asserts `issue_key` inside `refs` before writing, so a Gate 1 amendment cannot orphan a
 case from its ticket (Part I §6.3).
@@ -929,7 +929,7 @@ Docker must be running (Testcontainers). Full gate: `mvn verify`.
    keyword fallback with a WARN.
 4. Step counts near the House Style median for the area (Inventory ~5, Orders ~8, Fees/Fines ~2).
 5. No semicolon-joined field lists; toast text quoted verbatim; absolute numeric values.
-6. Frontmatter carries all five sync fields (`issue_key`, `refs`, `team`, `ecs_enabled`,
+6. Frontmatter carries all five sync fields (`issue_key`, `refs`, `team`, `ecs_story`,
    `testrail_section`); `testrail_section` resolves.
    **`team` must equal the story's Jira Dev Team**, never a value inferred from the subject
    matter. With `FACTORY_DEBUG_ENABLED=true`, the exact value read off
@@ -991,7 +991,7 @@ Before building anything, understand what already exists in `stripes-testing`:
 | `test-planner` agent | `.github/agents/test-planner.agent.md` | Fetches TestRail case, finds similar specs in codebase, produces a step-by-step implementation plan |
 | `test-implementer` agent | `.github/agents/test-implementer.agent.md` | Generates the `.cy.js` file from the plan |
 | `test-reviewer` agent | `.github/agents/test-reviewer.agent.md` | Validates the generated spec, runs `npx cypress run` |
-| `ecs-user-setup` skill | `.github/skills/ecs-user-setup/SKILL.md` (mirrored in `.claude/skills/`) | Authoritative multi-tenant user setup rules — must be consulted for any `ecs_enabled: true` test |
+| `ecs-user-setup` skill | `.github/skills/ecs-user-setup/SKILL.md` (mirrored in `.claude/skills/`) | Authoritative multi-tenant user setup rules — must be consulted for any ECS test (`- **ECS:** Yes`) |
 | `review-user-test-edits` skill | `.github/skills/review-user-test-edits/SKILL.md` | Learns from manual corrections and propagates patterns forward in the same session |
 | TestRail MCP server | `scripts_for_work/testrail-mcp-server/index.js` | Exposes `get_test_case` tool with automatic section hierarchy retrieval |
 | `.claude/settings.local.json` | `.claude/settings.local.json` | Pre-approves MCP + ESLint calls without user prompts |
@@ -1312,7 +1312,7 @@ Warnings — log but don't fail:
 **Advisory mode** (default when `FACTORY_TAF_HAS_ENV_CONFIG` is not `true`): produces `test_results.md` with `mode: ADVISORY`, all cases `NOT_EXECUTED`.
 
 **Execution mode**: reads `test_scripts.md` (Cypress bundle with real C###### IDs) and
-`test_plan.md` (to know the `ecs_enabled` flag per case, used to split specs into regular vs ECS
+`test_plan.md` (to know the per-case ECS flag, used to split specs into regular vs ECS
 buckets). Writes specs and any new fragment stubs to their final paths in the TAF root
 (`cypress/e2e/` for specs, `cypress/support/fragments/` for fragments), then runs Cypress.
 Both artifacts must be declared in the step's `inputs:` in the YAML.
@@ -1326,7 +1326,7 @@ command-line flags, bypassing the TAF's local-dev mechanism entirely.
 ### Split runs: regular vs ECS
 
 Regular and ECS tests require different environments and env params and cannot run together.
-The worker splits the bundle into two buckets using the `ecs_enabled` flag per case in
+The worker splits the bundle into two buckets using the per-case `- **ECS:** Yes/No` flag in
 `test_plan.md`, then runs them sequentially:
 
 ```

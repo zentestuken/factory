@@ -112,10 +112,10 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
     private static final Pattern AUTOMATION_NOTES =
             Pattern.compile("(?mi)^[ \\t]*\\*+Automation notes:\\*+.*(?:\\R|$)");
     private static final Pattern ANALYSIS_TEAM = Pattern.compile("(?mi)^\\s*\\**team\\**:\\s*(.+?)\\s*$");
-    private static final Pattern ANALYSIS_ECS = Pattern.compile("(?mi)^\\s*\\**ecs_enabled\\**:\\s*(\\w+)");
+    private static final Pattern ANALYSIS_ECS_STORY = Pattern.compile("(?mi)^\\s*\\**ecs_story\\**:\\s*(\\w[\\w-]*)");
     /** The three delta-4 fields, once promoted to frontmatter, are removed from the prose. */
     private static final Pattern PROMOTED_FIELD = Pattern.compile(
-            "(?mi)^[ \\t]*\\**(?:testrail_section|team|ecs_enabled)\\**[ \\t]*:.*(?:\\R|$)");
+            "(?mi)^[ \\t]*\\**(?:testrail_section|team|ecs_story)\\**[ \\t]*:.*(?:\\R|$)");
     /** A `---` fence pair left empty once its fields were stripped. */
     private static final Pattern EMPTY_FENCE =
             Pattern.compile("(?m)^---[ \\t]*\\R(?:[ \\t]*\\R)*^---[ \\t]*\\R");
@@ -335,7 +335,7 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
         metadata.put("issue_key", issueKey);
         metadata.put("refs", refs.joined());
         metadata.put("team", resolveTeam(analysis, issue));
-        metadata.put("ecs_enabled", resolveEcs(analysis));
+        metadata.put("ecs_story", resolveEcsStory(analysis));
         metadata.put("testrail_section", resolveSection(analysis));
         metadata.put("case_count", cases.size());
         metadata.put("review_passed", feedback.passed());
@@ -704,11 +704,11 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
                 + "The previous version failed the automated quality review. "
                 + "**Edit the previous version shown below - fix only the flagged steps; "
                 + "do not change steps or cases that had no issues.**\n\n"
-                + "**Reproduce `# Analysis` in full, exactly as it was.** It is not a changelog: "
-                + "the provenance, Key Business Rules, coverage audit, scenarios and coverage "
-                + "matrix must all still be there. Do not replace it with a summary of what you "
-                + "fixed - if a fix changes something in it, edit that part and leave the rest "
-                + "untouched.\n\n"
+                + "**Reproduce `# Analysis` in full — it is not a changelog.** "
+                + "The `## Scenarios` numbered list and `## Coverage matrix` table are mandatory "
+                + "on every attempt, including this one. Do not replace `# Analysis` with a "
+                + "summary of what you fixed. If a fix changes something in it, edit that part "
+                + "and leave the rest untouched.\n\n"
                 + "Banned patterns found (must not appear anywhere - not just in the listed instances):\n\n"
                 + issuesBlock + "\n\n"
                 + "Rule reminders:\n"
@@ -782,8 +782,9 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
         return "";
     }
 
-    private boolean resolveEcs(String analysis) {
-        return "true".equalsIgnoreCase(firstGroup(ANALYSIS_ECS, analysis).strip());
+    private String resolveEcsStory(String analysis) {
+        String val = firstGroup(ANALYSIS_ECS_STORY, analysis).strip().toLowerCase(Locale.ROOT);
+        return val.isEmpty() ? "non-ecs" : val;
     }
 
     /**

@@ -32,7 +32,7 @@ class TestRailSyncAgentWorkerTest {
 
     private String testPlanWithOneCase() {
         return codec.render(
-                Map.of("issue_key", "ERM-1", "team", "", "ecs_enabled", false, "case_count", 1),
+                Map.of("issue_key", "ERM-1", "team", "", "ecs_story", "non-ecs", "case_count", 1),
                 "## TC-1: Test login\n\n" +
                 "- **Test Group:** critical\n" +
                 "- **User Journey:** No\n" +
@@ -45,7 +45,7 @@ class TestRailSyncAgentWorkerTest {
 
     private String testPlanWithAmendedBodyTitle() {
         return codec.render(
-                Map.of("issue_key", "ERM-1", "team", "", "ecs_enabled", false, "case_count", 1),
+                Map.of("issue_key", "ERM-1", "team", "", "ecs_story", "non-ecs", "case_count", 1),
                 "## TC-1: New Title\n\n" +
                 "- **Test Group:** critical\n" +
                 "- **User Journey:** No\n" +
@@ -58,7 +58,7 @@ class TestRailSyncAgentWorkerTest {
 
     private String testPlanWithSpecialChars() {
         return codec.render(
-                Map.of("issue_key", "ERM-1", "team", "", "ecs_enabled", false, "case_count", 1),
+                Map.of("issue_key", "ERM-1", "team", "", "ecs_story", "non-ecs", "case_count", 1),
                 "## TC-1: Test case\n\n" +
                 "- **Test Group:** critical\n" +
                 "- **User Journey:** No\n" +
@@ -73,7 +73,7 @@ class TestRailSyncAgentWorkerTest {
 
     private String testPlanWithMultiLineExpected() {
         return codec.render(
-                Map.of("issue_key", "ERM-1", "team", "", "ecs_enabled", false, "case_count", 1),
+                Map.of("issue_key", "ERM-1", "team", "", "ecs_story", "non-ecs", "case_count", 1),
                 "## TC-1: Test toolbar\n\n" +
                 "- **Test Group:** critical\n" +
                 "- **User Journey:** No\n" +
@@ -88,7 +88,7 @@ class TestRailSyncAgentWorkerTest {
 
     private String testPlanWithNestedPreconditions() {
         return codec.render(
-                Map.of("issue_key", "ERM-1", "team", "", "ecs_enabled", false, "case_count", 1),
+                Map.of("issue_key", "ERM-1", "team", "", "ecs_story", "non-ecs", "case_count", 1),
                 "## TC-1: Test case\n\n" +
                 "- **Test Group:** critical\n" +
                 "- **User Journey:** No\n" +
@@ -107,7 +107,7 @@ class TestRailSyncAgentWorkerTest {
 
     private String testPlanWithTestGroup(String testGroup) {
         return codec.render(
-                Map.of("issue_key", "ERM-1", "team", "", "ecs_enabled", false, "case_count", 1),
+                Map.of("issue_key", "ERM-1", "team", "", "ecs_story", "non-ecs", "case_count", 1),
                 "## TC-1: Test case\n\n" +
                 "- **Test Group:** " + testGroup + "\n" +
                 "- **User Journey:** No\n" +
@@ -120,7 +120,7 @@ class TestRailSyncAgentWorkerTest {
 
     private String testPlanWithUserJourney(boolean journey) {
         return codec.render(
-                Map.of("issue_key", "ERM-1", "team", "", "ecs_enabled", false, "case_count", 1),
+                Map.of("issue_key", "ERM-1", "team", "", "ecs_story", "non-ecs", "case_count", 1),
                 "## TC-1: Test case\n\n" +
                 "- **Test Group:** critical\n" +
                 "- **User Journey:** " + (journey ? "Yes" : "No") + "\n" +
@@ -133,7 +133,7 @@ class TestRailSyncAgentWorkerTest {
 
     private String testPlanNoCases() {
         return codec.render(
-                Map.of("issue_key", "ERM-1", "team", "", "ecs_enabled", false, "case_count", 0),
+                Map.of("issue_key", "ERM-1", "team", "", "ecs_story", "non-ecs", "case_count", 0),
                 "# Cypress Test Plan — ERM-1\n");
     }
 
@@ -143,7 +143,7 @@ class TestRailSyncAgentWorkerTest {
         Map<String, Object> meta = new java.util.LinkedHashMap<>();
         meta.put("issue_key", "ERM-1");
         meta.put("team", "");
-        meta.put("ecs_enabled", false);
+        meta.put("ecs_story", "non-ecs");
         meta.put("case_count", 1);
         meta.put(key, value);
         return codec.render(meta, body);
@@ -468,7 +468,7 @@ class TestRailSyncAgentWorkerTest {
         // fixture has no User Journey line at all — use testPlanWithTestGroup which omits it
         // (actually it includes "No", but we test the default via the old Tier-style plan)
         String planNoJourneyLine = codec.render(
-                Map.of("issue_key", "ERM-1", "team", "", "ecs_enabled", false, "case_count", 1),
+                Map.of("issue_key", "ERM-1", "team", "", "ecs_story", "non-ecs", "case_count", 1),
                 "## TC-1: Test\n\n" +
                 "- **Test Group:** critical\n" +
                 "- **Automatable:** No\n" +
