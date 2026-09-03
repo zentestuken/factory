@@ -42,7 +42,7 @@ agent_chain:
           resolved this falls back to the configured default.
         - refs — the References field on every created case. The originating issue key is
           always kept even if you remove it.
-        - team, ecs_enabled — dev team attribution and the ECS flag.
+        - team, ecs_story — dev team attribution and the story-level ECS classification.
 
         Watch for a ⚠️ line at the top of "# Analysis": it means the run degraded somehow —
         a context file was missing, the fragment library was unavailable, or the skill text
