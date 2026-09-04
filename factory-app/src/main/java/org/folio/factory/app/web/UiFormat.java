@@ -12,7 +12,9 @@ import java.text.NumberFormat;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
@@ -108,6 +110,55 @@ final class UiFormat {
             case EXECUTION_COMPLETED -> "success";
             default -> null;
         };
+    }
+
+    /**
+     * Splits gate review instructions into renderable blocks so the template can lay them out
+     * instead of collapsing everything into one paragraph.
+     *
+     * <p>Flow descriptors are data authored per-flow, so the text stays plain — no HTML is
+     * accepted from a descriptor and none is generated here. Only two shapes are recognised:
+     * a blank line starts a new paragraph, and a run of lines beginning {@code "- "} becomes a
+     * list. Each row is {@code {type: paragraph|list, text: ..., items: [...]}}.</p>
+     */
+    static List<Map<String, Object>> instructionBlocks(String instructions) {
+        List<Map<String, Object>> blocks = new ArrayList<>();
+        if (instructions == null || instructions.isBlank()) {
+            return blocks;
+        }
+        List<String> paragraph = new ArrayList<>();
+        List<String> items = new ArrayList<>();
+
+        for (String raw : instructions.strip().lines().toList()) {
+            String line = raw.strip();
+            if (line.isEmpty()) {
+                flushParagraph(blocks, paragraph);
+                flushList(blocks, items);
+            } else if (line.startsWith("- ")) {
+                flushParagraph(blocks, paragraph);
+                items.add(line.substring(2).strip());
+            } else if (!items.isEmpty()) {
+                // Continuation of the previous bullet rather than a new paragraph.
+                items.set(items.size() - 1, items.get(items.size() - 1) + " " + line);
+            } else {
+                paragraph.add(line);
+            }
+        }
+        flushParagraph(blocks, paragraph);
+        flushList(blocks, items);
+        return blocks;
+    }
+
+    private static void flushParagraph(List<Map<String, Object>> blocks, List<String> lines) {
+        if (lines.isEmpty()) return;
+        blocks.add(Map.of("type", "paragraph", "text", String.join(" ", lines)));
+        lines.clear();
+    }
+
+    private static void flushList(List<Map<String, Object>> blocks, List<String> items) {
+        if (items.isEmpty()) return;
+        blocks.add(Map.of("type", "list", "items", List.copyOf(items)));
+        items.clear();
     }
 
     private static String prettyDetail(String detail, JsonMapper jsonMapper) {

@@ -2,6 +2,7 @@ package org.folio.factory.app.hitl;
 
 import org.folio.factory.core.domain.AuditEventType;
 import org.folio.factory.core.domain.HitlReview;
+import org.folio.factory.core.domain.HitlReviewStatus;
 import org.folio.factory.core.domain.PipelineExecution;
 import org.folio.factory.core.hitl.HitlDecision;
 import org.folio.factory.core.hitl.HitlDecisionService;
@@ -22,7 +23,9 @@ import org.springframework.transaction.annotation.Transactional;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.Optional;
 import java.util.UUID;
+import java.util.stream.Stream;
 
 /**
  * Handles the REJECT_AND_RETRY decision at a HITL gate: rejects the current
@@ -30,17 +33,22 @@ import java.util.UUID;
  * produced the reviewed artifacts, pre-seeded with all upstream artifacts and
  * the reviewer's feedback as {@code hitl_feedback.md}.
  *
- * <p>The rejected test cases are copied as {@code previous_test_plan.md} so the
- * generator can see what was rejected alongside the feedback.</p>
+ * <p>Flow-agnostic: the artifacts to carry over are read from the restart step's declared
+ * {@code inputs} and {@code optional_inputs} rather than a hardcoded list, so any flow whose
+ * gate follows an AGENT step retries correctly without touching the control plane. Each is
+ * copied at its latest version, so amendments made at the gate survive into the retry.</p>
  */
 @Service
 public class HitlRetryService {
 
     private static final Logger log = LoggerFactory.getLogger(HitlRetryService.class);
 
-    private static final List<String> CARRY_OVER_ARTIFACTS = List.of(
-            "scope_manifest.md", "context.md", "fragment_library.md",
-            "examples.md", "scenario_list.md", "existing_coverage.md");
+    /** Written by this service from the reviewer's comments, so never copied from the original. */
+    public static final String FEEDBACK_ARTIFACT = "hitl_feedback.md";
+
+    /** The AGENT step a rejected gate restarts from, and its index in the chain. */
+    private record RestartPoint(int stepIndex, StepDescriptor step) {
+    }
 
     private final HitlDecisionService decisionService;
     private final HitlReviewRepository reviewRepository;
@@ -69,8 +77,8 @@ public class HitlRetryService {
     /**
      * Rejects the current execution and starts a new one from the AGENT step
      * immediately before the given gate. The reviewer's {@code comments} are
-     * written as {@code hitl_feedback.md}; the rejected {@code test_plan.md}
-     * (if present) is copied as {@code previous_test_plan.md}.
+     * written as {@code hitl_feedback.md}, and the rejected artifacts are carried
+     * over so the generator can revise rather than start from scratch.
      *
      * @return the new execution's ID
      */
@@ -84,23 +92,18 @@ public class HitlRetryService {
                 .orElseThrow(() -> new NoSuchElementException("No HITL review " + reviewId));
         UUID originalExecutionId = review.getExecutionId();
         String gateId = review.getGateId();
-        int gateStepIndex = review.getStepIndex();
+
+        // Resolve before rejecting: a gate that cannot be restarted must not leave the
+        // execution rejected with nothing to take its place.
+        RestartPoint restart = restartPoint(review).orElseThrow(() -> new IllegalStateException(
+                "Gate '" + gateId + "' cannot be re-generated: no AGENT step immediately precedes it"));
+        int startStepIndex = restart.stepIndex();
+        StepDescriptor startStep = restart.step();
 
         // Reject the original execution (transitions it to REJECTED).
         decisionService.decide(reviewId, HitlDecision.REJECT, reviewer, comments, null);
 
         PipelineExecution original = stateManager.get(originalExecutionId);
-        FlowDescriptor descriptor = flowRegistry.require(original.getFlowId());
-
-        int startStepIndex = gateStepIndex - 1;
-        if (startStepIndex < 0) {
-            throw new IllegalStateException("Gate '" + gateId + "' is at step 0 — no preceding step to retry from");
-        }
-        StepDescriptor startStep = descriptor.step(startStepIndex);
-        if (startStep.type() != StepType.AGENT) {
-            throw new IllegalStateException(
-                    "Step " + startStepIndex + " preceding gate '" + gateId + "' is not an AGENT step");
-        }
 
         PipelineExecution retry = stateManager.createExecution(
                 original.getFlowId(), original.getFlowVersion(), original.getTriggerPayload(), null);
@@ -110,14 +113,12 @@ public class HitlRetryService {
         UUID retryId = retry.getId();
         String createdBy = "hitl-retry:" + reviewer;
 
-        for (String name : CARRY_OVER_ARTIFACTS) {
+        for (String name : carryOverArtifacts(startStep)) {
             artifactStore.getLatest(originalExecutionId, name)
                     .ifPresent(a -> artifactStore.putMarkdown(retryId, name, a.getContent(), createdBy));
         }
-        artifactStore.getLatest(originalExecutionId, "test_plan.md")
-                .ifPresent(a -> artifactStore.putMarkdown(retryId, "previous_test_plan.md", a.getContent(), createdBy));
 
-        artifactStore.putMarkdown(retryId, "hitl_feedback.md", comments, createdBy);
+        artifactStore.putMarkdown(retryId, FEEDBACK_ARTIFACT, comments, createdBy);
 
         auditLog.record(originalExecutionId, AuditEventType.HITL_RETRY, null, reviewer,
                 Map.of("retryExecutionId", retryId.toString(), "gateId", gateId,
@@ -126,5 +127,59 @@ public class HitlRetryService {
         log.info("[hitl-retry] Execution {} rejected at gate '{}'; retry {} starts at step {} ({})",
                 originalExecutionId, gateId, retryId, startStepIndex, startStep.stepId());
         return retryId;
+    }
+
+    /**
+     * Whether the "Reject and Re-generate" decision is available for this review — the same
+     * question {@link #rejectAndRetry} answers, so the button and the service cannot disagree.
+     * A pure read: it never throws, so a missing execution or an unregistered flow simply
+     * means "no".
+     */
+    public boolean canRetry(HitlReview review) {
+        return review.getStatus() == HitlReviewStatus.PENDING && restartPoint(review).isPresent();
+    }
+
+    /**
+     * The AGENT step immediately before the reviewed gate, if there is one. This is the whole
+     * of the flow-specific knowledge the retry path needs: any flow shaped {@code AGENT →
+     * HITL_GATE} can re-generate, and no flow id or gate id is named anywhere.
+     */
+    private Optional<RestartPoint> restartPoint(HitlReview review) {
+        PipelineExecution execution = executionRepository.findById(review.getExecutionId()).orElse(null);
+        if (execution == null) {
+            return Optional.empty();
+        }
+        FlowDescriptor descriptor = flowRegistry.find(execution.getFlowId()).orElse(null);
+        if (descriptor == null) {
+            return Optional.empty();
+        }
+        // An escalation review's step index points at the AGENT step that failed, not at a
+        // gate. Requiring a HITL_GATE here keeps escalations out of the retry path without
+        // naming the reserved escalation gate id.
+        int gateIndex = review.getStepIndex();
+        if (!descriptor.hasStep(gateIndex) || descriptor.step(gateIndex).type() != StepType.HITL_GATE) {
+            return Optional.empty();
+        }
+        int startIndex = gateIndex - 1;
+        if (!descriptor.hasStep(startIndex)) {
+            return Optional.empty();
+        }
+        StepDescriptor start = descriptor.step(startIndex);
+        return start.type() == StepType.AGENT
+                ? Optional.of(new RestartPoint(startIndex, start))
+                : Optional.empty();
+    }
+
+    /**
+     * Everything the restart step declares it can read, minus the reserved {@code $trigger}
+     * pseudo-input (carried on the execution itself) and {@code hitl_feedback.md} (written
+     * fresh from this rejection's comments).
+     */
+    static List<String> carryOverArtifacts(StepDescriptor startStep) {
+        return Stream.concat(startStep.inputs().stream(), startStep.optionalInputs().stream())
+                .filter(name -> !name.startsWith("$"))
+                .filter(name -> !FEEDBACK_ARTIFACT.equals(name))
+                .distinct()
+                .toList();
     }
 }

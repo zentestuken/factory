@@ -1,8 +1,8 @@
 Review the following test cases against the checklist. This is attempt {{attempt}} of {{max_attempts}}.
 
-## Scope manifest
+## Story
 
-{{scope_manifest}}
+{{issue}}
 
 ## Test cases to review
 

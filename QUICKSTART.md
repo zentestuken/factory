@@ -31,19 +31,34 @@ docker compose ps
 
 ## Step 2 — Authenticate with Anthropic
 
-**Option A — CodeMie SSO (no personal API key needed)**
+**Option A — CodeMie SSO (EPAM corporate — no personal API key needed)**
 
-Start `codemie-claude` before launching the factory. The application detects the
-running CodeMie proxy port automatically at startup and routes all LLM calls
-through it. Nothing else to configure.
+Start the CodeMie desktop app or CLI proxy. The factory auto-detects the running Node.js
+proxy process via PowerShell and routes all Anthropic API calls through it — no env vars needed.
 
-If auto-detection fails (e.g. CodeMie isn't running yet), you'll see no
-`[factory] CodeMie proxy - routing Anthropic API to http://localhost:<port>` line in the startup log — start CodeMie and
-restart the factory.
+Verification: look for this line in the startup log:
+
+```
+[factory] CodeMie proxy - routing Anthropic API to http://localhost:XXXXX
+```
+
+If you see `[factory] CodeMie proxy not found` instead, start the CodeMie proxy and restart the factory.
+
+> **Override auto-detection:** Set `ANTHROPIC_BASE_URL=http://localhost:<port>` to point at a
+> specific proxy URL instead of relying on auto-detection.
+
+> **Pitfall:** `ANTHROPIC_API_KEY` bypasses CodeMie entirely. If that variable is set in your
+> shell, the factory uses it directly — even if you commented it out of `.env`. To remove it:
+> `unset ANTHROPIC_API_KEY`.
 
 **Option B — Direct Anthropic API key**
 
 Set `ANTHROPIC_API_KEY` in your `.env` file and `source .env` in Git Bash before running.
+
+> **Pitfall:** `source .env` sets variables but never _unsets_ them. If you previously
+> sourced the file with `ANTHROPIC_API_KEY` set and then comment it out, the key stays
+> live in your current shell. To actually remove it run `unset ANTHROPIC_API_KEY` (and any
+> other variables you want gone) before restarting the factory.
 
 ---
 
@@ -185,7 +200,12 @@ mvn install -DskipTests
 Create a `.env` file in the repo root (gitignored) with your credentials:
 
 ```
-# LLM — Option A: CodeMie SSO (start codemie-claude first, no key needed)
+# LLM — Option A: CodeMie SSO (EPAM)
+# Start the CodeMie desktop app or CLI proxy — no env vars needed.
+# The factory auto-detects the running proxy process at startup.
+# ANTHROPIC_API_KEY must NOT be set (it bypasses CodeMie entirely).
+# Optional explicit override: ANTHROPIC_BASE_URL=http://localhost:<port>
+
 # LLM — Option B: direct Anthropic key
 ANTHROPIC_API_KEY=sk-ant-api03-...
 
@@ -194,9 +214,11 @@ FACTORY_CONNECTORS_JIRA_BASE_URL=https://issues.folio.org
 FACTORY_CONNECTORS_JIRA_EMAIL=your@email.com
 FACTORY_CONNECTORS_JIRA_API_TOKEN=your-token
 
-# GitHub (required for context file fetch, examples fetch, and TAF clone)
+# GitHub — both clones are public and need no token. The token is used for the API
+# fallback tiers and for context enrichment (package.json / en_US.json from ui-* repos).
 FACTORY_CONNECTORS_GITHUB_TOKEN=ghp_...
-# Repo containing FOLIO AI skills (context files + examples.md fetched at runtime)
+# Repo containing FOLIO AI skills — SKILL.md, examples.md and the 29 area context files.
+# Cloned to skillsClone/ at startup; GitHub API and the bundled jar copies are the fallbacks.
 FACTORY_CYPRESS_FOLIO_AI_REPO=folio-org/folio-eureka-ai-dev
 # Repo where generated Cypress specs will be committed (Phase 3+)
 # FACTORY_CYPRESS_TARGET_REPO=folio-org/stripes-testing
@@ -227,7 +249,15 @@ set -a; source .env; set +a
 mvn spring-boot:run -pl factory-app
 ```
 
-On first startup, `TafSyncService` clones `folio-org/stripes-testing` into `cypressTafClone/` in the background (shallow, ~30 s). Fragment scan uses the GitHub API until the clone is ready — no action needed.
+On first startup two background clones run (shallow, ~30 s each, non-blocking):
+
+- `TafSyncService` → `folio-org/stripes-testing` into `cypressTafClone/` (Cypress fragments)
+- `SkillWorkspaceService` → `FACTORY_CYPRESS_FOLIO_AI_REPO` into `skillsClone/` (SKILL.md,
+  `examples.md`, the 29 area context files)
+
+Until the clones are ready both fall back to the GitHub API and then to copies bundled in the
+jar — no action needed. `SKILL.md` is the one hard dependency: if it cannot be resolved from
+any of the three tiers the step fails rather than generating from a thin prompt.
 
 ### 4 — Trigger the Cypress flow
 
@@ -235,7 +265,7 @@ On first startup, `TafSyncService` clones `folio-org/stripes-testing` into `cypr
 ```bash
 curl -s -X POST http://localhost:8080/api/triggers/manual \
   -H "Content-Type: application/json" \
-  -d "{\"flowId\":\"cypress-factory\",\"payload\":{\"issueKey\":\"UIIN-2908\"}}"
+  -d "{\"flowId\":\"cypress-factory\",\"payload\":{\"issueKey\":\"UIMARCAUTH-553\"}}"
 ```
 
 **Without Jira credentials** (inline story):
@@ -247,13 +277,76 @@ curl -s -X POST http://localhost:8080/api/triggers/manual \
 
 ### 5 — Work the gates
 
-Flow: triage → context-load → fragment-scan → examples-load → **coverage-load** → scenario-analysis → **Gate 0** → test-spec → **Gate 1** → testrail-sync
+Flow: **testcase-gen** → **Gate 1** → testrail-sync — three steps, two artifacts.
 
-`coverage-load` reads the detected area from `context.md`, keyword-matches it against all TestRail sections, and loads cases only from area-specific sections. The placement-fallback section (`FACTORY_CYPRESS_TESTRAIL_SECTION_ID`) is never scanned for coverage — it is non-thematic and excluded by design. If no area-specific section is found, `existing_coverage.md` is empty (safe for the LLM).
+`testcase-gen` is a single LLM worker that runs MQA's `write-testrail-cases` skill end to end
+in one session. Before the generation call it deterministically fetches: the raw Jira issue,
+the area context file(s), the golden examples, the TAF fragment library and existing TestRail
+coverage. A small routing call decides which area(s) to load and what belongs in `refs` — the
+two judgment calls the skill describes. The skill text, examples and context files come from a
+local clone of `FACTORY_CYPRESS_FOLIO_AI_REPO` (`skillsClone/`), falling back to the GitHub API
+and then to copies bundled in the jar.
 
 | Gate | URL | What to check |
 |---|---|---|
-| Gate 0 — scenario coverage | http://localhost:8080/reviews | `scenario_list.md`: S-NN proposals with shape notes and coverage matrix (AC → Scenario → NEW/EXISTING/SKIPPED); confirm/adjust scope; remove EXISTING rows unless the story changes that behaviour; edit `testrail_section` frontmatter field if the suggested TestRail folder is wrong; `existing_coverage.md` shows what's already in TestRail for this section |
-| Gate 1 — test cases | http://localhost:8080/reviews | `test_plan.md`: one case per confirmed scenario; check `testGroup` (smoke/critical/extended), `userJourney` flag, `automatable` flag, and step quality; `testcase_review.md`: automated quality review result — shows issues the reviewer found and whether they were auto-fixed across up to 3 internal attempts; `scenario_list.md` is also reviewable — amend `testrail_section` here for a final override before sync. **Reject and Re-generate**: enter feedback in the "Notes / Re-generation feedback" field and click the button to reject current cases and start a new generation immediately, preserving all Gate 0 decisions (scenario list, context, coverage). On retry runs a banner is shown and `hitl_feedback.md` + `previous_test_plan.md` appear as read-only artifacts. |
+| Gate 1 — test cases | http://localhost:8080/reviews | `test_plan.md` holds everything in three sections. **`# Analysis`**: which area was detected and why, which context file was loaded, Key Business Rules touched, and the AC → scenario coverage matrix — read this first to judge whether the *scope* is right. **`# Test Cases`**: exactly what will be posted to TestRail — check `Test Group` (smoke/critical/extended), `User Journey`, `Automatable` and step quality. **`# Review`**: the automated quality reviewer's verdict and any issues it could not fix in up to 3 internal attempts. The YAML frontmatter carries the sync fields (`refs`, `team`, `ecs_story`, `testrail_section`) — correct `testrail_section` here if the folder is wrong (path string with › separators, or a numeric ID). The originating issue key stays in `refs` even if you edit that field. **Reject and Re-generate**: enter feedback in the "Notes / Re-generation feedback" field to reject and start a new generation immediately, seeded with this plan plus your feedback; a banner and `hitl_feedback.md` appear on the retry run. |
+
+To refresh the bundled fallback copies of `SKILL.md` and `examples.md`:
+
+```bash
+scripts/update-cypress-testcase-skill-bundle.sh /path/to/folio-eureka-ai-dev
+```
 
 Watch execution progress: **http://localhost:8080/executions**
+
+### 6 — Inspecting what the model actually received
+
+About half the generation prompt is assembled at runtime — the skill text, the area context
+file(s), the raw ticket, and the conditional feedback blocks — so the `/prompts` page shows the
+templates, not the rendered result. To capture the real thing, set:
+
+```
+FACTORY_DEBUG_ENABLED=true
+```
+
+Every model call then writes its fully rendered system + user prompt to
+`debugPrompts/<executionId>/`, numbered in call order:
+
+```
+1-router.md               area + refs decision
+2-generate-attempt1.md    the big one: SKILL.md + examples + context + ticket
+3-review-attempt1.md      what the reviewer agent saw
+4-generate-attempt2.md    only when the reviewer failed attempt 1
+5-review-attempt2.md
+```
+
+Two runs of the same story are then a plain `diff -r` of their directories, which is usually the
+fastest way to answer "why did this one come out worse?". Nothing is written when the flag is
+off, and a dump failure can never fail a run.
+
+### 7 — Checking that prompt caching is working
+
+The generation call caches its system prompt — SKILL.md plus the golden examples, roughly 25k
+tokens that never change between calls. The review loop re-sends that prefix up to three times
+per run, so the cache should pay for itself within a single run.
+
+Nothing in the test suite can prove it engages (the stubbed model ignores request options), so
+check it on a real run. Open **http://localhost:8080/audit**, find the `STEP_COMPLETED` event
+for `testcase-gen`, and read its detail:
+
+| What you see | Meaning |
+|---|---|
+| `cacheWriteTokens` on the first generation call, `cacheReadTokens` on later ones | Working as intended. |
+| `cacheReadTokens` on the *first* call too | Even better — a previous run's prefix was still live. |
+| `cacheWriteTokens` every call, `cacheReadTokens` never | Not engaging. The system prompt is probably not byte-identical between calls; with `FACTORY_DEBUG_ENABLED=true`, diff `debugPrompts/<executionId>/2-generate-attempt1.md` against `4-generate-attempt2.md` down to the first `## ` heading. |
+| Neither count present | The provider is not Anthropic, or the options were dropped — grep the log for `is not supported ... Ignoring.` |
+
+The same counts are exported as `factory.llm.tokens{type=cache_write}` and `{type=cache_read}`.
+
+**Reject and Re-generate is the one case that usually misses.** The retry is a new execution, and
+the cache entry lives five minutes from its *last use* — not from when it was created. The
+pipeline spends part of that window on the final review call before the gate and on the router
+call plus prefetch after it, so you get roughly three to four minutes of actual review time
+before the prefix goes cold. A quick "these are wrong, regenerate with X" lands inside it; a
+careful read of eight cases will not. If retries miss consistently and you care, the fix is a
+one-hour TTL in `TestCaseGenAgentWorker.chatOptions()` — at a higher price per cache write.

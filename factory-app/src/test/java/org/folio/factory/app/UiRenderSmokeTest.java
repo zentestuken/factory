@@ -215,13 +215,32 @@ class UiRenderSmokeTest {
 
     @Test
     void reviewDetailRenders() {
-        PipelineExecution execution = executions.save(new PipelineExecution("test-factory", "1", "{}"));
-        String reviewPackage = "{\"title\":\"Review test plan\",\"flowId\":\"test-factory\","
-                + "\"instructions\":\"Please review the plan.\","
+        PipelineExecution execution = executions.save(new PipelineExecution("cypress-factory", "1", "{}"));
+        String reviewPackage = "{\"title\":\"Review test plan\",\"flowId\":\"cypress-factory\","
+                + "\"instructions\":\"Read this first.\\n\\n- Check the coverage matrix\\n"
+                + "- Check the toast wording\","
+                + "\"referencePrompts\":[\"cypress-testcase-reviewer\"],"
                 + "\"artifacts\":[{\"name\":\"test_plan.md\",\"version\":1,\"content\":\"# Plan\"}]}";
-        HitlReview review = reviews.save(new HitlReview(execution.getId(), "qa-gate-1", 2, reviewPackage));
+        // Step index 1 is gate-1-review in the real cypress-factory chain; the retry button is
+        // derived from the descriptor (gate preceded by an AGENT step), so the index must match.
+        HitlReview review = reviews.save(
+                new HitlReview(execution.getId(), "gate-1-test-cases", 1, reviewPackage));
 
-        assertRendered("/reviews/" + review.getId(), "Instructions");
+        String body = assertRendered("/reviews/" + review.getId(), "Instructions");
+        // Instructions must survive as structured markup, not one collapsed escaped paragraph.
+        assertThat(body).contains("Read this first.")
+                .contains("<li>Check the coverage matrix</li>")
+                .contains("<li>Check the toast wording</li>")
+                .contains("Automated checks already applied.")
+                .contains("/prompts/cypress-testcase-reviewer")
+                // The edit path must name the owning module, not just the convention, or the
+                // reviewer cannot find the file. This is the only test that boots the real
+                // classpath, so it is the only place the module derivation is exercised.
+                .contains("factory-flow-cypress/src/main/resources/prompts/"
+                        + "cypress-testcase-reviewer/system.md")
+                .contains("Wrong or out of date?")
+                .contains("Reject and Re-generate")
+                .contains("Terminate permanently");
     }
 
     @Test

@@ -53,7 +53,7 @@ class FlowControllerTest {
         StepDescriptor agent = new StepDescriptor("triage", StepType.AGENT, "triage-worker",
                 null, null, List.of("$trigger"), null, List.of("scope_manifest.md"), Map.of("model", "opus"));
         StepDescriptor gate = new StepDescriptor("gate-1", StepType.HITL_GATE, null,
-                new HitlGateSpec("gate-1-test-plan", "Review plan", "Check coverage", List.of("test_plan.md")),
+                new HitlGateSpec("gate-1-test-plan", "Review plan", "Check coverage", List.of("test_plan.md"), List.of()),
                 null, List.of(), null, List.of(), Map.of());
         StepDescriptor sub = new StepDescriptor("child", StepType.SUB_FLOW, null, null,
                 new SubFlowSpec("other-flow", Map.of("parent_a", "child_a"), Map.of("child_b", "parent_b")),

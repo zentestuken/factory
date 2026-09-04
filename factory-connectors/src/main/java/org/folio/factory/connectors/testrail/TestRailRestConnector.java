@@ -111,12 +111,34 @@ public class TestRailRestConnector implements TestRailConnector, ConnectorHealth
                 all.add(new TestRailCase(
                         c.path("id").asLong(),
                         c.path("title").asString(""),
-                        c.path("custom_preconds").asString("")));
+                        c.path("custom_preconds").asString(""),
+                        readSteps(c)));
             }
             if (cases.size() < limit) break;
             offset += limit;
         }
         return all;
+    }
+
+    /**
+     * Reads a case's steps from whichever field its TestRail template populates:
+     * {@code custom_steps_separated} (structured, the common case) or {@code custom_steps}
+     * (a single text blob, used by the text template). Returns an empty list when neither is set.
+     */
+    private static List<TestRailStep> readSteps(JsonNode caseNode) {
+        JsonNode separated = caseNode.path("custom_steps_separated");
+        if (separated.isArray()) {
+            List<TestRailStep> steps = new ArrayList<>();
+            for (JsonNode step : separated) {
+                TestRailStep parsed = new TestRailStep(
+                        step.path("content").asString(""),
+                        step.path("expected").asString(""));
+                if (!parsed.isBlank()) steps.add(parsed);
+            }
+            return steps;
+        }
+        String blob = caseNode.path("custom_steps").asString("");
+        return blob.isBlank() ? List.of() : List.of(new TestRailStep(blob, ""));
     }
 
     @Override
@@ -166,7 +188,7 @@ public class TestRailRestConnector implements TestRailConnector, ConnectorHealth
             long id = s.path("id").asLong();
             byId.put(id, s);
             JsonNode parentNode = s.path("parent_id");
-            long parentKey = (parentNode.isNull() || parentNode.isMissingNode()) ? -1L : parentNode.asLong();
+            long parentKey = (parentNode.isNull() || parentNode.isMissingNode() || parentNode.asLong() == 0) ? -1L : parentNode.asLong();
             byParent.computeIfAbsent(parentKey, k -> new ArrayList<>()).add(s);
         }
 

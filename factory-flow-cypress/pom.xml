@@ -19,6 +19,12 @@
       <groupId>org.folio.factory</groupId>
       <artifactId>factory-agents</artifactId>
     </dependency>
+    <!-- Provider-specific chat options (prompt caching). Deliberately declared here and not
+         in factory-agents, which stays neutral so FACTORY_LLM_PROVIDER can select OpenAI. -->
+    <dependency>
+      <groupId>org.springframework.ai</groupId>
+      <artifactId>spring-ai-anthropic</artifactId>
+    </dependency>
     <dependency>
       <groupId>org.folio.factory</groupId>
       <artifactId>factory-connectors</artifactId>

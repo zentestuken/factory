@@ -113,6 +113,54 @@ class AbstractLlmAgentWorkerTest {
     }
 
     @Test
+    void cacheTokensReachMetricsWhenTheProviderReportsThem() {
+        StubChatModel model = new StubChatModel()
+                .enqueueCached("{\"title\": \"Cached\", \"points\": []}", 300, 40, 18000, 0);
+        TestWorker worker = new TestWorker(ChatClient.create(model));
+
+        AgentResult result = worker.execute(null);
+
+        assertThat(result.metrics()).containsEntry("promptTokens", 300L)
+                .containsEntry("completionTokens", 40L)
+                .containsEntry("cacheWriteTokens", 18000L)
+                .doesNotContainKey("cacheReadTokens");
+    }
+
+    @Test
+    void cacheReadIsReportedSeparatelyFromCacheWrite() {
+        StubChatModel model = new StubChatModel()
+                .enqueueCached("{\"title\": \"Hit\", \"points\": []}", 300, 40, 0, 18000);
+        TestWorker worker = new TestWorker(ChatClient.create(model));
+
+        AgentResult result = worker.execute(null);
+
+        assertThat(result.metrics()).containsEntry("cacheReadTokens", 18000L)
+                .doesNotContainKey("cacheWriteTokens");
+    }
+
+    @Test
+    void providersWithoutPromptCachingReportNoCacheMetrics() {
+        // DefaultUsage leaves both cache counts null unless the provider sets them; the
+        // portable read path must treat that as zero rather than failing.
+        StubChatModel model = new StubChatModel()
+                .enqueue("{\"title\": \"Plain\", \"points\": []}", 120, 45);
+        TestWorker worker = new TestWorker(ChatClient.create(model));
+
+        AgentResult result = worker.execute(null);
+
+        assertThat(result.metrics()).doesNotContainKey("cacheWriteTokens")
+                .doesNotContainKey("cacheReadTokens");
+    }
+
+    @Test
+    void chatOptionsDefaultsToMaxTokensSoExistingOverridesKeepWorking() {
+        TestWorker worker = new TestWorker(ChatClient.create(new StubChatModel()));
+
+        // maxTokens() returns null by default, so no options are applied at all.
+        assertThat(worker.chatOptions()).isNull();
+    }
+
+    @Test
     void zeroUsageLeavesMetricsEmpty() {
         StubChatModel model = new StubChatModel().enqueue("{\"title\": \"t\", \"points\": []}");
         TestWorker worker = new TestWorker(ChatClient.create(model));

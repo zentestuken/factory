@@ -12,7 +12,9 @@ import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.ChatOptions;
 import tools.jackson.core.JacksonException;
 
+import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 /**
  * Base class for LLM-backed agent workers. Provider-agnostic: workers only see
@@ -33,7 +35,36 @@ public abstract class AbstractLlmAgentWorker implements AgentWorker {
     // a reused engine pool thread cannot leak counts into a later step even when
     // a worker throws after its call. A worker making several calls per execute
     // reports only the last one.
-    private static final ThreadLocal<long[]> USAGE = new ThreadLocal<>();
+    private static final ThreadLocal<TokenUsage> USAGE = new ThreadLocal<>();
+
+    /**
+     * One model call's token counts. {@code cacheWrite}/{@code cacheRead} are populated only
+     * by providers that support prompt caching and report it; they are zero everywhere else,
+     * so reading them never depends on which provider is configured.
+     */
+    public record TokenUsage(long prompt, long completion, long cacheWrite, long cacheRead) {
+
+        public static final TokenUsage ZERO = new TokenUsage(0, 0, 0, 0);
+
+        public TokenUsage plus(TokenUsage other) {
+            return new TokenUsage(prompt + other.prompt, completion + other.completion,
+                    cacheWrite + other.cacheWrite, cacheRead + other.cacheRead);
+        }
+
+        public boolean isEmpty() {
+            return prompt + completion + cacheWrite + cacheRead == 0;
+        }
+
+        /** Metric map for {@link AgentResult}; cache entries are omitted when nothing was cached. */
+        public Map<String, Object> toMetrics() {
+            Map<String, Object> metrics = new LinkedHashMap<>();
+            metrics.put("promptTokens", prompt);
+            metrics.put("completionTokens", completion);
+            if (cacheWrite > 0) metrics.put("cacheWriteTokens", cacheWrite);
+            if (cacheRead > 0) metrics.put("cacheReadTokens", cacheRead);
+            return metrics;
+        }
+    }
 
     protected final ChatClient chatClient;
 
@@ -58,13 +89,56 @@ public abstract class AbstractLlmAgentWorker implements AgentWorker {
     }
 
     /**
+     * Options applied to every model call this worker makes, or {@code null} for the
+     * configured defaults. The default implementation honours {@link #maxTokens()}, so
+     * overriding that alone keeps working.
+     *
+     * <p>Override this instead when a worker needs provider-specific options — prompt
+     * caching, say. Returning a provider-specific subtype is safe: a model from another
+     * provider reads only the portable {@link ChatOptions} properties and logs a warning
+     * for the rest, so the worker degrades rather than failing. Keep the provider
+     * dependency in the flow module; this class stays provider-neutral.</p>
+     */
+    protected ChatOptions.Builder<?> chatOptions() {
+        Integer tokens = maxTokens();
+        return tokens == null ? null : ChatOptions.builder().maxTokens(tokens);
+    }
+
+    /**
+     * Per-prompt options. Defaults to {@link #chatOptions()}, so overriding only the no-arg
+     * form keeps working unchanged.
+     *
+     * <p>Override this instead when one prompt in a multi-call worker needs different options
+     * from the rest. A short-answer call is the usual reason: a reviewer or classifier reasons
+     * over a large input and then answers in a line or two, and on a reasoning model that
+     * reasoning is charged against the same output ceiling as the answer - so the call with the
+     * smallest visible output can be the one that needs the largest ceiling.</p>
+     *
+     * @param promptId the prompt directory being called, or {@code null} for the worker's own
+     *                 {@code prompts/<worker-id>/} templates
+     */
+    protected ChatOptions.Builder<?> chatOptions(String promptId) {
+        return chatOptions();
+    }
+
+    /**
      * Calls the model and binds the response to {@code type} via Spring AI's
      * structured output support, retrying once on unparseable output.
      */
     protected <T> T callForEntity(Map<String, Object> variables, Class<T> type) {
+        return callForEntity(id(), variables, type);
+    }
+
+    /**
+     * Like {@link #callForEntity(Map, Class)} but loads prompts from
+     * {@code prompts/{promptId}/} instead of the worker's own prompt directory.
+     * Useful for workers that make multiple structured-output calls with different
+     * prompt sets in a single {@code execute()}.
+     */
+    protected <T> T callForEntity(String promptId, Map<String, Object> variables, Class<T> type) {
         USAGE.remove();
-        String system = systemPrompt(variables);
-        String user = userPrompt(variables);
+        String system = PromptLoader.render(PromptLoader.load(promptId, "system"), variables);
+        String user = PromptLoader.render(PromptLoader.load(promptId, "user"), variables);
         try {
             return captureUsage(buildPrompt(system, user).call().responseEntity(type));
         } catch (JacksonException firstFailure) {
@@ -87,10 +161,14 @@ public abstract class AbstractLlmAgentWorker implements AgentWorker {
     }
 
     private ChatClient.ChatClientRequestSpec buildPrompt(String system, String user) {
+        return buildPrompt(null, system, user);
+    }
+
+    private ChatClient.ChatClientRequestSpec buildPrompt(String promptId, String system, String user) {
         ChatClient.ChatClientRequestSpec spec = chatClient.prompt();
-        Integer tokens = maxTokens();
-        if (tokens != null) {
-            spec = spec.options(ChatOptions.builder().maxTokens(tokens));
+        ChatOptions.Builder<?> options = chatOptions(promptId);
+        if (options != null) {
+            spec = spec.options(options);
         }
         return spec.system(system).user(user);
     }
@@ -104,10 +182,19 @@ public abstract class AbstractLlmAgentWorker implements AgentWorker {
         if (response == null) return;
         Usage usage = response.getMetadata().getUsage();
         if (usage != null) {
-            USAGE.set(new long[]{
-                    usage.getPromptTokens() == null ? 0 : usage.getPromptTokens(),
-                    usage.getCompletionTokens() == null ? 0 : usage.getCompletionTokens()});
+            // getCacheReadInputTokens/getCacheWriteInputTokens are default methods on the
+            // portable Usage interface, so reading them keeps this class provider-neutral;
+            // providers without prompt caching return null and report zero.
+            USAGE.set(new TokenUsage(
+                    zeroIfNull(usage.getPromptTokens()),
+                    zeroIfNull(usage.getCompletionTokens()),
+                    zeroIfNull(usage.getCacheWriteInputTokens()),
+                    zeroIfNull(usage.getCacheReadInputTokens())));
         }
+    }
+
+    private static long zeroIfNull(Number value) {
+        return value == null ? 0 : value.longValue();
     }
 
     /**
@@ -115,34 +202,28 @@ public abstract class AbstractLlmAgentWorker implements AgentWorker {
      * calls per {@code execute()} call this after each call to bank tokens before
      * the next {@code callForEntity} entry resets the ThreadLocal.
      */
-    protected long[] drainUsage() {
-        long[] u = USAGE.get();
+    protected TokenUsage drainUsage() {
+        TokenUsage usage = USAGE.get();
         USAGE.remove();
-        return u == null ? new long[]{0, 0} : u;
+        return usage == null ? TokenUsage.ZERO : usage;
     }
 
     /**
      * Builds the step result carrying the last model call's token usage as
-     * {@code promptTokens}/{@code completionTokens} metrics. Failed attempts
-     * (including the internal parse-retry's first attempt) are not observable
-     * through the structured-output API and are not counted.
+     * {@code promptTokens}/{@code completionTokens} metrics (plus cache counts when the
+     * provider reports them). Failed attempts (including the internal parse-retry's first
+     * attempt) are not observable through the structured-output API and are not counted.
      */
     protected AgentResult resultWithUsage(String artifactName, String content) {
-        long[] usage = USAGE.get();
-        USAGE.remove();
-        if (usage == null || usage[0] + usage[1] == 0) {
+        TokenUsage usage = drainUsage();
+        if (usage.isEmpty()) {
             return AgentResult.of(artifactName, content);
         }
-        return new AgentResult(Map.of(artifactName, content),
-                Map.of("promptTokens", usage[0], "completionTokens", usage[1]));
+        return new AgentResult(Map.of(artifactName, content), usage.toMetrics());
     }
 
     protected String callForText(Map<String, Object> variables) {
-        return chatClient.prompt()
-                .system(systemPrompt(variables))
-                .user(userPrompt(variables))
-                .call()
-                .content();
+        return buildPrompt(systemPrompt(variables), userPrompt(variables)).call().content();
     }
 
     /**
@@ -154,10 +235,36 @@ public abstract class AbstractLlmAgentWorker implements AgentWorker {
         USAGE.remove();
         String system = PromptLoader.render(PromptLoader.load(promptId, "system"), variables);
         String user = PromptLoader.render(PromptLoader.load(promptId, "user"), variables);
-        ChatResponse response = buildPrompt(system, user).call().chatResponse();
+        ChatResponse response = buildPrompt(promptId, system, user).call().chatResponse();
         captureUsageFromResponse(response);
-        return response != null && response.getResult() != null
-                ? response.getResult().getOutput().getText()
-                : "";
+        return textOf(response, promptId);
+    }
+
+    /**
+     * Joins the text of every generation in the response rather than reading only the first.
+     *
+     * <p>A reasoning model can return a reasoning block ahead of its answer, and the two arrive
+     * as separate generations. Reading {@code getResult()} alone then yields the reasoning
+     * block's text - empty whenever the provider omits reasoning content, which is the default
+     * on current Anthropic models. The caller sees a successful call that returned nothing, and
+     * a worker looping on that response burns its whole retry budget on an empty answer.</p>
+     */
+    private String textOf(ChatResponse response, String promptId) {
+        if (response == null || response.getResults() == null) {
+            log.warn("[{}] Model call for '{}' returned no response", id(), promptId);
+            return "";
+        }
+        String text = response.getResults().stream()
+                .map(generation -> generation.getOutput() == null ? null : generation.getOutput().getText())
+                .filter(part -> part != null && !part.isBlank())
+                .collect(Collectors.joining("\n"));
+        if (text.isBlank()) {
+            log.warn("[{}] Model call for '{}' returned {} generation(s) but no text. "
+                    + "Finish reason(s): {}", id(), promptId, response.getResults().size(),
+                    response.getResults().stream()
+                            .map(g -> g.getMetadata() == null ? "?" : g.getMetadata().getFinishReason())
+                            .toList());
+        }
+        return text;
     }
 }
