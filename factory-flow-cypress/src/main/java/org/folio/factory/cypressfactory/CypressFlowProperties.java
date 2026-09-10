@@ -31,6 +31,12 @@ public record CypressFlowProperties(
         if (testrailCaseTypeId == null) testrailCaseTypeId = 1L;
         if (testrailPriorityId == null) testrailPriorityId = 3L;
         testrailLabel = (testrailLabel == null || testrailLabel.isBlank()) ? DEFAULT_TESTRAIL_LABEL : testrailLabel;
+        if (testrailLabel.length() > 20) {
+            throw new IllegalArgumentException(
+                    "FACTORY_CYPRESS_TESTRAIL_LABEL is " + testrailLabel.length() + " characters" +
+                    " (\"" + testrailLabel + "\") - TestRail enforces a 20-character limit." +
+                    " Shorten it and restart.");
+        }
         if (maxReviewIterations == null || maxReviewIterations < 0) maxReviewIterations = DEFAULT_MAX_REVIEW_ITERATIONS;
         refsExcludedProjects = refsExcludedProjects == null
                 ? DEFAULT_REFS_EXCLUDED_PROJECTS

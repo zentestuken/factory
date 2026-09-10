@@ -172,7 +172,7 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
 
     @Override
     protected Integer maxTokens() {
-        return 16384;
+        return 32768;
     }
 
     /**
