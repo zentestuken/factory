@@ -211,6 +211,20 @@ and note the mismatch in one line at the top of `# Analysis` so a human can fix 
     set `- **User Journey:** Yes`. Atomic means one operation verified once. A case whose steps
     cover two numbered scenarios is almost always a journey - check the flag before finalising.
 
+12. **A scenario worded as applying across several named options, fields, or surfaces is not
+    satisfied by one representative case covering only one of them.** "Works across all fielded
+    search options," "every match configuration," "both Create and Edit forms" - these are
+    scope claims naming a specific set. Before the coverage matrix is finalized, check whether
+    each named member of that set is actually exercised.
+
+    Default resolution is a `NOT COVERED - <reason>` row per unexercised member, named
+    specifically - `Contains all/any behavior - Subject field: NOT COVERED - verified only
+    against Title name; the other fielded options are not expected to differ for this rule` is
+    useful, silent omission is not. Only write additional cases for a member when there is a
+    real reason to expect it might behave differently - this is not a license to multiply every
+    case by every option speculatively; flagging with a reason is the normal outcome, extra
+    coverage is the exception.
+
 ---
 
 ## Output envelope — mandatory

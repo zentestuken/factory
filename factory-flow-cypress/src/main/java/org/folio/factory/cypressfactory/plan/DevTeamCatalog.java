@@ -31,8 +31,12 @@ public class DevTeamCatalog {
     private static final Logger log = LoggerFactory.getLogger(DevTeamCatalog.class);
     private static final String RESOURCE = "references/dev-teams.md";
 
-    /** One row of the table; {@code testRailId} is null when it has not been filled in yet. */
-    public record DevTeam(String jiraName, Integer jiraId, String testRailName, Integer testRailId) {
+    /**
+     * One row of the table; {@code testRailId} is null when it has not been filled in yet,
+     * {@code supersededBy} is null for a current team.
+     */
+    public record DevTeam(String jiraName, Integer jiraId, String testRailName, Integer testRailId,
+                           String supersededBy) {
         public boolean syncable() {
             return testRailId != null;
         }
@@ -74,7 +78,9 @@ public class DevTeamCatalog {
             if (jiraId == null) {
                 continue;
             }
-            DevTeam team = new DevTeam(cells.get(0), jiraId, cells.get(2), number(cells.get(3)));
+            String supersededBy = cells.size() >= 5 ? cells.get(4) : "";
+            DevTeam team = new DevTeam(cells.get(0), jiraId, cells.get(2), number(cells.get(3)),
+                    supersededBy.isBlank() ? null : supersededBy);
             teams.add(team);
             index(team.jiraName(), team);
             index(team.testRailName(), team);
@@ -122,7 +128,20 @@ public class DevTeamCatalog {
     public Optional<DevTeam> find(String name) {
         return name == null || name.isBlank()
                 ? Optional.empty()
-                : Optional.ofNullable(byKey.get(key(name)));
+                : Optional.ofNullable(byKey.get(key(name))).map(this::resolveSupersession);
+    }
+
+    /**
+     * Follows {@code supersededBy} exactly one hop — a reorged team's row points straight at
+     * the current team's row, never at another superseded row, so there is nothing to loop.
+     * Falls back to the original row if {@code supersededBy} names a team not in the table.
+     */
+    private DevTeam resolveSupersession(DevTeam team) {
+        if (team.supersededBy() == null || team.supersededBy().isBlank()) {
+            return team;
+        }
+        DevTeam replacement = byKey.get(key(team.supersededBy()));
+        return replacement != null ? replacement : team;
     }
 
     /** The canonical Jira spelling of a recognised team, or the input unchanged. */

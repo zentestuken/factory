@@ -172,7 +172,7 @@ class TestCaseGenAgentWorkerTest {
                 new CoveragePrefetch(new UnconfiguredConnectors.TestRail(), props),
                 new ExamplesPrefetch(skills),
                 codec, new TestPlanParser(), new DevTeamCatalog(),
-                new PromptDump(false, Path.of("target", "unused-prompt-dump")), props, MODEL);
+                new PromptDump(false, Path.of("target", "unused-prompt-dump")), props, MODEL, "");
     }
 
     private TestCaseGenAgentWorker worker(StubChatModel model, int maxReviewIterations,
@@ -193,7 +193,7 @@ class TestCaseGenAgentWorkerTest {
                 new FragmentPrefetch(new TafSyncService(), new UnconfiguredConnectors.GitHub()),
                 new CoveragePrefetch(testRail, props),
                 new ExamplesPrefetch(skills),
-                codec, new TestPlanParser(), new DevTeamCatalog(), promptDump, props, llmModel);
+                codec, new TestPlanParser(), new DevTeamCatalog(), promptDump, props, llmModel, "");
     }
 
     // ── Contexts ─────────────────────────────────────────────────────────────
@@ -246,7 +246,8 @@ class TestCaseGenAgentWorkerTest {
 
         assertThat(plan).contains("issue_key: \"UIMARCAUTH-553\"");
         assertThat(plan).contains("refs: \"UIMARCAUTH-553, MODELINKS-201\"");
-        assertThat(plan).contains("team: \"Spitfire\"");
+        // dev-teams.md remaps Spitfire -> Promin (Spitfire/Folijet were absorbed into Promin).
+        assertThat(plan).contains("team: \"Promin\"");
         assertThat(plan).contains("ecs_story: \"non-ecs\"");
         assertThat(plan).contains("case_count: 1");
         assertThat(plan).contains("review_passed: true");
@@ -589,7 +590,8 @@ class TestCaseGenAgentWorkerTest {
 
         String plan = worker(model).execute(freshContext()).outputs().get("test_plan.md");
 
-        assertThat(plan).contains("team: \"Spitfire\"");
+        // dev-teams.md remaps Spitfire -> Promin (Spitfire/Folijet were absorbed into Promin).
+        assertThat(plan).contains("team: \"Promin\"");
         assertThat(model.receivedPrompts().get(1).getContents())
                 .contains("**Development Team:** not set on the ticket");
     }
@@ -746,7 +748,7 @@ class TestCaseGenAgentWorkerTest {
         AnthropicChatOptions options =
                 (AnthropicChatOptions) worker(new StubChatModel()).chatOptions().build();
 
-        assertThat(options.getMaxTokens()).isEqualTo(16384);
+        assertThat(options.getMaxTokens()).isEqualTo(32768);
         assertThat(options.getCacheOptions().getStrategy())
                 .isEqualTo(AnthropicCacheStrategy.SYSTEM_ONLY);
         assertThat(options.getCacheOptions().getMessageTypeTtl())
@@ -772,7 +774,11 @@ class TestCaseGenAgentWorkerTest {
     }
 
     @Test
-    void theReviewerGetsAHigherCeilingThanGeneration() {
+    void reviewerAndGenerationShareTheSameCeiling() {
+        // Generation was raised from 16384 to match REVIEWER_MAX_TOKENS (32768): a reasoning
+        // model can fill the whole ceiling with its reasoning block before emitting any answer
+        // text, and the failure mode (empty response, forced re-ask) hit generation just as
+        // easily as review. No asymmetry is intentional here any more.
         TestCaseGenAgentWorker worker = worker(new StubChatModel());
 
         AnthropicChatOptions review =
@@ -781,7 +787,7 @@ class TestCaseGenAgentWorkerTest {
                 (AnthropicChatOptions) worker.chatOptions("cypress-testcase-gen").build();
 
         assertThat(review.getMaxTokens()).isEqualTo(32768);
-        assertThat(generate.getMaxTokens()).isEqualTo(16384);
+        assertThat(generate.getMaxTokens()).isEqualTo(32768);
         // Caching still applies to every call, whichever prompt it is.
         assertThat(review.getCacheOptions().getStrategy())
                 .isEqualTo(AnthropicCacheStrategy.SYSTEM_ONLY);

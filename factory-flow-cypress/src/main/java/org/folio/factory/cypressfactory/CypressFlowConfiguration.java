@@ -118,11 +118,13 @@ public class CypressFlowConfiguration {
                                                           PromptDump promptDump,
                                                           CypressFlowProperties properties,
                                                           @Value("${spring.ai.anthropic.chat.options.model:}")
-                                                          String anthropicModel) {
+                                                          String anthropicModel,
+                                                          @Value("${factory.connectors.jira.base-url:}")
+                                                          String jiraBaseUrl) {
         return new TestCaseGenAgentWorker(chatClientBuilder.build(), jiraConnector, testRailConnector,
                 skillWorkspaceService, areaDetector, contextPrefetch, fragmentPrefetch,
                 coveragePrefetch, examplesPrefetch, frontmatterCodec, testPlanParser, devTeamCatalog,
-                promptDump, properties, anthropicModel);
+                promptDump, properties, anthropicModel, jiraBaseUrl);
     }
 
     @Bean

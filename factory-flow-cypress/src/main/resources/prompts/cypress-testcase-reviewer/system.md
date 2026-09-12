@@ -230,6 +230,76 @@ Flag with: case ID.
 
 ---
 
+### R16 - Redundant negative assertions
+
+Flag an expected result that asserts only the *absence* of an error or side effect when nothing
+in the step's own setup would plausibly trigger one. A case exists to verify a business rule,
+not to document what didn't happen - asserting non-events the step never risked is noise, not
+verification.
+
+Examples of the pattern: "No error is shown" after entering valid input into a field with no
+stated validation; "No validation error is shown" immediately after a save the previous step
+already confirmed succeeded; "the tag is displayed as literal text, not executed" as a separate
+bullet when the main assertion already states the literal-text display.
+
+**This applies whether the redundant clause is bulleted separately or comma-joined into the
+same sentence as the fact it restates.** Violation: `"Package URL" shows the entered value as
+plain text - angle brackets and special characters are visible, HTML tags are not rendered` -
+"HTML tags are not rendered" adds nothing once "shown as plain text... visible" is already
+stated; drop it, don't just reformat it into a bullet. Do NOT let R14's subordinate-clause
+carve-out ("one fact with a qualifier, not two facts") wave this through - a qualifier that
+restates a fact already implied by the clause it's attached to is exactly this rule's target,
+not R14's exemption for genuinely subordinate detail like "3 rows, sorted by Title".
+
+Do NOT flag a negative assertion that IS the point of the case - e.g. a case specifically
+titled/scoped around confirming no error appears for a boundary value, or a security-style case
+whose whole purpose is confirming a script tag does not execute. The rule targets assertions
+that are redundant or unmotivated by anything in the step, not negative assertions in general.
+
+Flag with: case ID, step number, the redundant phrase.
+
+### R17 - Action steps bundling 3+ actions with no separators
+
+Step **action** text (not expected results - see R4/R11/R14 for those) that chains 3 or more
+imperative actions in one run-on sentence, joined by commas/"and" with no structure, must be
+split into either separate numbered steps or `->`/bullet-separated sub-actions within the step.
+
+Violation: `"Enter 'Test package URL' in the Name field, select any value in the Content type
+dropdown, and enter 'https://example.com' in the Package URL field"` - three actions
+(enter/select/enter) run together.
+
+Required form (either is acceptable):
+```
+Action: Enter "Test package URL" in the "Name" field -> select "eBook" in the "Content type"
+dropdown -> enter "https://example.com" in the "Package URL" field
+```
+or split into 3 separate numbered steps.
+
+Detect: an action sentence containing 3 or more imperative verbs (Click/Enter/Select/Open/
+Expand/Check/Navigate/Fill/Drag/...) chained by commas or "and", with no `->` or line break
+structure separating them.
+
+Flag with: case ID, step number.
+
+### R18 - Mutually exclusive outcomes presented as both true
+
+An expected result must assert the one actual outcome, not hedge between two different,
+differently-phrased state descriptions joined by "or". A test case cannot verify two
+alternative, mutually exclusive states at once - that means the author didn't know which one
+actually happens.
+
+Violation: `"Edit mode remains active OR Record is not saved"` - two different observable
+states offered as alternatives instead of the one that actually occurs.
+
+Do NOT flag a genuine single-outcome description that merely uses "or" between two phrasings of
+the *same* state (e.g. "the field is empty or shows a placeholder" describing one visual
+outcome two ways is borderline - only flag when the two sides describe clearly distinct system
+states, not a wording choice).
+
+Flag with: case ID, step number, the hedged phrase.
+
+---
+
 ## Output format
 
 **`REVIEW_RESULT:` must be the very first line of your response — no text before it.**

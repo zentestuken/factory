@@ -3,6 +3,7 @@ package org.folio.factory.cypressfactory.worker;
 import org.folio.factory.agents.artifact.Frontmatter;
 import org.folio.factory.agents.artifact.FrontmatterCodec;
 import org.folio.factory.connectors.testrail.TestRailConnector;
+import org.folio.factory.connectors.testrail.TestRailFieldOption;
 import org.folio.factory.core.agent.AgentContext;
 import org.folio.factory.core.agent.AgentExecutionException;
 import org.folio.factory.core.agent.AgentResult;
@@ -22,6 +23,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.function.Supplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -40,6 +42,17 @@ public class TestRailSyncAgentWorker implements AgentWorker {
     private final CypressFlowProperties properties;
     private final TestPlanParser parser;
     private final DevTeamCatalog devTeams;
+    private static final Pattern ORDINAL_PREFIX = Pattern.compile("^\\d+\\s*-\\s*");
+
+    /**
+     * Resolved lazily on first use, not at app startup: this app is long-running, so an
+     * eager fetch would go stale the next time TestRail's admin re-templates the field, and
+     * would make app boot depend on TestRail being reachable. A benign race between concurrent
+     * executions on first use is acceptable - both resolve the same id and the second write
+     * just repeats the first.
+     */
+    private volatile Long cachedCaseTypeId;
+    private volatile Long cachedPriorityId;
 
     public TestRailSyncAgentWorker(TestRailConnector testRail, FrontmatterCodec frontmatterCodec,
                                    CypressFlowProperties properties, TestPlanParser parser,
@@ -159,6 +172,58 @@ public class TestRailSyncAgentWorker implements AgentWorker {
         }
     }
 
+    private long resolveCaseTypeId() {
+        Long cached = cachedCaseTypeId;
+        if (cached != null) return cached;
+        long id = resolveFieldOptionId(properties.testrailCaseTypeName(), this::fetchCaseTypes, "case type");
+        cachedCaseTypeId = id;
+        return id;
+    }
+
+    private long resolvePriorityId() {
+        Long cached = cachedPriorityId;
+        if (cached != null) return cached;
+        long id = resolveFieldOptionId(properties.testrailPriorityName(), this::fetchPriorities, "priority");
+        cachedPriorityId = id;
+        return id;
+    }
+
+    private List<TestRailFieldOption> fetchCaseTypes() {
+        return testRail.getCaseTypes();
+    }
+
+    private List<TestRailFieldOption> fetchPriorities() {
+        return testRail.getPriorities();
+    }
+
+    private long resolveFieldOptionId(String configuredName, Supplier<List<TestRailFieldOption>> fetch,
+                                       String kind) {
+        List<TestRailFieldOption> options;
+        try {
+            options = fetch.get();
+        } catch (Exception e) {
+            throw new AgentExecutionException(
+                    "Cannot fetch TestRail " + kind + " options: " + e.getMessage(), e);
+        }
+        String target = normalizeFieldName(configuredName);
+        for (TestRailFieldOption o : options) {
+            if (target.equals(normalizeFieldName(o.name()))
+                    || (o.shortName() != null && target.equals(normalizeFieldName(o.shortName())))) {
+                return o.id();
+            }
+        }
+        throw new AgentExecutionException(
+                "Cannot resolve TestRail " + kind + " '" + configuredName + "' - checked "
+                        + options.size() + " option(s) from TestRail. Configured "
+                        + "FACTORY_CYPRESS_TESTRAIL_" + (kind.equals("case type") ? "CASE_TYPE" : "PRIORITY")
+                        + "_NAME must match a real TestRail " + kind + " name.");
+    }
+
+    /** Strips a leading ordinal prefix ("2 - Medium" -> "medium") before case-insensitive compare. */
+    private static String normalizeFieldName(String s) {
+        return s == null ? "" : ORDINAL_PREFIX.matcher(s.strip()).replaceFirst("").toLowerCase(Locale.ROOT);
+    }
+
     private long resolveCypressLabel() {
         String label = properties.testrailLabel();
         try {
@@ -176,8 +241,8 @@ public class TestRailSyncAgentWorker implements AgentWorker {
         meta.put("template_id", 2);
         meta.put("custom_automation_type", 2);
         meta.put("custom_ecs_enabled", ecsEnabled);
-        meta.put("priority_id", properties.testrailPriorityId());
-        meta.put("type_id", properties.testrailCaseTypeId());
+        meta.put("priority_id", resolvePriorityId());
+        meta.put("type_id", resolveCaseTypeId());
         meta.put("labels", List.of(cypressLabelId));
         if (devTeamId != null) {
             meta.put("custom_dev_team", devTeamId);

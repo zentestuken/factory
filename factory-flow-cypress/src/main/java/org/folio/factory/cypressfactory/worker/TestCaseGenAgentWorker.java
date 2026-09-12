@@ -33,6 +33,7 @@ import tools.jackson.databind.JsonNode;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -123,6 +124,8 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
 
     private static final Pattern ANALYSIS_SECTION =
             Pattern.compile("(?mi)^\\s*\\**testrail_section\\**:\\s*[\"']?(.+?)[\"']?\\s*$");
+    /** {@code epam-<team>} / {@code epam_<team>} style Jira labels used to tag a story's team. */
+    private static final Pattern EPAM_TEAM_LABEL = Pattern.compile("(?i)^epam[-_](.+)$");
 
     private final JiraConnector jira;
     private final TestRailConnector testRail;
@@ -138,6 +141,7 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
     private final PromptDump promptDump;
     private final CypressFlowProperties properties;
     private final String model;
+    private final String jiraBaseUrl;
     private final int maxReviewIterations;
 
     public TestCaseGenAgentWorker(ChatClient chatClient, JiraConnector jira, TestRailConnector testRail,
@@ -146,7 +150,7 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
                                   CoveragePrefetch coveragePrefetch, ExamplesPrefetch examplesPrefetch,
                                   FrontmatterCodec frontmatterCodec, TestPlanParser parser,
                                   DevTeamCatalog devTeams, PromptDump promptDump,
-                                  CypressFlowProperties properties, String model) {
+                                  CypressFlowProperties properties, String model, String jiraBaseUrl) {
         super(chatClient);
         this.jira = jira;
         this.testRail = testRail;
@@ -162,6 +166,7 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
         this.promptDump = promptDump;
         this.properties = properties;
         this.model = model == null ? "" : model;
+        this.jiraBaseUrl = jiraBaseUrl == null ? "" : jiraBaseUrl.strip();
         this.maxReviewIterations = properties.maxReviewIterations();
     }
 
@@ -230,7 +235,7 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
         JsonNode trigger = context.triggerPayload();
         String issueKey = requireIssueKey(trigger);
         JiraIssue issue = fetchIssue(issueKey, trigger);
-        List<JiraIssue> linked = fetchLinkedIssues(issueKey);
+        List<JiraIssue> linked = mergeUrlReferencedIssues(issue, fetchLinkedIssues(issueKey));
 
         // SKILL.md is the whole methodology - refuse to generate without it.
         String skill = skills.requireSkill();
@@ -499,6 +504,56 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
             log.warn("[{}] Could not fetch linked issues for {}: {}", ID, issueKey, e.getMessage());
             return List.of();
         }
+    }
+
+    private static final Pattern URL_PATTERN = Pattern.compile("https?://\\S+");
+    private static final Pattern JIRA_URL_KEY = Pattern.compile("/browse/([A-Z][A-Z0-9]*-\\d+)");
+
+    /**
+     * Free-text URLs in the story description that point at another ticket on this same Jira
+     * instance are treated as linked issues discovered by regex instead of by the structured
+     * {@code issuelinks} field - same fetch, same rendering, just a second way to find the key.
+     * Only URLs matching the factory's own configured Jira base URL are followed: a link to a
+     * foreign Jira instance would fail auth anyway, and no auth-guessing is attempted here.
+     * Never throws - a fetch failure for one discovered key is logged and skipped, same as the
+     * existing {@link #fetchLinkedIssues} degradation.
+     */
+    private List<JiraIssue> mergeUrlReferencedIssues(JiraIssue issue, List<JiraIssue> linked) {
+        if (jiraBaseUrl.isBlank() || issue.description() == null || issue.description().isBlank()) {
+            return linked;
+        }
+        Set<String> already = new LinkedHashSet<>();
+        if (issue.key() != null) already.add(issue.key().toUpperCase(Locale.ROOT));
+        for (JiraIssue li : linked) already.add(li.key().toUpperCase(Locale.ROOT));
+
+        List<JiraIssue> extra = new ArrayList<>();
+        Matcher urlMatcher = URL_PATTERN.matcher(issue.description());
+        while (urlMatcher.find()) {
+            String url = stripTrailingPunctuation(urlMatcher.group());
+            if (!url.startsWith(jiraBaseUrl)) continue;
+            Matcher keyMatcher = JIRA_URL_KEY.matcher(url);
+            if (!keyMatcher.find()) continue;
+            String key = keyMatcher.group(1).toUpperCase(Locale.ROOT);
+            if (!already.add(key)) continue;
+            try {
+                extra.add(jira.getIssue(key));
+            } catch (Exception e) {
+                log.warn("[{}] Could not fetch Jira issue {} referenced by URL in {}: {}",
+                        ID, key, issue.key(), e.getMessage());
+            }
+        }
+        if (extra.isEmpty()) return linked;
+        List<JiraIssue> merged = new ArrayList<>(linked);
+        merged.addAll(extra);
+        return merged;
+    }
+
+    private static String stripTrailingPunctuation(String url) {
+        int end = url.length();
+        while (end > 0 && ")].,;:!?\"'".indexOf(url.charAt(end - 1)) >= 0) {
+            end--;
+        }
+        return url.substring(0, end);
     }
 
     private record RouterResult(List<String> areas, List<String> refs, String why) {}
@@ -923,9 +978,44 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
                 .append('\n');
         if (issue.labels() != null && !issue.labels().isEmpty()) {
             sb.append("**Labels:** ").append(String.join(", ", issue.labels())).append('\n');
+            String mismatch = labelTeamMismatch(team, issue.labels());
+            if (!mismatch.isEmpty()) {
+                sb.append("**⚠️ Team/label mismatch:** ").append(mismatch).append('\n');
+            }
         }
         sb.append("\n**Description (verbatim):**\n\n").append(nullSafe(issue.description())).append('\n');
         return sb.toString();
+    }
+
+    /**
+     * Surfaces disagreement between the Development Team field and any {@code epam-<team>}
+     * label, so a story like a reorg-stale ticket (field still says the old team, label says
+     * the new one) is flagged instead of silently trusting whichever the field happens to say.
+     * Not a substitute for the {@code dev-teams.md} remap table - this catches mismatches that
+     * table doesn't yet know about; once a team is remapped there, both sides resolve to the
+     * same canonical name and no warning fires.
+     */
+    private String labelTeamMismatch(String team, List<String> labels) {
+        if (team == null || team.isBlank()) {
+            return "";
+        }
+        String canonicalTeam = devTeams.canonicalName(team);
+        Set<String> labelTeams = new LinkedHashSet<>();
+        for (String label : labels) {
+            Matcher m = EPAM_TEAM_LABEL.matcher(label == null ? "" : label.strip());
+            if (m.matches()) {
+                String candidate = devTeams.canonicalName(m.group(1).replace('_', ' ').replace('-', ' '));
+                if (!candidate.isBlank()) {
+                    labelTeams.add(candidate);
+                }
+            }
+        }
+        labelTeams.remove(canonicalTeam);
+        if (labelTeams.isEmpty()) {
+            return "";
+        }
+        return "Development Team field says \"" + canonicalTeam + "\", but label(s) suggest "
+                + String.join(", ", labelTeams) + " - verify which is current before syncing.";
     }
 
     private static String renderLinkedIssues(List<JiraIssue> linked) {

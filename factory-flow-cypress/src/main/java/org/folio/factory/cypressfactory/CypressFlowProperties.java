@@ -13,13 +13,18 @@ public record CypressFlowProperties(
         String baseBranch,
         String folioAiRepo,
         Long testrailSectionId,
-        Long testrailCaseTypeId,   // set FACTORY_CYPRESS_TESTRAIL_CASE_TYPE_ID (e.g. 1=Functional in foliotest)
-        Long testrailPriorityId,   // set FACTORY_CYPRESS_TESTRAIL_PRIORITY_ID; default 3 = Medium
+        String testrailCaseTypeName, // set FACTORY_CYPRESS_TESTRAIL_CASE_TYPE_NAME; default "Functional".
+                                      // Resolved against TestRail's own get_case_types at sync time,
+                                      // not a hardcoded id - TestRail ids drift when re-templated.
+        String testrailPriorityName, // set FACTORY_CYPRESS_TESTRAIL_PRIORITY_NAME; default "Medium".
+                                      // Same by-name resolution as testrailCaseTypeName.
         String testrailLabel,      // set FACTORY_CYPRESS_TESTRAIL_LABEL; default "cypressFlow-delete"
         Integer maxReviewIterations, // set FACTORY_CYPRESS_MAX_REVIEW_ITERATIONS; default 3; 0 = skip agent review
         Set<String> refsExcludedProjects) { // set FACTORY_CYPRESS_REFS_EXCLUDED_PROJECTS; comma-separated Jira
                                             // project keys never added to TestRail refs; default FAT
 
+    static final String DEFAULT_TESTRAIL_CASE_TYPE_NAME = "Functional";
+    static final String DEFAULT_TESTRAIL_PRIORITY_NAME = "Medium";
     static final String DEFAULT_TESTRAIL_LABEL = "cypressFlow-delete";
     static final int DEFAULT_MAX_REVIEW_ITERATIONS = 3;
     static final Set<String> DEFAULT_REFS_EXCLUDED_PROJECTS = Set.of("FAT");
@@ -28,8 +33,10 @@ public record CypressFlowProperties(
         baseBranch = baseBranch == null || baseBranch.isBlank() ? "main" : baseBranch;
         targetRepo = targetRepo == null ? "" : targetRepo;
         folioAiRepo = folioAiRepo == null ? "" : folioAiRepo;
-        if (testrailCaseTypeId == null) testrailCaseTypeId = 1L;
-        if (testrailPriorityId == null) testrailPriorityId = 3L;
+        testrailCaseTypeName = (testrailCaseTypeName == null || testrailCaseTypeName.isBlank())
+                ? DEFAULT_TESTRAIL_CASE_TYPE_NAME : testrailCaseTypeName.strip();
+        testrailPriorityName = (testrailPriorityName == null || testrailPriorityName.isBlank())
+                ? DEFAULT_TESTRAIL_PRIORITY_NAME : testrailPriorityName.strip();
         testrailLabel = (testrailLabel == null || testrailLabel.isBlank()) ? DEFAULT_TESTRAIL_LABEL : testrailLabel;
         if (testrailLabel.length() > 20) {
             throw new IllegalArgumentException(

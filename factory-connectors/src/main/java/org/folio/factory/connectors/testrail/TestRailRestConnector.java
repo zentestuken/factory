@@ -296,6 +296,31 @@ public class TestRailRestConnector implements TestRailConnector, ConnectorHealth
     }
 
     @Override
+    public List<TestRailFieldOption> getCaseTypes() {
+        JsonNode resp = restClient.get()
+                .uri("/index.php?/api/v2/get_case_types")
+                .retrieve().body(JsonNode.class);
+        List<TestRailFieldOption> result = new ArrayList<>();
+        for (JsonNode n : resp) {
+            result.add(new TestRailFieldOption(n.path("id").asLong(), n.path("name").asString(""), null));
+        }
+        return result;
+    }
+
+    @Override
+    public List<TestRailFieldOption> getPriorities() {
+        JsonNode resp = restClient.get()
+                .uri("/index.php?/api/v2/get_priorities")
+                .retrieve().body(JsonNode.class);
+        List<TestRailFieldOption> result = new ArrayList<>();
+        for (JsonNode n : resp) {
+            result.add(new TestRailFieldOption(n.path("id").asLong(), n.path("name").asString(""),
+                    n.path("short_name").asString("")));
+        }
+        return result;
+    }
+
+    @Override
     public String connectorName() {
         return "testrail";
     }

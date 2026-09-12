@@ -227,9 +227,23 @@ class TestRailSyncAgentWorkerTest {
     void setsDevTeamIdFromKnownTeam() {
         CapturingConnector connector = new CapturingConnector();
         worker(connector, 114774L).execute(
-                contextWith(planWithMeta(testPlanWithOneCase(), "team", "Folijet")));
+                contextWith(planWithMeta(testPlanWithOneCase(), "team", "Bama")));
 
-        assertThat(connector.capturedDevTeamId).isEqualTo(4);
+        assertThat(connector.capturedDevTeamId).isEqualTo(14);
+    }
+
+    @Test
+    void redirectsSupersededTeamToItsCurrentTeam() {
+        // Spitfire and Folijet were absorbed into Promin (dev-teams.md "Superseded by" column).
+        // A stale ticket still carrying the old team name must resolve to Promin's id (27),
+        // not the old team's own id.
+        for (String oldTeam : List.of("Folijet", "Spitfire")) {
+            CapturingConnector connector = new CapturingConnector();
+            worker(connector, 114774L).execute(
+                    contextWith(planWithMeta(testPlanWithOneCase(), "team", oldTeam)));
+
+            assertThat(connector.capturedDevTeamId).as("dev team id for %s", oldTeam).isEqualTo(27);
+        }
     }
 
     @Test
@@ -481,17 +495,28 @@ class TestRailSyncAgentWorkerTest {
     }
 
     // -------------------------------------------------------------------------
-    // type_id default
+    // type_id / priority_id resolved by name
     // -------------------------------------------------------------------------
 
     @Test
-    void setsTypeIdDefaultFunctional() {
+    void resolvesTypeIdByNameDefaultFunctional() {
         CapturingConnector connector = new CapturingConnector();
-        // props constructed with null typeId — CypressFlowProperties defaults it to 1L
+        // props constructed with a blank case-type name — CypressFlowProperties defaults it to
+        // "Functional", resolved against the stub's get_case_types (Functional=6, not 1 - proves
+        // this isn't just coincidentally matching an id).
         worker(connector, 114774L).execute(
                 contextWith(testPlanWithOneCase()));
 
-        assertThat(connector.capturedMetadata.get("type_id")).isEqualTo(1L);
+        assertThat(connector.capturedMetadata.get("type_id")).isEqualTo(6L);
+    }
+
+    @Test
+    void resolvesPriorityIdByNameDefaultMedium() {
+        CapturingConnector connector = new CapturingConnector();
+        worker(connector, 114774L).execute(
+                contextWith(testPlanWithOneCase()));
+
+        assertThat(connector.capturedMetadata.get("priority_id")).isEqualTo(2L);
     }
 
     // -------------------------------------------------------------------------
@@ -541,6 +566,22 @@ class TestRailSyncAgentWorkerTest {
         @Override
         public long resolveSectionByPath(String path) {
             return resolvedSectionId;
+        }
+
+        @Override
+        public List<org.folio.factory.connectors.testrail.TestRailFieldOption> getCaseTypes() {
+            return List.of(
+                    new org.folio.factory.connectors.testrail.TestRailFieldOption(1, "Automated", null),
+                    new org.folio.factory.connectors.testrail.TestRailFieldOption(6, "Functional", null),
+                    new org.folio.factory.connectors.testrail.TestRailFieldOption(7, "Other", null));
+        }
+
+        @Override
+        public List<org.folio.factory.connectors.testrail.TestRailFieldOption> getPriorities() {
+            return List.of(
+                    new org.folio.factory.connectors.testrail.TestRailFieldOption(1, "Low", "Low"),
+                    new org.folio.factory.connectors.testrail.TestRailFieldOption(2, "Medium", "Medium"),
+                    new org.folio.factory.connectors.testrail.TestRailFieldOption(3, "High", "High"));
         }
     }
 }

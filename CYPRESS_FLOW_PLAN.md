@@ -1189,8 +1189,8 @@ Part III additionally reuses `ScriptBundleCodec` (`factory-agents`) and TAF's `C
 | `FACTORY_CYPRESS_TARGET_REPO` | GitHub repo (`owner/name`) where generated Cypress specs are committed (e.g. `folio-org/stripes-testing`) |
 | `FACTORY_CYPRESS_BASE_BRANCH` | Base branch in `TARGET_REPO` (default: `master`) |
 | `FACTORY_CYPRESS_TESTRAIL_SECTION_ID` | Fallback TestRail section ID (long integer); used when `testrail_section` is absent from `test_plan.md` frontmatter, or present but unresolvable against TestRail |
-| `FACTORY_CYPRESS_TESTRAIL_CASE_TYPE_ID` | TestRail case type ID (e.g. `1`=Functional on foliotest); code default `1`=Functional — override to change |
-| `FACTORY_CYPRESS_TESTRAIL_PRIORITY_ID` | TestRail priority ID (default: `3`=Medium) |
+| `FACTORY_CYPRESS_TESTRAIL_CASE_TYPE_NAME` | TestRail case type name, resolved against `get_case_types` at sync time (not a hardcoded id - those drift); code default `Functional` |
+| `FACTORY_CYPRESS_TESTRAIL_PRIORITY_NAME` | TestRail priority name, resolved against `get_priorities` the same way; code default `Medium` |
 | `FACTORY_CYPRESS_TESTRAIL_LABEL` | Label title applied to every created case (default: `cypressFlow-delete`); resolved to a label ID at runtime via `getOrCreateLabel` |
 | `FACTORY_CYPRESS_MAX_REVIEW_ITERATIONS` | Max agent review iterations inside `TestCaseGenAgentWorker` per run (default `3`). Set to `0` to skip automated review entirely. |
 | `FACTORY_CYPRESS_REFS_EXCLUDED_PROJECTS` | Comma-separated Jira project keys never added to `refs` (default `FAT`). The originating ticket is always kept; anything dropped is named in `# Analysis`. |
