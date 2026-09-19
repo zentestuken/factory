@@ -78,7 +78,16 @@ and note the mismatch in one line at the top of `# Analysis` so a human can fix 
    - `**Automation notes:** ...` — optional last line of a case, referencing real helpers
      from the supplied fragment library.
 
-6. **`refs` is handled by the factory.** Do not emit it.
+6. **`refs` is a per-case decision, not a plan-level one.** The story ticket driving this run
+   is attached to every case automatically - never declare it yourself. Beyond that, most cases
+   need nothing more here; add a `- **Refs:**` attribute line (right after `- **ECS:**`) only
+   for a case that specifically verifies behavior from one of the `## Linked issues` tickets
+   (not just tangentially related to it) - e.g. a case regression-covering a linked Bug, or
+   built around a linked Tech-Debt ticket's acceptance criteria:
+   - **Refs:** JIRA-1234[, JIRA-5678]
+   List only keys that appear in `## Linked issues`, and never one from an excluded project
+   when the provenance block names any (see `## Provenance`). Omit the line entirely when a
+   case has nothing to add beyond the story ticket.
 
 7. **Every literal on-screen string goes in double quotes, everywhere in the case** - titles,
    preconditions, actions and expected results alike.
@@ -225,6 +234,118 @@ and note the mismatch in one line at the top of `# Analysis` so a human can fix 
     case by every option speculatively; flagging with a reason is the normal outcome, extra
     coverage is the exception.
 
+13. **Test-data fixture attachments - only when a case is genuinely unverifiable without a
+    concrete file.** Most cases never need one - a UI-only assertion never does. Add one only
+    when the steps require importing, matching or feeding a specific file (e.g. "import a MARC
+    bib record via a pre-existing job profile", "bulk-edit records from an uploaded CSV").
+    Never generate one "just in case".
+
+    `kind` is a closed enum - `text`, `csv`, `marc-bib`, `marc-authority`, `marc-holdings`.
+    Nothing outside it: a story that seems to call for another kind of fixture is a gap, not an
+    invitation to improvise - flag it as a one-line note in `# Analysis` instead
+    ("this case may need an attachment kind the factory doesn't support yet") and do not attach
+    anything to the case.
+
+    Declare it with one more per-case attribute line, alongside the others, and add the content
+    itself as the **last** thing in the case block (after `**Automation notes:**` when that line
+    is present) under the exact heading `**Attachment content**`, fenced:
+
+    ````
+    - **Attachment:** kind=csv
+
+    **Attachment content**
+    ```
+    row content here, one fixture line per row
+    ```
+    ````
+
+    **`text` / `csv`** - the fenced block is the file's exact bytes. Write it verbatim: for
+    `csv`, quote any field containing a comma or double quote per RFC 4180
+    (`"a, b"`, `""quoted""`) - do not just comma-join raw values. Do not hand-count characters
+    for an exact-length requirement in the AC (e.g. "exactly 500 characters") - approximate
+    length is fine and the reviewer will flag anything materially off; an LLM cannot reliably
+    hit an exact character count and should not pretend to.
+
+    **`marc-bib` / `marc-authority` / `marc-holdings`** - the fenced block is **breaker-text**
+    (semantic tags/indicators/subfield values only), and it is a **template overlay, not a
+    full record.** Below (`## MARC reference records`) is one complete, real, already-working
+    record per kind - every field it has, including the leader and `008`. That record is the
+    template. In your `**Attachment content**` block:
+
+    - **Leave a field out entirely** to inherit the template's value for it, unchanged. This is
+      the default for almost every field, and normally for the whole record except the key
+      field (below) and whatever you're adding or changing - most cases have nothing to say
+      about the leader, `001`, `005`, or `008`, so don't write them.
+    - **Write a field explicitly** - including `LDR` for the leader, or `008` - only when the
+      scenario is actually about that field's content (a case built around a specific `008`
+      date, an unusual encoding). Whatever you write *replaces* the template's value for that
+      exact field; it does not merge inside the field.
+    - One line per field, same shape as any other tag:
+
+      ```
+      =TAG  I1I2$acode value$bcode value    (data fields, tag 010-999 - two indicator chars,
+                                             `#` for blank, one or more $-prefixed subfields)
+      =TAG  raw data                        (control fields, tag 001-009 - no indicators)
+      =LDR  <24 characters>                 (the leader - pseudo-tag, only when the scenario
+                                             genuinely needs a specific leader byte)
+      ```
+
+    **The key field is always yours to write - never leave it to the template**, even when the
+    scenario has nothing to say about its content, because the template's own value is a real,
+    fixed title/heading and two cases sharing it would collide in FOLIO:
+
+    - `marc-bib`: `245` (title, `$a`).
+    - `marc-authority`: exactly one of `100`/`110`/`111`/`130` (main entry) - an authority
+      record can only have one 1XX field, so pick whichever the scenario's heading type calls
+      for. `$a` is always required; add `$t` only when the case is about linking to a MARC
+      bib's `240` field, and make it just as unique as `$a`.
+    - `marc-holdings`: `852` (location) - holdings aren't titled per-case the way bib/authority
+      are, so the template's own value is usually fine; override it only when the scenario
+      cares about a specific location.
+
+    When you do write a value for `$a`/`$t` (bib and authority - always; holdings, only when
+    overriding), use your own case id (the `## TC001: ...` heading label, e.g. `TC001`) - **not**
+    a real TestRail case number, which doesn't exist yet at generation time:
+    `<your case id>_Marc<Bib|Authority|Holdings><Instance| >` (matching the template's own
+    shape, e.g. `TC001_MarcBibInstance`, `TC001_MarcAuthority`). The factory substitutes your
+    case id with the real TestRail id once the case is created there, the same way it does
+    everywhere else your case id appears in the plan.
+
+    **More than one record of the same kind** (e.g. two bib records a case needs to link) -
+    write them one after another in the same fenced block, separated by a blank line. The
+    factory numbers them `_1`, `_2`, ... itself (filename and key-field value both), in the
+    order you wrote them - don't number them yourself.
+
+    Minimal example - nothing about this case is 008/leader-specific, so the whole attachment is
+    one line overriding just the title:
+
+    ````
+    - **Attachment:** kind=marc-bib
+
+    **Attachment content**
+    ```
+    =245  10$aTC001_MarcBibInstance
+    ```
+    ````
+
+    Scenario-driven example - the case is specifically about the 008 date defaults, so 008 is
+    written explicitly, the title is still written (it's always yours), and everything else
+    still comes from the template:
+
+    ````
+    - **Attachment:** kind=marc-bib
+
+    **Attachment content**
+    ```
+    =008  260101s2026    xxu           000 0 eng d
+    =245  10$aTC002_MarcBibInstance
+    ```
+    ````
+
+    ## MARC reference records
+
+    {{marc_examples}}
+
 ---
 
 ## Output envelope — mandatory
@@ -254,12 +375,15 @@ case and corrupt the TestRail sync.
 Every case under `# Test Cases` must match this structure character for character. A
 deviation means the case is silently dropped before it reaches TestRail.
 
-```
+````
 ## TC001: Imperative case title
 - **Test Group:** smoke|critical|extended
 - **User Journey:** Yes|No
 - **Automatable:** Yes|No
 - **ECS:** Yes|No
+- **Refs:** JIRA-1234  ← omit this line entirely unless the case needs it per delta 6
+- **Attachment:** kind=text|csv|marc-bib|marc-authority|marc-holdings  ← omit this line entirely
+  unless the case needs a fixture per delta 13
 
 **Preconditions**
 - First precondition
@@ -275,12 +399,20 @@ deviation means the case is silently dropped before it reaches TestRail.
    - Other field = value
 
 **Automation notes:** Optional; reference real fragment helpers.
+
+**Attachment content**
 ```
+present only when `- **Attachment:** kind=...` is present above — see delta 13 for the exact
+per-kind format
+```
+````
 
 Hard requirements:
 - Case IDs are `TC001`, `TC002`, … sequential, with a colon then a space before the title.
 - Attribute lines are `- **Name:** value` — the colon is inside the bold markers.
 - Steps are numbered `1.`, `2.`, … and every `**Action:**` is followed by `**Expected:**`.
+- `**Attachment content**` (when present) must be the last thing in the case block, and must
+  pair 1:1 with an `- **Attachment:** kind=...` attribute line — never one without the other.
 - **Every step must have a non-empty expected result.** Never blank, never `N/A`, `-`, or `TBD`.
 - An expected result that asserts more than one thing uses a lead-in line + bullet list.
   **A semicolon in an expected result is always wrong — split at every semicolon into a bullet.**
@@ -291,6 +423,21 @@ Hard requirements:
      - "Send text message" entry is disabled (greyed out)
      - "Edit" and other standard actions remain enabled
   One bullet per fact the executor checks separately.
+
+  **This rule is recursive - it does not stop once you've written one level of bullets.**
+  Splitting the top-level sentence into bullets is not "done" if any one of those bullets still
+  itself joins 2+ facts with "and"/semicolon/comma - split that bullet again, the same way:
+  ❌ Expected:
+     - "Instance" is selected in the "Existing record" section
+     - "Existing Instance record" section shows an "Existing Instance record field" dropdown and
+       a "Use a qualifier" checkbox; the "Only compare part of the value" checkbox is NOT present
+  ✅ Expected:
+     - "Instance" is selected in the "Existing record" section
+     - "Existing Instance record" section shows:
+       - An "Existing Instance record field" dropdown
+       - A "Use a qualifier" checkbox
+       - No "Only compare part of the value" checkbox
+  Check every bullet you write against this rule again, not just the sentence you started from.
 
 
 ## Golden examples — match this verification depth and style

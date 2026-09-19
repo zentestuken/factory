@@ -70,16 +70,19 @@ flow keeps no per-step artifacts, only the finished plan and, on a retry, the hu
      │      ── inline trigger payload used instead when Jira is unconfigured
      │
      │    ROUTER CALL                                    LLM · ~5k in / ~200 out
-     │      ── SKILL.md steps 1 + 3 are AGENT JUDGMENT, not keyword matching:
+     │      ── SKILL.md step 1 is AGENT JUDGMENT, not keyword matching:
      │           "the story itself is the source of truth"; story text outranks the
-     │           Jira project prefix; refs = what the case verifies (may be a Bug,
-     │           a Tech-Debt ticket, or several keys across projects)
+     │           Jira project prefix
      │      ── input: raw issue + linked issues + the 29-area table lifted from SKILL.md
-     │      ── returns: areas[1–2] · refs · one-line detection rationale
+     │      ── returns: areas[1–2] · one-line detection rationale
      │      ── AreaDetector validates the names against the 29 real context files;
      │           unknown / empty / call failure → keyword-score fallback
-     │      ── output is 4 small FACTS, not a summary — the mega-call still receives
+     │      ── output is 3 small FACTS, not a summary — the mega-call still receives
      │           the raw issue and re-reasons with everything visible
+     │      ── `refs` (SKILL.md step 3 — what the case verifies) is NOT decided here.
+     │           It moved to a per-case decision at Generate (below) once the router
+     │           was found to be guessing blind at plan-shape before any case content
+     │           existed — see "refs" under §6.3/§6.4 for the current design.
      │
      │ ── B · PREFETCH ───────────────── non-LLM · deterministic · produces no artifacts
      │
@@ -129,7 +132,9 @@ flow keeps no per-step artifacts, only the finished plan and, on a retry, the hu
      │
      │ ── E · REVIEW LOOP ─────────────── LLM · up to maxReviewIterations (default 3, 0 = off)
      │
-     │    cypress-testcase-reviewer scores the "# Test Cases" slice against R1–R11
+     │    cypress-testcase-reviewer scores the "# Test Cases" slice against the full
+     │      R1–R19 checklist (grows over time; see `cypress-testcase-reviewer/system.md`
+     │      for the current list — do not hardcode the count here again)
      │      ── FAIL → feedback + previous plan appended → regenerate (C) → revalidate (D)
      │      ── PASS or attempts exhausted → verdict written into "# Review"
      │
@@ -137,7 +142,9 @@ flow keeps no per-step artifacts, only the finished plan and, on a retry, the hu
      │
      │    frontmatter written by the WORKER, never trusted from the LLM:
      │      issue_key         ← $trigger
-     │      refs              ← issue_key ALWAYS FIRST + router extras (union, deduped)
+     │      refs              ← deterministic union of every case's OWN refs (each case
+     │                          may declare extra tickets it verifies; issue_key is
+     │                          always first in every case's own set, by construction)
      │      team              ← Jira dev-team field (AUTHORITATIVE, canonicalised
      │                          via DevTeamCatalog) · else agent · else ""
      │      ecs_story        ← agent · non-ecs|ecs|mixed
@@ -163,7 +170,8 @@ flow keeps no per-step artifacts, only the finished plan and, on a retry, the hu
 [cypress-testrail-sync]                                              non-LLM
      │  ── TestPlanParser on the "# Test Cases" slice only
      │  ── push every case; all metadata from test_plan.md frontmatter
-     │  ── automation_type=Manual · labels=[AI label] · team · ecs · refs (from frontmatter)
+     │  ── automation_type=Manual · labels=[AI label] · team · ecs · refs (per case -
+     │       re-derived from that case's own `- **Refs:**` line, not read off frontmatter)
      │  ── collect real C###### IDs per case
      ▼
 [test_plan.md]  — TC-NNN tokens in body headings replaced with real C###### IDs
@@ -321,9 +329,10 @@ currently **18,577 bytes** against **27,467** live — already ~33% behind, sile
 | `ExamplesPrefetch` | No | Reads `references/examples.md` from the skill clone; GitHub then classpath fallback. |
 | `DevTeamCatalog` | No | The 27 FOLIO teams, parsed from `references/dev-teams.md`. Used by **both** workers, like `TestPlanParser`: the generator canonicalises the team it read off the ticket, sync turns that name into TestRail's `custom_dev_team` option id. Data lives in a resource so filling in a new team is an edit, not a release. |
 | **`TestCaseGenAgentWorker`** | **Yes** | Fetches the Jira issue, runs the router call, assembles the mega-prompt, one call → markdown plan, then the reviewer loop. |
-| ↳ router call | Yes | SKILL.md steps 1 + 3 judgment: which area(s), what `refs`. ~5k in / ~200 out. |
+| ↳ router call | Yes | SKILL.md step 1 judgment: which area(s). ~5k in / ~200 out. `refs` (step 3) is decided per case by the generation call itself, not here — see §6.3. |
 | ↳ reviewer loop | Yes | Existing pattern, same worker, `maxReviewIterations` (default 3, 0 = off). |
 | ↳ `TestPlanValidator` | No | Parses the agent's own output before returning. One format-correction retry, then fail the step. |
+| ↳ `MarcFixtureBuilder` | No | Merges a case's MARC breaker-text against the golden reference record for its kind. Called here (review loop) purely to surface structural errors as feedback; called again by `TestRailSyncAgentWorker` post-gate for the bytes actually uploaded. See §6.5. |
 | Gate 1 | HITL | Human. |
 | `TestRailSyncAgentWorker` | No | Parses the `# Test Cases` slice and pushes each case to TestRail with the frontmatter metadata; writes real case ids back into the plan. |
 
@@ -374,6 +383,7 @@ review_iterations: 2
 - **User Journey:** No
 - **Automatable:** Yes
 - **ECS:** No
+- **Refs:** MODELINKS-201                  ← optional; see §6.3/§6.4 "refs"
 
 **Preconditions**
 - ...
@@ -399,7 +409,7 @@ contributes to only three of them, and never has the last word:
 | Field | Source |
 |---|---|
 | `issue_key` | The trigger payload. |
-| `refs` | Issue key first, always, then any Jira keys the router proposed (regex-filtered). |
+| `refs` | Deduplicated union of every case's own `refs` (see §6.3 "refs" below) — a plan-level rollup, not a separately-decided value. |
 | `team` | **Jira's Dev Team field is authoritative** — `customfield_10057`, which `JiraRestConnector` renames to `devTeam`. Canonicalised through `DevTeamCatalog`. The agent's reading is used only when the ticket has no team, because it has no other source and would otherwise infer one from the subject matter. |
 | `ecs_story` | The agent, from labels and story text. `non-ecs`, `ecs`, or `mixed`. |
 | `testrail_section` | The agent's suggestion, but only if TestRail resolves it; otherwise the configured default. |
@@ -441,31 +451,49 @@ parseable form inside `# Analysis`.
 | Field | Source | Fallback |
 |---|---|---|
 | `issue_key` | `$trigger` payload | — (required) |
-| `refs` | **`issue_key` always, plus** router extras (SKILL.md step 3 judgment — a Bug key the case regression-covers, a Tech-Debt ticket, related keys across projects) | `issue_key` alone |
+| `refs` | Union of every case's own per-case refs (see below) | `issue_key` alone, if no case declares any |
 | `team` | **Jira dev-team field first**, else the agent's reading; canonicalised via `DevTeamCatalog` | `""`, and sync logs a warning naming the team rather than dropping it silently |
 | `ecs_story` | agent | `non-ecs` |
 | `testrail_section` | agent, **validated via `testRail.resolveSectionByPath()` before writing** | config default `FACTORY_CYPRESS_TESTRAIL_SECTION_ID`; note added to `# Analysis` |
 | `case_count` | validator | — |
 | `review_passed`, `review_iterations` | reviewer loop | — |
 
-**`refs` — the ticket key is non-negotiable.** `refs` is TestRail's **References** field; a case
-that loses its originating ticket is orphaned. The router is therefore purely additive:
+**`refs` — the ticket key is non-negotiable, and it's a *per-case* decision.** `refs` is
+TestRail's **References** field; a case that loses its originating ticket is orphaned. This was
+originally a router-time, plan-wide guess (the router proposed extra keys before any case
+content existed), which produced plans where the router's prediction didn't match what the
+cases it hadn't written yet actually turned out to verify. It is now decided by the *generation*
+call itself, per case — the same call that has the linked-issue content in front of it and knows
+which case regression-covers which linked Bug/Tech-Debt ticket, if any. A case adds a
+`- **Refs:** JIRA-1234[, JIRA-5678]` attribute line (see §6.1) only when it specifically verifies
+a `## Linked issues` ticket's behaviour — never the parent epic or a sibling story Jira happens
+to link. Most cases add nothing.
 
 ```java
-// worker, phase F
-List<String> refs = new ArrayList<>();
-refs.add(issueKey);                                   // always first
-for (String extra : routerRefs) {
-    String k = extra.strip().toUpperCase(Locale.ROOT);
-    if (JIRA_KEY.matcher(k).matches() && !refs.contains(k)) refs.add(k);
+// TestCaseGenAgentWorker, shared with TestRailSyncAgentWorker (same package)
+static Refs buildRefs(String issueKey, List<String> caseRefs, Set<String> excludedProjects) {
+    List<String> refs = new ArrayList<>();
+    refs.add(issueKey);                                   // always first, per case
+    List<String> dropped = new ArrayList<>();
+    for (String extra : caseRefs) {
+        String k = extra.strip().toUpperCase(Locale.ROOT);
+        if (!JIRA_KEY.matcher(k).matches() || refs.contains(k) || dropped.contains(k)) continue;
+        if (excludedProjects.contains(projectKey(k))) dropped.add(k); else refs.add(k);
+    }
+    return new Refs(refs, dropped, excludedProjects.contains(projectKey(issueKey)));
 }
 // JIRA_KEY = Pattern.compile("[A-Z][A-Z0-9]*-\\d+")
 ```
 
 The regex filter drops anything that is not a well-formed Jira key, so a hallucinated or
-malformed router value is discarded rather than written into TestRail. `TestRailSyncAgentWorker`
-re-applies the same guarantee when reading the frontmatter (a reviewer could delete the key while
-amending at Gate 1), so `issue_key` is present in `refs` by construction at both layers.
+malformed case value is discarded rather than written into TestRail. `buildRefs` is called
+twice: once per case at **Assemble** (phase F) purely to compute the plan-level `refs` frontmatter
+as a deduplicated union (`unionRefs`, for a human skimming the gate), and again per case inside
+`TestRailSyncAgentWorker`'s create loop — the *actual* TestRail value each case gets, derived
+fresh from that case's own `refs()` at sync time so a Gate 1 amendment to a case's `- **Refs:**`
+line is honoured. `issue_key` is present in every case's `refs` by construction at both layers,
+so a reviewer amendment can only add or remove *extra* keys, never orphan the case from its
+originating ticket.
 
 ### 6.4 What the sync worker writes into TestRail
 
@@ -480,7 +508,7 @@ block for per-case fields.
 | `custom_ecs_enabled` | per-case `- **ECS:** Yes/No` attribute | Set directly from the per-case flag; `ecs_story` is a generation-calibration hint only and does not override per-case decisions. |
 | `custom_automation_type` | `2` (Manual) for every case | The Cypress spec is the automation artifact; the TestRail case stays a manual record. |
 | `labels` | `[id of testrailLabel]` | Resolved at runtime via `getOrCreateLabel`; title from `FACTORY_CYPRESS_TESTRAIL_LABEL`, default `cypressFlow-delete`. |
-| `refs` | `refs` from the frontmatter | The originating `issue_key` is re-asserted here even if a Gate 1 amendment removed it. |
+| `refs` | Re-derived per case via `buildRefs(issueKey, case.refs(), excludedProjects)` | **Not** read from the frontmatter rollup — each case gets its own value from its own `- **Refs:**` line, so a Gate 1 amendment to one case's refs doesn't require touching the frontmatter. `issue_key` is re-asserted for every case even if its `- **Refs:**` line was amended to omit it. |
 | `custom_preconds` | The case's Preconditions block | Rendered as a TestRail HTML list. |
 
 ### Precondition format
@@ -513,8 +541,50 @@ the specs already have correct `describe()` nesting from the generation step).
 
 The Java connector will need a `getSection(sectionId)` method added.
 
----
+### 6.5 Test-data fixture attachments (MARC / text / CSV)
 
+A case that is genuinely unverifiable without a concrete file (import a MARC record, bulk-edit
+from a CSV) may declare `- **Attachment:** kind=text|csv|marc-bib|marc-authority|marc-holdings`
+plus a fenced `**Attachment content**` block, per §6.1's case-block format. Most cases carry no
+attachment at all — never generate one "just in case" (reviewer R19).
+
+**`text`/`csv`** is the file's exact bytes, written verbatim.
+
+**MARC kinds are breaker-text, not a full record, and not the model's job to get byte-perfect.**
+`org.folio.factory.cypressfactory.plan.MarcFixtureBuilder` merges the model's sparse breaker-text
+against a real, checked-in golden reference record per kind
+(`factory-flow-cypress/src/main/resources/references/marc-examples/*.mrc`, one working record per
+kind supplied by MQA) — any field the model writes (including the pseudo-tag `LDR` for the
+leader) replaces the golden value for that exact field; anything it doesn't mention inherits from
+golden unchanged. `MarcStreamWriter` computes the leader/directory byte arithmetic from actual
+content, so the model is never asked to hand-count offsets. The generation prompt's
+`{{marc_examples}}` placeholder renders all three golden records in full via
+`MarcFixtureBuilder.renderGoldenExamples()`, so the model always has a real worked example to
+overlay onto, never a hand-transcribed one that could drift from what the builder actually merges
+against.
+
+**The key content field (245 for bib; one of 100/110/111/130 for authority; 852 for holdings) is
+the one field the model must always write itself**, even when the scenario has nothing to say
+about its content — the golden record's own value is a real, fixed title/heading, and leaving it
+to inherit would collide across cases. The model writes its own case id there as a placeholder
+(e.g. `TC004_MarcBibInstance`, since the real TestRail id doesn't exist yet at generation time);
+`TestRailSyncAgentWorker.uploadAttachment()` substitutes the model's case id for the real one in
+the fixture bytes at sync time — the same substitution `replaceIds` applies to the plan body,
+just applied to the MARC content before it's built and uploaded, since attachment upload happens
+inside the per-case creation loop, before that single body-wide pass. Uploaded filenames follow
+`<TestRail case id><RecordType>.mrc` (e.g. `C1538594MarcBibInstance.mrc`), not the case's raw
+attachment-kind spec.
+
+**A case needing more than one record of the same kind** (e.g. two bib records to link) writes
+them one after another in the same fenced block, separated by a blank line —
+`MarcFixtureBuilder.splitRecords()`/`buildAll()` build one record per block, and the sync worker
+suffixes both the filename and the key-field value `_1`, `_2`, ... in the order written; the
+model never numbers them itself.
+
+Deterministic and LLM-free by design (`build()`/`buildAll()` take no LLM call): used twice —
+once during the review loop purely to surface structural errors as regeneration feedback (bytes
+discarded), and again by `TestRailSyncAgentWorker` post-gate to build the bytes actually
+uploaded, since a human can amend the attachment attribute or content at Gate 1.
 
 ---
 
@@ -613,9 +683,10 @@ TestCaseGenAgentWorker(ChatClient chatClient,
 1. **Issue** — `issueKey` from `$trigger`. If the trigger carries an inline `issue` object, use
    it; otherwise `jira.fetchIssue(key)` plus linked issues. Zero-credential path must still work.
 2. **Route** — `callForText(ROUTER_PROMPT_ID, {issue, linked_issues, area_table})`.
-   Returns `areas`, `refs`, and a one-line rationale. `areaDetector.resolve(...)` validates;
-   any failure (call error, unparseable, nothing resolves) falls back to keyword scoring —
-   **the router must never break the run**.
+   Returns `areas` and a one-line rationale (area detection only — `refs` is no longer a router
+   decision, see below). `areaDetector.resolve(...)` validates; any failure (call error,
+   unparseable, nothing resolves) falls back to keyword scoring — **the router must never break
+   the run**.
 3. **Prefetch** — context (+ enrichment), examples, fragments, coverage, TestRail section list.
    Every prefetch degrades to a placeholder string on failure; none may throw.
 4. **Generate** — `callForText(GEN_PROMPT_ID, vars)`. Free-form markdown; not
@@ -637,13 +708,15 @@ and `buildHitlFeedbackBlock`.
 
 **Prompts — router:** `factory-flow-cypress/src/main/resources/prompts/cypress-area-router/`
 
-`system.md` — SKILL.md's **Area Detection** and **step 3** rules verbatim (the "story is the
-source of truth" / "trust story over prefix" / "refs = what the case verifies" paragraphs), plus:
+`system.md` — SKILL.md's **Area Detection** rules verbatim (the "story is the source of truth" /
+"trust story over prefix" paragraphs) — area detection only, one judgment call, not two. SKILL.md
+step 3 (`refs`) used to live here too; it was moved to the generation prompt (delta 6, see below)
+because the router has to guess at plan shape before any case exists, while the generation call
+already knows exactly which case verifies which linked ticket, if any. Plus:
 
 > Return exactly this block and nothing else:
 > ```
 > AREAS: <context-file-stem>[, <second-stem>]
-> REFS: <comma-separated Jira keys>
 > WHY: <one line>
 > ```
 > Use at most 2 areas, and only stems from the table. If the story spans two areas, list both.
@@ -680,8 +753,10 @@ silent drift into a visible one-line report at Gate 1.
 > - **Never touch TestRail.** Ignore anything about asking for a Section ID, showing a posting
 >   preview, or calling the API. Placement is expressed only as `testrail_section:` in `# Analysis`.
 > - Also state `team:`, `ecs_story:` and `testrail_section:` on their own lines in `# Analysis`.
-> - Additional per-case fields not in the skill: `- **Automatable:** Yes/No` and an optional
->   `**Automation notes:**` line referencing real helpers from the fragment library.
+> - Additional per-case fields not in the skill: `- **Automatable:** Yes/No`, an optional
+>   `- **Refs:** JIRA-1234[, ...]` (delta 6 — see "refs" under §6.3 above; most cases omit it),
+>   and an optional `**Automation notes:**` line referencing real helpers from the fragment
+>   library.
 > - Output envelope: exactly three top-level sections, `# Analysis`, `# Test Cases`, `# Review`
 >   (leave `# Review` empty — the factory fills it). No YAML frontmatter — the factory writes it.
 > - Inside `# Analysis` and `# Review`, never use a `##` heading containing a colon.
@@ -843,8 +918,8 @@ as the GitHub fallback.
 | Class | Covers |
 |---|---|
 | `AreaDetectorTest` | `resolve()` maps router names to real files (case/hyphen tolerant); drops unknown names; falls back to keyword scoring on empty/failed router output; story text beats Jira prefix; two-area spanning; truncates >2 |
-| `AreaRouterTest` | 3-line block parsed correctly; missing `REFS:` line → issue key alone; garbage output → keyword fallback, run continues; LLM exception → keyword fallback, run continues |
-| `RefsAssemblyTest` | issue key always first and always present — when the router omits it, returns unrelated keys only, returns malformed junk (`"the story"`, `"ERM"`, `"123"`), returns duplicates in mixed case, or fails entirely; non-Jira-key values dropped; order stable |
+| `TestCaseGenAgentWorkerTest` (router group) | 2-line `AREAS`/`WHY` block parsed correctly (no `REFS:` — area detection only); garbage output → keyword fallback, run continues; LLM exception → keyword fallback, run continues |
+| `TestCaseGenAgentWorkerTest` (`buildRefs`/`unionRefs` group) | issue key always first and always present for any case — when a case's own refs omit it, list unrelated keys only, list malformed junk (`"the story"`, `"ERM"`, `"123"`), list duplicates in mixed case, or are empty; non-Jira-key values dropped; excluded-project keys dropped and reported separately; `unionRefs` dedupes across multiple cases into the plan-level frontmatter value |
 | `TestPlanParserTest` | `# Test Cases` scoping (a `## Notes: x` heading in `# Analysis` must **not** parse as a case); multi-line expected; nested preconditions; validator catches zero cases / zero steps / blank expected |
 | `ContextPrefetchTest` | reads from clone; GitHub fallback; classpath fallback; each of the 5 thin-context triggers |
 | `SkillWorkspaceServiceTest` | tier resolution clone → GitHub → classpath, and the reported `Source` for each; `isReady()` false before sync; **`requireSkill()` throws when all three tiers fail**; missing context file returns empty (soft) while missing SKILL.md throws (hard); stale-clone-used-when-pull-fails |
@@ -858,8 +933,10 @@ pass-second / fail-all-three; feedback accumulation; token accumulation across a
 malformed twice → `AgentExecutionException`.
 
 `TestRailSyncAgentWorkerTest` — metadata mapping and HTML rendering for every TestRail field;
-`refs` absent from the frontmatter → `issue_key`; `refs` present but missing `issue_key`
-(a Gate 1 amendment) → `issue_key` prepended.
+`refs` is computed per case (not read from the frontmatter rollup): a case with no `- **Refs:**`
+line → `issue_key` alone; a case whose `- **Refs:**` line omits `issue_key` (e.g. a Gate 1
+amendment) → `issue_key` still prepended; two cases with different `- **Refs:**` values get
+different TestRail `refs`.
 
 **Unit — frontmatter provenance**
 
@@ -926,7 +1003,7 @@ Docker must be running (Testcontainers). Full gate: `mvn verify`.
 3. `# Analysis` names the right context file(s) and the router rationale; coverage matrix maps
    every AC. For the cross-area story, confirm the router returned **both** areas.
    Force a router failure (bad API key on that call) and confirm the run completes via the
-   keyword fallback with a WARN.
+   keyword fallback with a WARN. (The router only decides area(s) now — see step 7 for `refs`.)
 4. Step counts near the House Style median for the area (Inventory ~5, Orders ~8, Fees/Fines ~2).
 5. No semicolon-joined field lists; toast text quoted verbatim; absolute numeric values.
 6. Frontmatter carries all five sync fields (`issue_key`, `refs`, `team`, `ecs_story`,
@@ -940,7 +1017,10 @@ Docker must be running (Testcontainers). Full gate: `mvn verify`.
    TestRail's Dev Team will be left unset, and both name the team so the table can be corrected.
 7. Gate 1 → Approve → cases land in the correct TestRail section with correct metadata.
    Open a created case in TestRail and confirm the **References** field contains the originating
-   ticket key (plus any extras the router added).
+   ticket key, plus any extra keys *that specific case* declared via its own `- **Refs:**` line
+   (delta 6) — a case that specifically regression-covers a linked Bug should cite it; most cases
+   should show the originating ticket only. Two cases in the same plan may legitimately have
+   different References values.
 8. Gate 1 → Reject and Re-generate with feedback → retry starts at `testcase-gen`, reuses the
    seeded plan, addresses the feedback.
 9. Zero-credentials run completes end-to-end with `CONNECTOR_SKIPPED` audit entries. The skill
@@ -1193,7 +1273,7 @@ Part III additionally reuses `ScriptBundleCodec` (`factory-agents`) and TAF's `C
 | `FACTORY_CYPRESS_TESTRAIL_PRIORITY_NAME` | TestRail priority name, resolved against `get_priorities` the same way; code default `Medium` |
 | `FACTORY_CYPRESS_TESTRAIL_LABEL` | Label title applied to every created case (default: `cypressFlow-delete`); resolved to a label ID at runtime via `getOrCreateLabel` |
 | `FACTORY_CYPRESS_MAX_REVIEW_ITERATIONS` | Max agent review iterations inside `TestCaseGenAgentWorker` per run (default `3`). Set to `0` to skip automated review entirely. |
-| `FACTORY_CYPRESS_REFS_EXCLUDED_PROJECTS` | Comma-separated Jira project keys never added to `refs` (default `FAT`). The originating ticket is always kept; anything dropped is named in `# Analysis`. |
+| `FACTORY_CYPRESS_REFS_EXCLUDED_PROJECTS` | Comma-separated Jira project keys never added to any case's `refs` (default `FAT`). The originating ticket is always kept even if its own project is excluded. Enforced twice: the generation prompt is told upfront not to cite these projects (Provenance block), and `buildRefs()` drops them again, silently, at Assemble/sync time as a backstop — unlike the old router-time design, a drop here is not echoed back into `# Analysis`, since generation has already finished by the time sync applies it. |
 | `FACTORY_CONNECTORS_TESTRAIL_BASE_URL` | TestRail instance base URL |
 | `FACTORY_CONNECTORS_TESTRAIL_USERNAME` | TestRail username (email) |
 | `FACTORY_CONNECTORS_TESTRAIL_API_KEY` | TestRail API key |

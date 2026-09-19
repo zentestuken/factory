@@ -106,4 +106,13 @@ public interface TestRailConnector {
     default List<TestRailFieldOption> getPriorities() {
         throw new UnsupportedOperationException("getPriorities not supported by this TestRail connector");
     }
+
+    /**
+     * Uploads a file as an attachment on an existing case.
+     *
+     * @return the created attachment id
+     */
+    default long addAttachmentToCase(long caseId, byte[] content, String filename) {
+        throw new UnsupportedOperationException("addAttachmentToCase not supported by this TestRail connector");
+    }
 }

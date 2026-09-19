@@ -2,6 +2,7 @@ package org.folio.factory.cypressfactory.plan;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -33,15 +34,60 @@ public class TestPlanParser {
 
     public record ParsedCase(
             String id, String title, String testGroup, boolean userJourney, boolean automatable,
-            boolean ecsEnabled, List<String> preconditions, List<StepRow> steps, String automationNotes) {
+            boolean ecsEnabled, List<String> preconditions, List<StepRow> steps, String automationNotes,
+            AttachmentKind attachmentKind, String attachmentContent, List<String> refs) {
 
         public record StepRow(String action, String expected) {}
+    }
+
+    /**
+     * A test-data fixture a case needs to be verifiable at all (e.g. a MARC record to import,
+     * a CSV to feed a bulk-edit job). {@code text}/{@code csv} content is the file verbatim;
+     * {@code marc-*} content is breaker-text (semantic fields only) built into real ISO 2709
+     * bytes by {@link MarcFixtureBuilder}, never by re-parsing this rendering.
+     */
+    public enum AttachmentKind {
+        TEXT("text", ".txt"),
+        CSV("csv", ".csv"),
+        MARC_BIB("marc-bib", ".mrc"),
+        MARC_AUTHORITY("marc-authority", ".mrc"),
+        MARC_HOLDINGS("marc-holdings", ".mrc");
+
+        private final String spec;
+        private final String extension;
+
+        AttachmentKind(String spec, String extension) {
+            this.spec = spec;
+            this.extension = extension;
+        }
+
+        public String spec() {
+            return spec;
+        }
+
+        public String extension() {
+            return extension;
+        }
+
+        public boolean isMarc() {
+            return this != TEXT && this != CSV;
+        }
+
+        static AttachmentKind fromSpec(String value) {
+            if (value == null) return null;
+            String v = value.strip().toLowerCase(Locale.ROOT);
+            if (v.startsWith("kind=")) v = v.substring("kind=".length()).strip();
+            for (AttachmentKind k : values()) {
+                if (k.spec.equals(v)) return k;
+            }
+            return null;
+        }
     }
 
     /** A structural defect that would make the plan unusable for TestRail sync. */
     public record Problem(String caseId, String detail) {}
 
-    private enum ParseState { ATTRS, PRECONDITIONS, STEPS, DONE }
+    private enum ParseState { ATTRS, PRECONDITIONS, STEPS, ATTACHMENT_AWAIT_FENCE, ATTACHMENT_IN_FENCE, DONE }
 
     /**
      * Extracts the {@code # Test Cases} slice. When the heading is absent the whole body is
@@ -80,13 +126,17 @@ public class TestPlanParser {
             List<String> preconditions = new ArrayList<>();
             List<ParsedCase.StepRow> steps = new ArrayList<>();
             String automationNotes = "";
+            List<String> refs = new ArrayList<>();
+            String attachmentSpec = "";
+            StringBuilder attachmentContent = null;
             String pendingAction = null;
             StringBuilder pendingExpected = null;
             ParseState state = ParseState.ATTRS;
 
             for (int i = 1; i < lines.length; i++) {
-                String stripped = lines[i].strip();
-                if (stripped.isEmpty()) continue;
+                String raw = lines[i];
+                String stripped = raw.strip();
+                if (stripped.isEmpty() && state != ParseState.ATTACHMENT_IN_FENCE) continue;
 
                 switch (state) {
                     case ATTRS -> {
@@ -102,6 +152,8 @@ public class TestPlanParser {
                                     case "user journey" -> userJourney = attr.group(2).strip().equalsIgnoreCase("yes");
                                     case "automatable" -> automatable = attr.group(2).strip().equalsIgnoreCase("yes");
                                     case "ecs" -> ecsEnabled = attr.group(2).strip().equalsIgnoreCase("yes");
+                                    case "refs" -> refs = splitRefs(attr.group(2));
+                                    case "attachment" -> attachmentSpec = attr.group(2).strip();
                                     default -> { /* unknown attribute - ignore */ }
                                 }
                             }
@@ -120,7 +172,12 @@ public class TestPlanParser {
                         }
                     }
                     case STEPS -> {
-                        if (stripped.startsWith("**Automation notes:**")) {
+                        if (stripped.startsWith("**Attachment content**")) {
+                            flushPendingStep(steps, pendingAction, pendingExpected);
+                            pendingAction = null;
+                            pendingExpected = null;
+                            state = ParseState.ATTACHMENT_AWAIT_FENCE;
+                        } else if (stripped.startsWith("**Automation notes:**")) {
                             flushPendingStep(steps, pendingAction, pendingExpected);
                             pendingAction = null;
                             pendingExpected = null;
@@ -144,14 +201,47 @@ public class TestPlanParser {
                             }
                         }
                     }
-                    case DONE -> { /* nothing */ }
+                    case ATTACHMENT_AWAIT_FENCE -> {
+                        if (stripped.startsWith("```")) {
+                            attachmentContent = new StringBuilder();
+                            state = ParseState.ATTACHMENT_IN_FENCE;
+                        }
+                        // anything before the opening fence (e.g. a blank line) is ignored
+                    }
+                    case ATTACHMENT_IN_FENCE -> {
+                        if (stripped.equals("```")) {
+                            state = ParseState.DONE;
+                        } else {
+                            if (attachmentContent.length() > 0) attachmentContent.append("\n");
+                            attachmentContent.append(raw);
+                        }
+                    }
+                    case DONE -> {
+                        if (stripped.startsWith("**Attachment content**")) {
+                            state = ParseState.ATTACHMENT_AWAIT_FENCE;
+                        }
+                        // anything else after Automation notes is ignored
+                    }
                 }
             }
             flushPendingStep(steps, pendingAction, pendingExpected);
             result.add(new ParsedCase(caseId, title, testGroup, userJourney, automatable, ecsEnabled,
-                    preconditions, steps, automationNotes));
+                    preconditions, steps, automationNotes,
+                    AttachmentKind.fromSpec(attachmentSpec),
+                    attachmentContent == null ? "" : attachmentContent.toString(),
+                    refs));
         }
         return result;
+    }
+
+    private static List<String> splitRefs(String value) {
+        if (value == null || value.isBlank()) return List.of();
+        List<String> refs = new ArrayList<>();
+        for (String part : value.split(",")) {
+            String stripped = part.strip();
+            if (!stripped.isEmpty()) refs.add(stripped);
+        }
+        return refs;
     }
 
     /**
@@ -168,6 +258,14 @@ public class TestPlanParser {
         for (ParsedCase c : cases) {
             if (c.title().isBlank()) {
                 problems.add(new Problem(c.id(), "empty title"));
+            }
+            if (!c.attachmentContent().isBlank() && c.attachmentKind() == null) {
+                problems.add(new Problem(c.id(), "has '**Attachment content**' but its "
+                        + "'- **Attachment:** kind=...' line is missing or has an unrecognized kind "
+                        + "(valid: text, csv, marc-bib, marc-authority, marc-holdings)"));
+            } else if (c.attachmentKind() != null && c.attachmentContent().isBlank()) {
+                problems.add(new Problem(c.id(), "declares '- **Attachment:** kind="
+                        + c.attachmentKind().spec() + "' but has no '**Attachment content**' fenced block"));
             }
             if (c.steps().isEmpty()) {
                 problems.add(new Problem(c.id(), "no steps - each step must be "

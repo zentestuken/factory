@@ -1,8 +1,11 @@
 package org.folio.factory.connectors.testrail;
 
 import org.folio.factory.connectors.ConnectorHealth;
+import org.springframework.core.io.ByteArrayResource;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.util.LinkedMultiValueMap;
+import org.springframework.util.MultiValueMap;
 import org.springframework.web.client.RestClient;
 import tools.jackson.databind.JsonNode;
 
@@ -318,6 +321,26 @@ public class TestRailRestConnector implements TestRailConnector, ConnectorHealth
                     n.path("short_name").asString("")));
         }
         return result;
+    }
+
+    @Override
+    public long addAttachmentToCase(long caseId, byte[] content, String filename) {
+        MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
+        body.add("attachment", new ByteArrayResource(content) {
+            @Override
+            public String getFilename() {
+                return filename;
+            }
+        });
+        JsonNode response = restClient.post()
+                .uri("/index.php?/api/v2/add_attachment_to_case/{caseId}", caseId)
+                // Overrides the client-wide default JSON header set in the constructor -
+                // RestClient negotiates the multipart boundary itself from the body type.
+                .contentType(MediaType.MULTIPART_FORM_DATA)
+                .body(body)
+                .retrieve()
+                .body(JsonNode.class);
+        return response.path("attachment_id").asLong();
     }
 
     @Override

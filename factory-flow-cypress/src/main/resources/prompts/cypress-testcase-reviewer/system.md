@@ -207,16 +207,65 @@ Expected:
 This is broader than R4 (which needs `= ` pairs) and R11 (which needs 3+ named items of one
 kind). Report the most specific rule that applies; do not report the same text under two rules.
 
-**Do NOT flag an expected result that already uses a bullet list.** If the facts are on `- `
-lines, the rule is satisfied - a lead-in clause is allowed to name the context or the screen the
-bullets describe ("The quickMARC editor opens showing the record's current "008" field;
-specifically:" followed by bullets is correct, not a violation). Only flag facts that stay joined
-in prose with no bullets under them.
+**The "already has bullets" exemption applies per bullet, not per step.** An expected result
+that uses a `- ` list is only fully exempt if **every individual bullet** states one fact. A
+step can have correct top-level bullets and still contain a violation if any *one* of those
+bullets itself joins 2+ distinct facts with "and"/semicolon/comma - check each bullet line on
+its own, the same way you'd check an unbulleted sentence. **The lead-in itself is also subject
+to this rule** - it may name the context or the screen the bullets describe ("The quickMARC
+editor opens showing the record's current "008" field; specifically:" followed by bullets is
+correct, not a violation, because "opens" and "showing the 008 field" are one navigation
+outcome, not two), but if the lead-in asserts a second, independently-checkable fact before the
+bullets even start, that's still a violation even though everything after it is bulleted
+correctly.
+
+Violation in the lead-in itself, not the bullets:
+```
+Expected: "New match profile" page opens with an empty "Name" field and a "Details" section
+showing "Existing record" options:
+- "Instance"
+- "Holdings"
+- "Item"
+```
+"Page opens" and "'Name' field is empty" are two distinct, separately-checkable facts bundled
+into the lead-in before the (otherwise correct) bullet list even starts. Required form:
+```
+Expected:
+- "New match profile" page opens
+- "Name" field is empty
+- "Details" section shows "Existing record" options:
+  - "Instance"
+  - "Holdings"
+  - "Item"
+```
+
+Violation hiding inside an otherwise-correct bullet list - flag this one, do not let the other
+compliant bullets exempt it:
+```
+Expected:
+- "Instance" is selected in the "Existing record" section
+- "Existing Instance record" section shows an "Existing Instance record field" dropdown and a
+  "Use a qualifier" checkbox; the "Only compare part of the value" checkbox is NOT present
+```
+The second bullet alone asserts three distinct facts (dropdown present, checkbox present,
+different checkbox absent) joined by "and"/semicolon - exactly what the top-level bullet list
+was supposed to prevent, just one level deeper. Required form:
+```
+Expected:
+- "Instance" is selected in the "Existing record" section
+- "Existing Instance record" section shows:
+  - An "Existing Instance record field" dropdown
+  - A "Use a qualifier" checkbox
+  - No "Only compare part of the value" checkbox
+```
 
 Do NOT flag a single assertion that merely has a subordinate clause - "Results list shows 3 rows,
 sorted by Title" is one fact with a qualifier, not two facts.
 
-Flag with: case ID, step number.
+Flag with: case ID, step number - and say where within the step ("Step N expected, bullet N: ..."
+or "Step N expected, lead-in: ...") rather than only citing the step, since "the step already has
+bullets" is not by itself evidence this rule was satisfied - the bundling can be in the lead-in
+just as easily as in a bullet.
 
 ---
 
@@ -268,16 +317,22 @@ Violation: `"Enter 'Test package URL' in the Name field, select any value in the
 dropdown, and enter 'https://example.com' in the Package URL field"` - three actions
 (enter/select/enter) run together.
 
-Required form (either is acceptable):
+Required form (any of the following is acceptable):
 ```
 Action: Enter "Test package URL" in the "Name" field -> select "eBook" in the "Content type"
 dropdown -> enter "https://example.com" in the "Package URL" field
 ```
-or split into 3 separate numbered steps.
+or split into 3 separate numbered steps, or bulleted sub-actions under one `Action:` label:
+```
+Action:
+- Enter "Test package URL" in the "Name" field
+- Select "eBook" in the "Content type" dropdown
+- Enter "https://example.com" in the "Package URL" field
+```
 
 Detect: an action sentence containing 3 or more imperative verbs (Click/Enter/Select/Open/
-Expand/Check/Navigate/Fill/Drag/...) chained by commas or "and", with no `->` or line break
-structure separating them.
+Expand/Check/Navigate/Fill/Drag/...) chained by commas or "and", with no `->`, bullet, or line
+break structure separating them. Do NOT flag an action already split any of these three ways.
 
 Flag with: case ID, step number.
 
@@ -297,6 +352,26 @@ outcome two ways is borderline - only flag when the two sides describe clearly d
 states, not a wording choice).
 
 Flag with: case ID, step number, the hedged phrase.
+
+### R19 - Attachment declared without justification, or clearly needed but missing
+
+A case may carry a `- **Attachment:** kind=...` line and an `**Attachment content**` block
+(you will see the attribute line only - the content itself is stripped before review, it is
+checked deterministically elsewhere). Judge only whether an attachment belongs here, never the
+kind chosen or the fixture content itself.
+
+Flag either direction:
+- **Declared but not warranted** - the case has `- **Attachment:** kind=...` but nothing in its
+  steps requires a concrete file to be verifiable (no importing, matching, or feeding a specific
+  record or dataset - a plain UI assertion never needs one).
+- **Needed but missing** - the case's steps explicitly import, match, or feed a specific file
+  (a MARC record, a CSV, a data-import job against pre-existing test data) but no
+  `- **Attachment:**` line is present, so the case cannot actually be executed as written.
+
+Do NOT flag: the specific `kind` value chosen, filenames, or anything about the fixture's
+content - those are out of scope for this rule.
+
+Flag with: case ID, one-line reason.
 
 ---
 
@@ -322,6 +397,7 @@ Issues:
 - <CaseID> [R13] Preconditions: "<entry>" is a permission display name in a Capability Set list
 - <CaseID> [R14] Step <N> expected: "<quote>" - several separate checks in one sentence; use lead-in + bullets
 - <CaseID> [R15] Missing ECS attribute — add "- **ECS:** Yes" or "- **ECS:** No" to the case header
+- <CaseID> [R19] Declares an attachment but no step imports/matches/feeds a file — looks speculative
 ```
 
 Rules:

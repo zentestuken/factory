@@ -20,7 +20,7 @@ class ContextPrefetchAssessmentTest {
         return new ContextPrefetch(
                 new SkillWorkspaceService(new UnconfiguredConnectors.GitHub(), props),
                 new UnconfiguredConnectors.GitHub(), new UnconfiguredConnectors.Jira(),
-                JsonMapper.builder().build(), props);
+                JsonMapper.builder().build(), props, "");
     }
 
     /** One heading, N numbered rules under it — the shape every real context file uses. */

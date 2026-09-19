@@ -9,9 +9,12 @@ import org.springframework.web.client.RestClient;
 import java.util.List;
 import java.util.Map;
 
+import java.nio.charset.StandardCharsets;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.http.HttpMethod.GET;
 import static org.springframework.http.HttpMethod.POST;
+import static org.springframework.test.web.client.match.MockRestRequestMatchers.content;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.jsonPath;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.method;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
@@ -168,5 +171,54 @@ class TestRailRestConnectorTest {
 
         assertThat(paths).doesNotContain("Root \u203a Child \u203a Grand \u203a Great");
         assertThat(paths).contains("Root \u203a Child \u203a Grand");
+    }
+
+    @Test
+    void getCaseTypesParsesTheBareArrayResponse() {
+        String json = """
+                [
+                  {"id": 1, "name": "Automated", "is_default": false},
+                  {"id": 6, "name": "Functional", "is_default": true}
+                ]""";
+        server.expect(requestTo("https://testrail.example.org/index.php?/api/v2/get_case_types"))
+                .andExpect(method(GET))
+                .andRespond(withSuccess(json, MediaType.APPLICATION_JSON));
+
+        List<TestRailFieldOption> types = connector.getCaseTypes();
+
+        assertThat(types).extracting(TestRailFieldOption::id).containsExactly(1L, 6L);
+        assertThat(types).extracting(TestRailFieldOption::name).containsExactly("Automated", "Functional");
+        assertThat(types).extracting(TestRailFieldOption::shortName).containsOnlyNulls();
+    }
+
+    @Test
+    void getPrioritiesParsesNameAndShortName() {
+        String json = """
+                [
+                  {"id": 1, "name": "Low", "short_name": "Low", "is_default": false, "priority": 1},
+                  {"id": 2, "name": "Medium", "short_name": "Medium", "is_default": true, "priority": 2}
+                ]""";
+        server.expect(requestTo("https://testrail.example.org/index.php?/api/v2/get_priorities"))
+                .andExpect(method(GET))
+                .andRespond(withSuccess(json, MediaType.APPLICATION_JSON));
+
+        List<TestRailFieldOption> priorities = connector.getPriorities();
+
+        assertThat(priorities).extracting(TestRailFieldOption::id).containsExactly(1L, 2L);
+        assertThat(priorities).extracting(TestRailFieldOption::shortName).containsExactly("Low", "Medium");
+    }
+
+    @Test
+    void addAttachmentToCaseUploadsMultipartAndReturnsId() {
+        server.expect(requestTo(
+                "https://testrail.example.org/index.php?/api/v2/add_attachment_to_case/1538566"))
+                .andExpect(method(POST))
+                .andExpect(content().contentTypeCompatibleWith(MediaType.MULTIPART_FORM_DATA))
+                .andRespond(withSuccess("{\"attachment_id\": 42}", MediaType.APPLICATION_JSON));
+
+        long id = connector.addAttachmentToCase(
+                1538566, "hello world".getBytes(StandardCharsets.UTF_8), "note.txt");
+
+        assertThat(id).isEqualTo(42);
     }
 }

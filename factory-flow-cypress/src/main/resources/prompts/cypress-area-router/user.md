@@ -1,4 +1,4 @@
-Choose the area(s) and `refs` for this story.
+Choose the area(s) for this story.
 
 ## Story
 
@@ -12,4 +12,4 @@ Choose the area(s) and `refs` for this story.
 
 {{area_table}}
 
-Respond with the AREAS / REFS / WHY block only.
+Respond with the AREAS / WHY block only.

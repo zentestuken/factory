@@ -89,6 +89,17 @@ class TestPlanParserTest {
         assertThat(c.userJourney()).isFalse();
         assertThat(c.automatable()).isTrue();
         assertThat(c.ecsEnabled()).isFalse();
+        assertThat(c.refs()).isEmpty();
+    }
+
+    @Test
+    void readsPerCaseRefs() {
+        String plan = "# Test Cases\n\n" + ONE_CASE.replace(
+                "- **ECS:** No\n", "- **ECS:** No\n- **Refs:** JIRA-123, JIRA-456\n");
+
+        ParsedCase c = parser.parse(plan).getFirst();
+
+        assertThat(c.refs()).containsExactly("JIRA-123", "JIRA-456");
     }
 
     @Test
@@ -236,6 +247,138 @@ class TestPlanParserTest {
                 """;
 
         assertThat(parser.validate(parser.parse(plan)).getFirst().detail()).contains("step 2");
+    }
+
+    // ── Attachments ──────────────────────────────────────────────────────────
+
+    @Test
+    void readsAttachmentKindAndContentAfterAutomationNotes() {
+        String plan = """
+                # Test Cases
+
+                ## TC001: Test
+                - **Test Group:** critical
+                - **Attachment:** kind=marc-bib
+
+                **Steps**
+                1. **Action:** click
+                   **Expected:** done
+
+                **Automation notes:** use helper()
+
+                **Attachment content**
+                ```
+                =245  10$aA Title
+                ```
+                """;
+
+        ParsedCase c = parser.parse(plan).getFirst();
+
+        assertThat(c.attachmentKind()).isEqualTo(TestPlanParser.AttachmentKind.MARC_BIB);
+        assertThat(c.attachmentContent()).isEqualTo("=245  10$aA Title");
+        assertThat(c.automationNotes()).isEqualTo("use helper()");
+    }
+
+    @Test
+    void readsAttachmentContentWhenAutomationNotesIsAbsent() {
+        String plan = """
+                # Test Cases
+
+                ## TC001: Test
+                - **Test Group:** critical
+                - **Attachment:** kind=csv
+
+                **Steps**
+                1. **Action:** click
+                   **Expected:** done
+
+                **Attachment content**
+                ```
+                a,b,c
+                1,2,3
+                ```
+                """;
+
+        ParsedCase c = parser.parse(plan).getFirst();
+
+        assertThat(c.attachmentKind()).isEqualTo(TestPlanParser.AttachmentKind.CSV);
+        assertThat(c.attachmentContent()).isEqualTo("a,b,c\n1,2,3");
+    }
+
+    @Test
+    void preservesBlankLinesInsideTheAttachmentFence() {
+        String plan = """
+                # Test Cases
+
+                ## TC001: Test
+                - **Test Group:** critical
+                - **Attachment:** kind=text
+
+                **Steps**
+                1. **Action:** click
+                   **Expected:** done
+
+                **Attachment content**
+                ```
+                first paragraph
+
+                second paragraph
+                ```
+                """;
+
+        assertThat(parser.parse(plan).getFirst().attachmentContent())
+                .isEqualTo("first paragraph\n\nsecond paragraph");
+    }
+
+    @Test
+    void caseWithoutAttachmentHasNullKindAndBlankContent() {
+        ParsedCase c = parser.parse("# Test Cases\n\n" + ONE_CASE).getFirst();
+
+        assertThat(c.attachmentKind()).isNull();
+        assertThat(c.attachmentContent()).isEmpty();
+    }
+
+    @Test
+    void unrecognizedAttachmentKindParsesAsNull() {
+        String plan = "# Test Cases\n\n## TC001: Test\n- **Test Group:** critical\n"
+                + "- **Attachment:** kind=pdf\n\n**Steps**\n1. **Action:** click\n   **Expected:** done\n";
+
+        assertThat(parser.parse(plan).getFirst().attachmentKind()).isNull();
+    }
+
+    @Test
+    void flagsAttachmentContentWithoutARecognizedKindAttribute() {
+        String plan = """
+                # Test Cases
+
+                ## TC001: Test
+                - **Test Group:** critical
+
+                **Steps**
+                1. **Action:** click
+                   **Expected:** done
+
+                **Attachment content**
+                ```
+                some content
+                ```
+                """;
+
+        List<Problem> problems = parser.validate(parser.parse(plan));
+
+        assertThat(problems).anyMatch(p -> p.caseId().equals("TC001")
+                && p.detail().contains("Attachment content") && p.detail().contains("unrecognized kind"));
+    }
+
+    @Test
+    void flagsAttachmentKindWithoutContent() {
+        String plan = "# Test Cases\n\n## TC001: Test\n- **Test Group:** critical\n"
+                + "- **Attachment:** kind=csv\n\n**Steps**\n1. **Action:** click\n   **Expected:** done\n";
+
+        List<Problem> problems = parser.validate(parser.parse(plan));
+
+        assertThat(problems).anyMatch(p -> p.caseId().equals("TC001")
+                && p.detail().contains("no '**Attachment content**'"));
     }
 
     // ── casesSection ─────────────────────────────────────────────────────────

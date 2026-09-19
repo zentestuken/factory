@@ -47,7 +47,6 @@ class TestCaseGenAgentWorkerTest {
 
     private static final String ROUTER_OK = """
             AREAS: marc-authority
-            REFS: MODELINKS-201
             WHY: story describes authority browse; UIMARCAUTH prefix agrees
             """;
 
@@ -72,6 +71,7 @@ class TestCaseGenAgentWorkerTest {
             - **User Journey:** No
             - **Automatable:** Yes
             - **ECS:** No
+            - **Refs:** MODELINKS-201
 
             **Preconditions**
             - User is logged in as admin
@@ -110,6 +110,47 @@ class TestCaseGenAgentWorkerTest {
             Issues:
             - TC001 [R7] Step 2 expected: "" — empty expected result
             """;
+
+    private static final String PLAN_WITH_INVALID_ATTACHMENT = """
+            # Analysis
+
+            **Area detected:** marc-authority
+
+            testrail_section: MARC Authority › Browse
+            team: Spitfire
+            ecs_story: non-ecs
+
+            ## Coverage matrix
+            | AC | Scenario | Status |
+            |---|---|---|
+            | AC-1 | TC001 | NEW |
+
+            # Test Cases
+
+            ## TC001: Import a MARC bib record
+            - **Test Group:** critical
+            - **User Journey:** No
+            - **Automatable:** Yes
+            - **ECS:** No
+            - **Attachment:** kind=marc-bib
+
+            **Preconditions**
+            - User is logged in as admin
+
+            **Steps**
+            1. **Action:** Import the attached MARC record via a pre-existing job profile
+               **Expected:** Record is imported and matches the attached fixture
+
+            **Attachment content**
+            ```
+            not a valid breaker line
+            ```
+
+            # Review
+            """;
+
+    private static final String PLAN_WITH_VALID_ATTACHMENT =
+            PLAN_WITH_INVALID_ATTACHMENT.replace("not a valid breaker line", "=245  10$aA Title");
 
     private static final String MODEL = "claude-sonnet-4-6";
 
@@ -167,7 +208,7 @@ class TestCaseGenAgentWorkerTest {
                 ChatClient.create(model), jira, new UnconfiguredConnectors.TestRail(), skills,
                 new AreaDetector(),
                 new ContextPrefetch(skills, new UnconfiguredConnectors.GitHub(), new FakeJira(),
-                        jsonMapper, props),
+                        jsonMapper, props, ""),
                 new FragmentPrefetch(new TafSyncService(), new UnconfiguredConnectors.GitHub()),
                 new CoveragePrefetch(new UnconfiguredConnectors.TestRail(), props),
                 new ExamplesPrefetch(skills),
@@ -189,7 +230,7 @@ class TestCaseGenAgentWorkerTest {
                 ChatClient.create(model), new FakeJira(), testRail, skills,
                 new AreaDetector(),
                 new ContextPrefetch(skills, new UnconfiguredConnectors.GitHub(), new FakeJira(),
-                        jsonMapper, props),
+                        jsonMapper, props, ""),
                 new FragmentPrefetch(new TafSyncService(), new UnconfiguredConnectors.GitHub()),
                 new CoveragePrefetch(testRail, props),
                 new ExamplesPrefetch(skills),
@@ -399,6 +440,49 @@ class TestCaseGenAgentWorkerTest {
         assertThat(refs.kept()).containsExactly("ERM-1", "MODFIN-391");
         assertThat(refs.excluded()).containsExactly("FAT-4021", "FAT-4022");
         assertThat(refs.originatingExcluded()).isFalse();
+    }
+
+    @Test
+    void unionRefsIsTheDeduplicatedUnionOfEveryCasesOwnRefs() {
+        String plan = """
+                # Test Cases
+
+                ## TC001: First case
+                - **Test Group:** critical
+                - **User Journey:** No
+                - **Automatable:** Yes
+                - **ECS:** No
+                - **Refs:** MODFIN-391
+
+                **Steps**
+                1. **Action:** Do a thing
+                   **Expected:** Something happens
+
+                ## TC002: Second case, no refs of its own
+                - **Test Group:** critical
+                - **User Journey:** No
+                - **Automatable:** Yes
+                - **ECS:** No
+
+                **Steps**
+                1. **Action:** Do another thing
+                   **Expected:** Something else happens
+
+                ## TC003: Third case, references the same ticket again
+                - **Test Group:** critical
+                - **User Journey:** No
+                - **Automatable:** Yes
+                - **ECS:** No
+                - **Refs:** MODFIN-391, MODFIN-392
+
+                **Steps**
+                1. **Action:** Do a third thing
+                   **Expected:** Something else happens again
+                """;
+        List<TestPlanParser.ParsedCase> cases = new TestPlanParser().parse(plan);
+
+        assertThat(TestCaseGenAgentWorker.unionRefs("ERM-1", cases, NO_EXCLUSIONS))
+                .containsExactly("ERM-1", "MODFIN-391", "MODFIN-392");
     }
 
     @Test
@@ -744,6 +828,41 @@ class TestCaseGenAgentWorkerTest {
     }
 
     @Test
+    void deterministicMarcValidationForcesARetryEvenWhenTheLlmReviewPasses() {
+        // Attempt 1's MARC breaker text is malformed. The LLM reviewer has no opinion on that
+        // (it never sees the fenced content - forReview() strips it) and returns PASS, but the
+        // deterministic MarcFixtureBuilder check must override that verdict and force a second
+        // attempt anyway, folded into the same retry budget rather than a second loop.
+        StubChatModel model = new StubChatModel()
+                .enqueue(ROUTER_OK)
+                .enqueue(PLAN_WITH_INVALID_ATTACHMENT).enqueue(REVIEW_PASS)
+                .enqueue(PLAN_WITH_VALID_ATTACHMENT).enqueue(REVIEW_PASS);
+
+        AgentResult result = worker(model).execute(freshContext());
+
+        String testPlan = result.outputs().get("test_plan.md");
+        assertThat(codec.parse(testPlan).metadata().path("review_iterations").asInt()).isEqualTo(2);
+        assertThat(codec.parse(testPlan).metadata().path("review_passed").asBoolean()).isTrue();
+        assertThat(testPlan).contains("=245  10$aA Title");
+    }
+
+    @Test
+    void exhaustingRetriesOnPersistentlyInvalidMarcStillReachesTheGate() {
+        StubChatModel model = new StubChatModel()
+                .enqueue(ROUTER_OK)
+                .enqueue(PLAN_WITH_INVALID_ATTACHMENT).enqueue(REVIEW_PASS)
+                .enqueue(PLAN_WITH_INVALID_ATTACHMENT).enqueue(REVIEW_PASS)
+                .enqueue(PLAN_WITH_INVALID_ATTACHMENT).enqueue(REVIEW_PASS);
+
+        AgentResult result = worker(model).execute(freshContext());
+
+        String testPlan = result.outputs().get("test_plan.md");
+        assertThat(codec.parse(testPlan).metadata().path("review_iterations").asInt()).isEqualTo(3);
+        assertThat(codec.parse(testPlan).metadata().path("review_passed").asBoolean()).isFalse();
+        assertThat(testPlan).contains("not a valid breaker line");
+    }
+
+    @Test
     void chatOptionsRequestSystemPromptCaching() {
         AnthropicChatOptions options =
                 (AnthropicChatOptions) worker(new StubChatModel()).chatOptions().build();
@@ -1065,7 +1184,7 @@ class TestCaseGenAgentWorkerTest {
 
     private static TestPlanParser.ParsedCase caseWithTier(String id, String tier) {
         return new TestPlanParser.ParsedCase(id, "t", tier, false, true, false,
-                List.of(), List.of(), "");
+                List.of(), List.of(), "", null, "", List.of());
     }
 
     @Test
@@ -1132,6 +1251,24 @@ class TestCaseGenAgentWorkerTest {
         assertThat(TestCaseGenAgentWorker.forReview(cases)).isEqualTo(cases);
     }
 
+    @Test
+    void attachmentContentIsStrippedBeforeReviewButTheAttributeLineStays() {
+        String cases = "## TC001: x" + "\n"
+                + "- **Attachment:** kind=marc-bib" + "\n\n"
+                + "**Steps**" + "\n"
+                + "1. **Action:** Import the record" + "\n"
+                + "   **Expected:** Record is imported" + "\n\n"
+                + "**Attachment content**" + "\n"
+                + "```" + "\n"
+                + "=245  10$aTitle with a Field = value looking string" + "\n"
+                + "```" + "\n";
+
+        String out = TestCaseGenAgentWorker.forReview(cases);
+
+        assertThat(out).contains("- **Attachment:** kind=marc-bib");
+        assertThat(out).doesNotContain("=245").doesNotContain("**Attachment content**");
+    }
+
     // ── Coverage matrix accounting ───────────────────────────────────────────
 
     private static String scenarioPlan(String matrix) {
@@ -1152,6 +1289,22 @@ class TestCaseGenAgentWorkerTest {
                 + "| 2. Save | MERGED into TC001 |" + "\n"
                 + "| 3. Changed | TC002 |" + "\n" + "\n";
         assertThat(TestCaseGenAgentWorker.coverageMatrixNotes(scenarioPlan(matrix))).isEmpty();
+    }
+
+    @Test
+    void aBoldScenariosLabelIsAcceptedLikeARealHeading() {
+        // Observed drift: the model sometimes writes `**Scenarios:**` instead of `## Scenarios`.
+        // That must still run the real cross-check, not fall through to "section missing".
+        String plan = "# Analysis" + "\n" + "\n"
+                + "**Scenarios:**" + "\n" + "\n"
+                + "1. Defaults appear on create" + "\n"
+                + "2. Values survive a save" + "\n" + "\n"
+                + "## Coverage matrix" + "\n" + "\n"
+                + "| 1. Defaults | TC001 |" + "\n" + "\n"
+                + "# Test Cases" + "\n" + "\n" + "## TC001: x" + "\n";
+
+        assertThat(TestCaseGenAgentWorker.coverageMatrixNotes(plan))
+                .singleElement().asString().contains("Scenario(s) 2");
     }
 
     @Test

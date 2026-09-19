@@ -137,6 +137,20 @@ class TestRailSyncAgentWorkerTest {
                 "# Cypress Test Plan — ERM-1\n");
     }
 
+    private String testPlanWithOneCaseRefs(String refsLine) {
+        return codec.render(
+                Map.of("issue_key", "ERM-1", "team", "", "ecs_story", "non-ecs", "case_count", 1),
+                "## TC-1: Test login\n\n" +
+                "- **Test Group:** critical\n" +
+                "- **User Journey:** No\n" +
+                "- **Automatable:** Yes\n" +
+                "- **ECS:** No\n" +
+                (refsLine == null ? "" : "- **Refs:** " + refsLine + "\n") +
+                "\n**Steps**\n" +
+                "1. **Action:** click\n" +
+                "   **Expected:** done\n");
+    }
+
     /** Re-renders a plan with extra frontmatter keys merged over the defaults. */
     private String planWithMeta(String plan, String key, Object value) {
         String body = codec.parse(plan).body();
@@ -303,42 +317,39 @@ class TestRailSyncAgentWorkerTest {
     }
 
     // -------------------------------------------------------------------------
-    // Refs field (Jira issue key)
+    // Refs field (Jira issue key) - a per-case decision, rolled up per case at sync time
     // -------------------------------------------------------------------------
 
     @Test
-    void refsDefaultsToIssueKeyWhenFrontmatterHasNone() {
+    void refsDefaultsToIssueKeyWhenTheCaseDeclaresNone() {
         CapturingConnector connector = new CapturingConnector();
-        worker(connector, 114774L).execute(contextWith(testPlanWithOneCase()));
+        worker(connector, 114774L).execute(contextWith(testPlanWithOneCaseRefs(null)));
 
         assertThat(connector.capturedMetadata.get("refs")).isEqualTo("ERM-1");
     }
 
     @Test
-    void refsPassesThroughAdditionalKeys() {
+    void refsPassesThroughTheCasesOwnAdditionalKeys() {
         CapturingConnector connector = new CapturingConnector();
-        worker(connector, 114774L).execute(contextWith(
-                planWithMeta(testPlanWithOneCase(), "refs", "ERM-1, MODFIN-391")));
+        worker(connector, 114774L).execute(contextWith(testPlanWithOneCaseRefs("MODFIN-391")));
 
         assertThat(connector.capturedMetadata.get("refs")).isEqualTo("ERM-1, MODFIN-391");
     }
 
     @Test
-    void refsRegainsIssueKeyWhenAGateAmendmentRemovedIt() {
+    void refsAlwaysLeadsWithTheIssueKeyEvenWhenTheCaseDoesNotRepeatIt() {
         CapturingConnector connector = new CapturingConnector();
-        worker(connector, 114774L).execute(contextWith(
-                planWithMeta(testPlanWithOneCase(), "refs", "MODFIN-391")));
+        worker(connector, 114774L).execute(contextWith(testPlanWithOneCaseRefs("MODFIN-391, MODFIN-392")));
 
-        assertThat(connector.capturedMetadata.get("refs")).isEqualTo("ERM-1, MODFIN-391");
+        assertThat(connector.capturedMetadata.get("refs")).isEqualTo("ERM-1, MODFIN-391, MODFIN-392");
     }
 
     @Test
     void refsMatchIsCaseInsensitiveSoTheKeyIsNotDuplicated() {
         CapturingConnector connector = new CapturingConnector();
-        worker(connector, 114774L).execute(contextWith(
-                planWithMeta(testPlanWithOneCase(), "refs", "erm-1, MODFIN-391")));
+        worker(connector, 114774L).execute(contextWith(testPlanWithOneCaseRefs("erm-1, MODFIN-391")));
 
-        assertThat(connector.capturedMetadata.get("refs")).isEqualTo("erm-1, MODFIN-391");
+        assertThat(connector.capturedMetadata.get("refs")).isEqualTo("ERM-1, MODFIN-391");
     }
 
     // -------------------------------------------------------------------------
@@ -520,6 +531,106 @@ class TestRailSyncAgentWorkerTest {
     }
 
     // -------------------------------------------------------------------------
+    // Attachments
+    // -------------------------------------------------------------------------
+
+    private String testPlanWithAttachment(String kindSpec, String contentBlock) {
+        return codec.render(
+                Map.of("issue_key", "ERM-1", "team", "", "ecs_story", "non-ecs", "case_count", 1),
+                "## TC-1: Test case\n\n" +
+                "- **Test Group:** critical\n" +
+                "- **User Journey:** No\n" +
+                "- **Automatable:** Yes\n" +
+                "- **ECS:** No\n" +
+                "- **Attachment:** kind=" + kindSpec + "\n\n" +
+                "**Steps**\n" +
+                "1. **Action:** click\n" +
+                "   **Expected:** done\n\n" +
+                "**Attachment content**\n" +
+                "```\n" + contentBlock + "\n```\n");
+    }
+
+    @Test
+    void uploadsCsvAttachmentVerbatim() {
+        CapturingConnector connector = new CapturingConnector();
+        worker(connector, 114774L).execute(
+                contextWith(testPlanWithAttachment("csv", "a,b,c\n1,2,3")));
+
+        assertThat(connector.capturedAttachmentCaseId).isEqualTo(999L);
+        assertThat(connector.capturedAttachmentFilename).isEqualTo("C999.csv");
+        assertThat(new String(connector.capturedAttachmentBytes, java.nio.charset.StandardCharsets.UTF_8))
+                .isEqualTo("a,b,c\n1,2,3");
+    }
+
+    @Test
+    void uploadsValidMarcAttachmentAsBuiltBytes() {
+        CapturingConnector connector = new CapturingConnector();
+        worker(connector, 114774L).execute(
+                contextWith(testPlanWithAttachment("marc-bib", "=245  10$aTest Title")));
+
+        assertThat(connector.capturedAttachmentFilename).isEqualTo("C999MarcBibInstance.mrc");
+        assertThat(connector.capturedAttachmentBytes).isNotEmpty();
+
+        org.marc4j.MarcStreamReader reader = new org.marc4j.MarcStreamReader(
+                new java.io.ByteArrayInputStream(connector.capturedAttachmentBytes));
+        assertThat(reader.hasNext()).isTrue();
+    }
+
+    @Test
+    void substitutesTheModelsOwnCaseIdForTheRealTestRailIdInMarcContent() {
+        CapturingConnector connector = new CapturingConnector();
+        worker(connector, 114774L).execute(
+                contextWith(testPlanWithAttachment("marc-bib", "=245  10$aTC-1_MarcBibInstance")));
+
+        org.marc4j.MarcStreamReader reader = new org.marc4j.MarcStreamReader(
+                new java.io.ByteArrayInputStream(connector.capturedAttachmentBytes));
+        assertThat(reader.hasNext()).isTrue();
+        org.marc4j.marc.Record record = reader.next();
+        assertThat(((org.marc4j.marc.DataField) record.getVariableField("245")).getSubfieldsAsString("a"))
+                .isEqualTo("C999_MarcBibInstance");
+    }
+
+    @Test
+    void multipleRecordsOfTheSameKindAreSuffixedAndUploadedSeparately() {
+        CapturingConnector connector = new CapturingConnector();
+        worker(connector, 114774L).execute(contextWith(testPlanWithAttachment("marc-bib",
+                "=245  10$aTC-1_MarcBibInstance\n\n=245  10$aTC-1_MarcBibInstance")));
+
+        assertThat(connector.capturedAttachmentFilenames)
+                .containsExactly("C999MarcBibInstance_1.mrc", "C999MarcBibInstance_2.mrc");
+    }
+
+    @Test
+    void skipsUploadForInvalidMarcContentButStillCreatesTheCase() {
+        CapturingConnector connector = new CapturingConnector();
+        AgentResult result = worker(connector, 114774L).execute(
+                contextWith(testPlanWithAttachment("marc-bib", "not a valid breaker line")));
+
+        assertThat(connector.capturedAttachmentBytes).isNull();
+        assertThat(connector.capturedTitle).isEqualTo("Test case");
+        assertThat(result.outputs().get("test_plan.md")).contains("C999");
+    }
+
+    @Test
+    void aFailedAttachmentUploadDoesNotFailTheCaseSync() {
+        CapturingConnector connector = new CapturingConnector();
+        connector.throwOnAttachment = true;
+
+        AgentResult result = worker(connector, 114774L).execute(
+                contextWith(testPlanWithAttachment("text", "some fixture text")));
+
+        assertThat(result.outputs().get("test_plan.md")).contains("C999");
+    }
+
+    @Test
+    void caseWithNoAttachmentUploadsNothing() {
+        CapturingConnector connector = new CapturingConnector();
+        worker(connector, 114774L).execute(contextWith(testPlanWithOneCase()));
+
+        assertThat(connector.capturedAttachmentBytes).isNull();
+    }
+
+    // -------------------------------------------------------------------------
     // Stub connector
     // -------------------------------------------------------------------------
 
@@ -530,6 +641,11 @@ class TestRailSyncAgentWorkerTest {
         String capturedTitle = null;
         String capturedPreconds = null;
         Map<String, Object> capturedMetadata = null;
+        Long capturedAttachmentCaseId = null;
+        String capturedAttachmentFilename = null;
+        byte[] capturedAttachmentBytes = null;
+        boolean throwOnAttachment = false;
+        final List<String> capturedAttachmentFilenames = new java.util.ArrayList<>();
 
         @Override
         public long addCase(long sectionId, String title, String steps, String expected) {
@@ -561,6 +677,18 @@ class TestRailSyncAgentWorkerTest {
         @Override
         public long getOrCreateLabel(String title) {
             return 72L;
+        }
+
+        @Override
+        public long addAttachmentToCase(long caseId, byte[] content, String filename) {
+            if (throwOnAttachment) {
+                throw new RuntimeException("TestRail attachment upload failed");
+            }
+            this.capturedAttachmentCaseId = caseId;
+            this.capturedAttachmentFilename = filename;
+            this.capturedAttachmentBytes = content;
+            this.capturedAttachmentFilenames.add(filename);
+            return 1L;
         }
 
         @Override

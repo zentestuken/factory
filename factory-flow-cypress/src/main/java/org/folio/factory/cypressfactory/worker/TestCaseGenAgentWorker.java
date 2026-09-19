@@ -12,6 +12,7 @@ import org.folio.factory.core.agent.AgentResult;
 import org.folio.factory.core.agent.ArtifactContent;
 import org.folio.factory.cypressfactory.CypressFlowProperties;
 import org.folio.factory.cypressfactory.plan.DevTeamCatalog;
+import org.folio.factory.cypressfactory.plan.MarcFixtureBuilder;
 import org.folio.factory.cypressfactory.plan.TestPlanParser;
 import org.folio.factory.cypressfactory.prefetch.AreaDetector;
 import org.folio.factory.cypressfactory.prefetch.ContextPrefetch;
@@ -48,9 +49,11 @@ import java.util.regex.Pattern;
  *
  * <p>Phases (see CYPRESS_FLOW_PLAN.md Part I §2):</p>
  * <ol>
- *   <li><b>Fetch &amp; route</b> — raw Jira issue, then one small LLM call for the two
- *       genuinely judgment-based decisions SKILL.md steps 1 and 3 describe: which area
- *       context file(s) to load, and what belongs in {@code refs}.</li>
+ *   <li><b>Fetch &amp; route</b> — raw Jira issue, then one small LLM call for the
+ *       genuinely judgment-based decision SKILL.md step 1 describes: which area
+ *       context file(s) to load. {@code refs} (SKILL.md step 3) is a per-case decision made
+ *       during Generate instead, since only the generation call knows which linked tickets a
+ *       given case actually verifies.</li>
  *   <li><b>Prefetch</b> — context file(s) + enrichment, examples, TAF fragments, existing
  *       TestRail coverage, section list. Deterministic; nothing throws.</li>
  *   <li><b>Generate</b> — one call carrying SKILL.md, the examples, the context and the
@@ -93,15 +96,19 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
 
     private static final Pattern JIRA_KEY = Pattern.compile("[A-Z][A-Z0-9]*-\\d+");
     private static final Pattern ROUTER_AREAS = Pattern.compile("(?m)^\\s*AREAS:\\s*(.+)$");
-    private static final Pattern ROUTER_REFS = Pattern.compile("(?m)^\\s*REFS:\\s*(.+)$");
     private static final Pattern ROUTER_WHY = Pattern.compile("(?m)^\\s*WHY:\\s*(.+)$");
     private static final Pattern TRIAGE_CANDIDATES = Pattern.compile("(?m)^\\s*CANDIDATES:\\s*(.+)$");
     private static final Pattern CASE_ID = Pattern.compile("C?(\\d{1,12})");
 
     /** `**Automation notes:**` lines, which legitimately carry helper and interactor names. */
-    /** `## Scenarios` / `## Coverage matrix`, and the numbered scenario lines under the former. */
-    private static final Pattern SCENARIOS_HEADING =
-            Pattern.compile("(?mi)^##+[ ]*Scenario(?:s| analysis)[ ]*$");
+    /**
+     * `## Scenarios` / `## Coverage matrix`, and the numbered scenario lines under the former.
+     * Also accepts the model writing the label as bold text (`**Scenarios:**`) instead of a
+     * real heading - a real, observed drift that must not be treated as "section missing", since
+     * that silently skips the completeness cross-check below rather than actually running it.
+     */
+    private static final Pattern SCENARIOS_HEADING = Pattern.compile(
+            "(?mi)^(?:##+[ ]*Scenario(?:s| analysis)|\\*\\*Scenario(?:s| analysis):?\\*\\*)[ ]*$");
     private static final Pattern MATRIX_HEADING =
             Pattern.compile("(?mi)^##+[ ]*Coverage matrix[ ]*$");
     private static final Pattern SCENARIO_ITEM =
@@ -112,6 +119,15 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
 
     private static final Pattern AUTOMATION_NOTES =
             Pattern.compile("(?mi)^[ \\t]*\\*+Automation notes:\\*+.*(?:\\R|$)");
+    /**
+     * The fenced breaker-text/CSV payload under `**Attachment content**`. Stripped before
+     * review for the same reason automation notes are: it is syntax, not case-text prose, and
+     * R1-R18 would false-positive on it (R4's `= ` count, R12's quoting rule, ...). The
+     * `- **Attachment:** kind=...` attribute line is left in place so R19 can still judge
+     * whether an attachment is warranted at all, without seeing the raw payload.
+     */
+    private static final Pattern ATTACHMENT_CONTENT_BLOCK =
+            Pattern.compile("(?ms)^\\*\\*Attachment content\\*\\*\\R+```.*?```\\R?");
     private static final Pattern ANALYSIS_TEAM = Pattern.compile("(?mi)^\\s*\\**team\\**:\\s*(.+?)\\s*$");
     private static final Pattern ANALYSIS_ECS_STORY = Pattern.compile("(?mi)^\\s*\\**ecs_story\\**:\\s*(\\w[\\w-]*)");
     /** The three delta-4 fields, once promoted to frontmatter, are removed from the prose. */
@@ -243,12 +259,7 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
         RouterResult route = route(issue, linked, dump);
         totalUsage[0] = totalUsage[0].plus(drainUsage());
         List<String> areas = areaDetector.resolve(route.areas(), issue);
-        Refs refs = buildRefs(issueKey, route.refs(), properties.refsExcludedProjects());
-        log.info("[{}] Area(s) {} · refs {} · {}", ID, areas, refs.kept(), route.why());
-        if (!refs.excluded().isEmpty()) {
-            log.info("[{}] Excluded from refs: {} (projects {})",
-                    ID, refs.excluded(), properties.refsExcludedProjects());
-        }
+        log.info("[{}] Area(s) {} · {}", ID, areas, route.why());
 
         // ── B · Prefetch ─────────────────────────────────────────────────────
         ContextPrefetch.ContextBundle ctx = contextPrefetch.load(areas, issue);
@@ -265,15 +276,15 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
         Map<String, Object> vars = new HashMap<>();
         vars.put("skill", skill);
         vars.put("examples", examples.text());
+        vars.put("marc_examples", MarcFixtureBuilder.renderGoldenExamples());
         vars.put("context_files", ctx.text());
-        vars.put("enrichment", buildProvenanceBlock(route, areas, refs, ctx, examples, fragments, skill));
+        vars.put("enrichment", buildProvenanceBlock(route, areas, ctx, examples, fragments, skill));
         vars.put("issue", renderIssue(issue));
         vars.put("dev_teams", devTeams.nameList());
         vars.put("linked_issues", renderLinkedIssues(linked));
         vars.put("fragments", fragments.text());
         vars.put("coverage", coverageBlock);
         vars.put("sections", sections);
-        vars.put("refs", refs.joined());
         vars.put("hitl_feedback_block", buildHitlFeedbackBlock(hitlFeedback));
         vars.put("previous_plan_block", buildPreviousPlanBlock(previousPlan));
         vars.put("review_feedback", "");
@@ -301,6 +312,12 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
                 feedback = reviewTestCases(forReview(parser.casesSection(plan)),
                         renderIssue(issue), attempt, dump);
                 totalUsage[0] = totalUsage[0].plus(drainUsage());
+                List<String> attachmentErrors = validateAttachments(cases);
+                if (!attachmentErrors.isEmpty()) {
+                    log.warn("[{}] Attachment content failed deterministic validation on attempt {}/{}: {}",
+                            ID, attempt, maxReviewIterations, attachmentErrors);
+                    feedback = mergeAttachmentErrors(feedback, attachmentErrors);
+                }
                 if (feedback.passed()) {
                     log.info("[{}] Quality review PASSED on attempt {}/{}", ID, attempt, maxReviewIterations);
                     break;
@@ -338,7 +355,7 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
         String analysis = sectionOf(plan, "# Analysis");
         Map<String, Object> metadata = new LinkedHashMap<>();
         metadata.put("issue_key", issueKey);
-        metadata.put("refs", refs.joined());
+        metadata.put("refs", String.join(", ", unionRefs(issueKey, cases, properties.refsExcludedProjects())));
         metadata.put("team", resolveTeam(analysis, issue));
         metadata.put("ecs_story", resolveEcsStory(analysis));
         metadata.put("testrail_section", resolveSection(analysis));
@@ -350,6 +367,7 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
                 replaceReviewSection(plan, renderReviewSection(feedback, attempt)));
         List<String> notes = new ArrayList<>(testGroupNotes(cases));
         notes.addAll(coverageMatrixNotes(cleaned));
+        notes.addAll(ctx.truncationNotes());
         String body = appendFactoryNotes(cleaned, notes);
 
         Map<String, Object> metrics = !totalUsage[0].isEmpty()
@@ -556,7 +574,7 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
         return url.substring(0, end);
     }
 
-    private record RouterResult(List<String> areas, List<String> refs, String why) {}
+    private record RouterResult(List<String> areas, String why) {}
 
     /**
      * {@code kept} always leads with the originating ticket - it is never dropped, even when its
@@ -575,26 +593,23 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
      */
     private RouterResult route(JiraIssue issue, List<JiraIssue> linked, PromptDump.Run dump) {
         try {
-            Set<String> excluded = properties.refsExcludedProjects();
             Map<String, Object> routerVars = Map.of(
                     "issue", renderIssue(issue),
                     "linked_issues", renderLinkedIssues(linked),
-                    "area_table", areaDetector.areaTable(),
-                    "excluded_projects", excluded.isEmpty() ? "(none)" : String.join(", ", excluded));
+                    "area_table", areaDetector.areaTable());
             dump.write("router", ROUTER_PROMPT_ID, routerVars);
             String response = callForText(ROUTER_PROMPT_ID, routerVars);
             if (response == null || response.isBlank()) {
                 log.warn("[{}] Router returned nothing - falling back to keyword area detection", ID);
-                return new RouterResult(List.of(), List.of(), "router returned no content");
+                return new RouterResult(List.of(), "router returned no content");
             }
             return new RouterResult(
                     splitList(firstGroup(ROUTER_AREAS, response)),
-                    splitList(firstGroup(ROUTER_REFS, response)),
                     firstGroup(ROUTER_WHY, response));
         } catch (Exception e) {
             log.warn("[{}] Router call failed ({}) - falling back to keyword area detection",
                     ID, e.getMessage());
-            return new RouterResult(List.of(), List.of(), "router call failed: " + e.getMessage());
+            return new RouterResult(List.of(), "router call failed: " + e.getMessage());
         }
     }
 
@@ -651,16 +666,19 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
     }
 
     /**
-     * The originating ticket is always first and can never be dropped: the router is purely
-     * additive, and anything that is not a well-formed Jira key is discarded.
+     * The originating ticket is always first and can never be dropped: a case's own `refs` are
+     * purely additive to it, and anything that is not a well-formed Jira key is discarded.
+     * Reused two ways: once per case (both here at generation time, for the model's own
+     * declared refs, and again by TestRail sync at upload time) and once as the plan-level
+     * union in {@link #unionRefs}.
      */
-    static Refs buildRefs(String issueKey, List<String> routerRefs, Set<String> excludedProjects) {
+    static Refs buildRefs(String issueKey, List<String> caseRefs, Set<String> excludedProjects) {
         Set<String> excluded = excludedProjects == null ? Set.of() : excludedProjects;
         List<String> refs = new ArrayList<>();
         refs.add(issueKey);
         List<String> dropped = new ArrayList<>();
-        if (routerRefs != null) {
-            for (String extra : routerRefs) {
+        if (caseRefs != null) {
+            for (String extra : caseRefs) {
                 String k = extra.strip().toUpperCase(Locale.ROOT);
                 if (!JIRA_KEY.matcher(k).matches() || refs.contains(k) || dropped.contains(k)) continue;
                 if (excluded.contains(projectKey(k))) {
@@ -671,6 +689,23 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
             }
         }
         return new Refs(refs, dropped, excluded.contains(projectKey(issueKey)));
+    }
+
+    /**
+     * The plan-level `refs` frontmatter is a mechanical rollup of every case's own `refs` -
+     * each case decides for itself which linked tickets it verifies (see {@link #buildRefs}),
+     * and this just deduplicates the union so TestRail sync and the HITL gate have one
+     * plan-wide value to show, in addition to each case's own.
+     */
+    static List<String> unionRefs(String issueKey, List<TestPlanParser.ParsedCase> cases,
+                                   Set<String> excludedProjects) {
+        List<String> union = new ArrayList<>();
+        for (TestPlanParser.ParsedCase c : cases) {
+            for (String k : buildRefs(issueKey, c.refs(), excludedProjects).kept()) {
+                if (!union.contains(k)) union.add(k);
+            }
+        }
+        return union;
     }
 
     private static String projectKey(String jiraKey) {
@@ -731,7 +766,8 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
      * them; this makes it impossible.
      */
     static String forReview(String casesSection) {
-        return AUTOMATION_NOTES.matcher(casesSection).replaceAll("");
+        String stripped = ATTACHMENT_CONTENT_BLOCK.matcher(casesSection).replaceAll("");
+        return AUTOMATION_NOTES.matcher(stripped).replaceAll("");
     }
 
     private ReviewFeedback reviewTestCases(String casesSection, String issue, int attempt,
@@ -752,6 +788,46 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
         int searchFrom = failIdx >= 0 ? failIdx : 0;
         int issuesIdx = reviewText.indexOf("Issues:", searchFrom);
         return issuesIdx >= 0 ? reviewText.substring(issuesIdx) : reviewText.substring(searchFrom);
+    }
+
+    /**
+     * Structural MARC validity is not a judgment call the LLM reviewer can be trusted with -
+     * leader/directory byte arithmetic is exactly the kind of precise counting an LLM gets
+     * subtly wrong. Checked deterministically here instead, folded into the same retry budget
+     * as the LLM review rather than a second loop, per the design: one plan, one set of issues,
+     * one regeneration per failed attempt.
+     */
+    private List<String> validateAttachments(List<TestPlanParser.ParsedCase> cases) {
+        List<String> errors = new ArrayList<>();
+        for (TestPlanParser.ParsedCase c : cases) {
+            TestPlanParser.AttachmentKind kind = c.attachmentKind();
+            if (kind == null || !kind.isMarc()) continue;
+            List<MarcFixtureBuilder.Result> results = MarcFixtureBuilder.buildAll(c.attachmentContent(), kind);
+            boolean multi = results.size() > 1;
+            for (int i = 0; i < results.size(); i++) {
+                MarcFixtureBuilder.Result result = results.get(i);
+                String label = multi ? kind.spec() + " record " + (i + 1) : kind.spec();
+                if (!result.valid()) {
+                    for (String err : result.errors()) {
+                        errors.add(c.id() + " attachment (" + label + "): " + err);
+                    }
+                }
+            }
+        }
+        return errors;
+    }
+
+    private static ReviewFeedback mergeAttachmentErrors(ReviewFeedback feedback, List<String> attachmentErrors) {
+        StringBuilder issues = new StringBuilder("Issues:\n");
+        for (String err : attachmentErrors) {
+            issues.append("- ").append(err).append('\n');
+        }
+        if (!feedback.passed() && !feedback.issuesBlock().isBlank()) {
+            issues.append(feedback.issuesBlock()).append('\n');
+        }
+        return new ReviewFeedback(false, issues.toString().strip(),
+                feedback.fullText() + "\n\n[Attachment content also failed deterministic MARC validation - "
+                        + "see merged Issues above.]");
     }
 
     private String buildFeedbackBlock(String issuesBlock, int attempt) {
@@ -779,7 +855,12 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
                 + "- R10: At least one step per case must assert a concrete domain value, not only navigation\n"
                 + "- R12: Double-quote every on-screen string anywhere in the case - labels AND option/status/message values; backticks do not count\n"
                 + "- R13: Capability Sets and permissions - label correctly, one kind per list\n"
-                + "- R14: One expected result asserting several separate checks - lead-in + bullet list\n";
+                + "- R14: One expected result asserting several separate checks - lead-in + bullet list. "
+                + "Recursive: a bullet that itself joins 2+ facts with \"and\"/semicolon is still a "
+                + "violation even though the step already has bullets - split that bullet too. The lead-in "
+                + "itself is subject to this rule too: it may only name the context/screen, not assert a "
+                + "second fact (e.g. \"page opens with an empty X field\" bundles two facts before the "
+                + "bullets even start) - pull any such fact out into its own bullet\n";
     }
 
     private String buildPreviousAttemptSection(String plan, int attempt) {
@@ -905,7 +986,7 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
 
     // ── Prompt blocks ────────────────────────────────────────────────────────
 
-    private String buildProvenanceBlock(RouterResult route, List<String> areas, Refs refs,
+    private String buildProvenanceBlock(RouterResult route, List<String> areas,
                                         ContextPrefetch.ContextBundle ctx,
                                         ExamplesPrefetch.Examples examples,
                                         FragmentPrefetch.Fragments fragments, String skill) {
@@ -913,16 +994,12 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
         sb.append("- Area(s): ").append(String.join(", ", areas));
         if (!route.why().isBlank()) sb.append(" — ").append(route.why());
         sb.append('\n');
-        sb.append("- Refs: ").append(refs.joined()).append('\n');
-        if (!refs.excluded().isEmpty()) {
-            sb.append("- Excluded from refs: ").append(String.join(", ", refs.excluded()))
-              .append(" — project(s) ").append(String.join(", ", properties.refsExcludedProjects()))
-              .append(" are never referenced by test cases.\n");
-        }
-        if (refs.originatingExcluded()) {
-            sb.append("- ⚠️ The originating ticket is in an excluded project but is kept in "
-                    + "`refs` — a case with no reference is orphaned in TestRail. Ask the "
-                    + "reviewer whether these cases belong against a different ticket.\n");
+        Set<String> excludedProjects = properties.refsExcludedProjects();
+        if (!excludedProjects.isEmpty()) {
+            sb.append("- Refs: never cite a ticket from project(s) ")
+              .append(String.join(", ", excludedProjects))
+              .append(" in any case's `- **Refs:**` line — those projects track test/automation "
+                      + "work, not product behaviour.\n");
         }
         sb.append("- Context: ").append(ctx.sourceNote()).append('\n');
         sb.append("- Examples: ").append(examples.sourceNote()).append('\n');

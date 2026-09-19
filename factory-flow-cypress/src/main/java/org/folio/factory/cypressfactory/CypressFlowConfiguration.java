@@ -64,9 +64,11 @@ public class CypressFlowConfiguration {
                                             GitHubConnector gitHubConnector,
                                             JiraConnector jiraConnector,
                                             JsonMapper jsonMapper,
-                                            CypressFlowProperties properties) {
+                                            CypressFlowProperties properties,
+                                            @Value("${factory.connectors.jira.base-url:}")
+                                            String jiraBaseUrl) {
         return new ContextPrefetch(skillWorkspaceService, gitHubConnector, jiraConnector,
-                jsonMapper, properties);
+                jsonMapper, properties, jiraBaseUrl);
     }
 
     @Bean

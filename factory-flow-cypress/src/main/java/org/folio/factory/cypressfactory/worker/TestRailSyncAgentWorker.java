@@ -10,18 +10,20 @@ import org.folio.factory.core.agent.AgentResult;
 import org.folio.factory.core.agent.AgentWorker;
 import org.folio.factory.cypressfactory.CypressFlowProperties;
 import org.folio.factory.cypressfactory.plan.DevTeamCatalog;
+import org.folio.factory.cypressfactory.plan.MarcFixtureBuilder;
 import org.folio.factory.cypressfactory.plan.TestPlanParser;
+import org.folio.factory.cypressfactory.plan.TestPlanParser.AttachmentKind;
 import org.folio.factory.cypressfactory.plan.TestPlanParser.ParsedCase;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import tools.jackson.databind.JsonNode;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.nio.charset.StandardCharsets;
 import java.util.Optional;
 import java.util.function.Supplier;
 import java.util.regex.Matcher;
@@ -92,18 +94,20 @@ public class TestRailSyncAgentWorker implements AgentWorker {
         long cypressLabelId = resolveCypressLabel();
         Integer devTeamId = resolveDevTeamId(planFm.path("team").asString(""));
         String issueKey = planFm.path("issue_key").asString("");
-        String refs = resolveRefs(planFm.path("refs").asString(""), issueKey);
 
         Map<String, String> idMap = new HashMap<>();
         for (ParsedCase tc : cases) {
             boolean tcEcs = tc.ecsEnabled();
-            Map<String, Object> metadata = buildMetadata(tc, tcEcs, cypressLabelId, devTeamId, refs);
+            String caseRefs = TestCaseGenAgentWorker.buildRefs(
+                    issueKey, tc.refs(), properties.refsExcludedProjects()).joined();
+            Map<String, Object> metadata = buildMetadata(tc, tcEcs, cypressLabelId, devTeamId, caseRefs);
             try {
                 long caseId = testRail.addCaseWithMetadata(
                         sectionId, tc.title(), null, null, metadata);
                 String cId = "C" + caseId;
                 idMap.put(tc.id(), cId);
                 log.info("Created TestRail case {} for {}", cId, tc.id());
+                uploadAttachment(caseId, cId, tc);
             } catch (Exception e) {
                 log.warn("Failed to create TestRail case for {} ({}): {}", tc.id(), tc.title(), e.getMessage());
             }
@@ -119,20 +123,6 @@ public class TestRailSyncAgentWorker implements AgentWorker {
         if (!section.isBlank()) return parseOrResolveSectionRef(section.trim());
         Long defaultId = properties.testrailSectionId();
         return defaultId != null ? defaultId : 0L;
-    }
-
-    /**
-     * TestRail's References field must never lose the originating ticket. The generator
-     * already guarantees this, but a reviewer can edit the frontmatter at gate 1, so the
-     * key is re-asserted here.
-     */
-    static String resolveRefs(String refs, String issueKey) {
-        if (issueKey == null || issueKey.isBlank()) return refs == null ? "" : refs.strip();
-        if (refs == null || refs.isBlank()) return issueKey;
-        boolean present = Arrays.stream(refs.split(","))
-                .map(String::strip)
-                .anyMatch(k -> k.equalsIgnoreCase(issueKey));
-        return present ? refs.strip() : issueKey + ", " + refs.strip();
     }
 
     /**
@@ -233,6 +223,67 @@ public class TestRailSyncAgentWorker implements AgentWorker {
                     "Cannot resolve '" + label + "' TestRail label — create it manually or check credentials: "
                             + e.getMessage(), e);
         }
+    }
+
+    /**
+     * Built from whatever the approved {@code test_plan.md} says, not cached from generation
+     * time — a human can amend the attachment attribute or content at gate 1, so this is the
+     * only point the bytes actually uploaded are derived from the approved artifact. Degrades
+     * the same way every other TestRail write in this loop does: a failure here logs and moves
+     * on, it never fails the whole sync over one case's fixture.
+     *
+     * <p>For MARC, the model writes its own internal case id ({@code tc.id()}, e.g.
+     * {@code TC004}) as the key-field value (245 $a for bib, 1XX $a/$t for authority) because
+     * the real TestRail id doesn't exist yet at generation time. Substituted here, mechanically,
+     * for the real one — the same substitution {@link #replaceIds} later applies to the plan
+     * body, just applied to the fixture bytes before they're built and uploaded, since this
+     * runs inside the per-case loop, before that single pass over the body.</p>
+     */
+    private void uploadAttachment(long caseId, String cId, ParsedCase tc) {
+        AttachmentKind kind = tc.attachmentKind();
+        if (kind == null || tc.attachmentContent().isBlank()) return;
+
+        if (!kind.isMarc()) {
+            byte[] bytes = tc.attachmentContent().getBytes(StandardCharsets.UTF_8);
+            uploadOne(caseId, cId, cId + kind.extension(), bytes);
+            return;
+        }
+
+        List<String> blocks = MarcFixtureBuilder.splitRecords(tc.attachmentContent());
+        boolean multi = blocks.size() > 1;
+        String label = recordTypeLabel(kind);
+        for (int i = 0; i < blocks.size(); i++) {
+            String suffix = multi ? "_" + (i + 1) : "";
+            String content = blocks.get(i).replace(tc.id(), cId);
+            if (multi) {
+                content = content.replace(cId + "_" + label, cId + "_" + label + suffix);
+            }
+            MarcFixtureBuilder.Result result = MarcFixtureBuilder.build(content, kind);
+            if (!result.valid()) {
+                log.warn("Skipping attachment {} for {} ({}): invalid MARC content - {}",
+                        multi ? "record " + (i + 1) : "", cId, tc.id(), result.errors());
+                continue;
+            }
+            uploadOne(caseId, cId, cId + label + suffix + kind.extension(), result.bytes());
+        }
+    }
+
+    private void uploadOne(long caseId, String cId, String filename, byte[] bytes) {
+        try {
+            testRail.addAttachmentToCase(caseId, bytes, filename);
+            log.info("Uploaded attachment {} to TestRail case {}", filename, cId);
+        } catch (Exception e) {
+            log.warn("Failed to upload attachment {} to TestRail case {}: {}", filename, cId, e.getMessage());
+        }
+    }
+
+    private static String recordTypeLabel(AttachmentKind kind) {
+        return switch (kind) {
+            case MARC_BIB -> "MarcBibInstance";
+            case MARC_AUTHORITY -> "MarcAuthority";
+            case MARC_HOLDINGS -> "MarcHoldings";
+            default -> throw new IllegalArgumentException("not a MARC kind: " + kind);
+        };
     }
 
     private Map<String, Object> buildMetadata(ParsedCase tc, boolean ecsEnabled, long cypressLabelId,
