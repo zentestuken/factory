@@ -20,8 +20,13 @@ public record CypressFlowProperties(
                                       // Same by-name resolution as testrailCaseTypeName.
         String testrailLabel,      // set FACTORY_CYPRESS_TESTRAIL_LABEL; default "cypressFlow-delete"
         Integer maxReviewIterations, // set FACTORY_CYPRESS_MAX_REVIEW_ITERATIONS; default 3; 0 = skip agent review
-        Set<String> refsExcludedProjects) { // set FACTORY_CYPRESS_REFS_EXCLUDED_PROJECTS; comma-separated Jira
+        Set<String> refsExcludedProjects, // set FACTORY_CYPRESS_REFS_EXCLUDED_PROJECTS; comma-separated Jira
                                             // project keys never added to TestRail refs; default FAT
+        Boolean reviewDoubleCheck) { // set FACTORY_CYPRESS_REVIEW_DOUBLE_CHECK; default true. A PASS verdict
+                                      // is re-checked with one independent second reviewer call before the
+                                      // plan ships - a FAIL from either is treated as FAIL. Only runs on the
+                                      // attempt that would otherwise be accepted, not on every attempt, so
+                                      // the extra cost is ~1 reviewer call per successful run, not per retry.
 
     static final String DEFAULT_TESTRAIL_CASE_TYPE_NAME = "Functional";
     static final String DEFAULT_TESTRAIL_PRIORITY_NAME = "Medium";
@@ -51,5 +56,6 @@ public record CypressFlowProperties(
                         .filter(p -> p != null && !p.isBlank())
                         .map(p -> p.strip().toUpperCase(Locale.ROOT))
                         .collect(Collectors.toCollection(LinkedHashSet::new));
+        if (reviewDoubleCheck == null) reviewDoubleCheck = true;
     }
 }

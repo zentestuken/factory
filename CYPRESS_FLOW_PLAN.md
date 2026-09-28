@@ -1010,7 +1010,8 @@ Docker must be running (Testcontainers). Full gate: `mvn verify`.
    `testrail_section`); `testrail_section` resolves.
    **`team` must equal the story's Jira Dev Team**, never a value inferred from the subject
    matter. With `FACTORY_DEBUG_ENABLED=true`, the exact value read off
-   the ticket is in `debugPrompts/<executionId>/2-generate-attempt1.md` as
+   the ticket is in the first `generate-attemptN.md` file under `debugPrompts/<executionId>/`
+   (numbering shifts depending on whether coverage-triage nominated candidates) as
    `**Development Team:** <value>`; compare it against the frontmatter and against Jira. There
    must be **no second `---` block** in the body duplicating these fields.
    Watch the log for `is not in references/dev-teams.md` or `has no TestRail id` — either means
@@ -1040,9 +1041,10 @@ Docker must be running (Testcontainers). Full gate: `mvn verify`.
       call and `cacheReadTokens` on the later ones. Read-but-no-write on the first call means
       an earlier run's prefix was still live.
     - `cacheWriteTokens` every call with `cacheReadTokens` never — caching is not engaging.
-      Most likely the system prompt is not byte-identical between calls: diff
-      `debugPrompts/<executionId>/2-generate-attempt1.md` against `4-generate-attempt2.md`
-      above the first `## ` user section.
+      Most likely the system prompt is not byte-identical between calls: diff the two
+      `generate-attemptN.md` files under `debugPrompts/<executionId>/` above the first `## `
+      user section (each file's prompt is above its `# ===== RESPONSE =====` marker, response
+      below it).
     - Neither count present at all — the provider is not Anthropic, or the options were
       dropped; check the log for `"is not supported ... Ignoring."`.
     - **Reject and Re-generate is the interesting case.** The retry is a new execution, so its
@@ -1207,7 +1209,7 @@ factory-flow-cypress/
     worker/
       SkillWorkspaceService.java            (skill clone + three-tier asset reads)
       TafSyncService.java                   (stripes-testing clone)
-      PromptDump.java                        (rendered-prompt capture, debug only)
+      PromptDump.java                        (rendered-prompt + response capture, debug only)
       TestCaseGenAgentWorker.java           (LLM: router call, generation, review loop)
       TestRailSyncAgentWorker.java          (non-LLM: push cases, write real ids back)
       CypressAutomationAgentWorker.java     (LLM)                          [Part III]
@@ -1274,6 +1276,7 @@ Part III additionally reuses `ScriptBundleCodec` (`factory-agents`) and TAF's `C
 | `FACTORY_CYPRESS_TESTRAIL_LABEL` | Label title applied to every created case (default: `cypressFlow-delete`); resolved to a label ID at runtime via `getOrCreateLabel` |
 | `FACTORY_CYPRESS_MAX_REVIEW_ITERATIONS` | Max agent review iterations inside `TestCaseGenAgentWorker` per run (default `3`). Set to `0` to skip automated review entirely. |
 | `FACTORY_CYPRESS_REFS_EXCLUDED_PROJECTS` | Comma-separated Jira project keys never added to any case's `refs` (default `FAT`). The originating ticket is always kept even if its own project is excluded. Enforced twice: the generation prompt is told upfront not to cite these projects (Provenance block), and `buildRefs()` drops them again, silently, at Assemble/sync time as a backstop — unlike the old router-time design, a drop here is not echoed back into `# Analysis`, since generation has already finished by the time sync applies it. |
+| `FACTORY_CYPRESS_REVIEW_DOUBLE_CHECK` | Re-checks a PASS verdict with one independent second reviewer call before the plan ships; a FAIL from either counts as FAIL for that attempt (default `true`). Only runs on the attempt that would otherwise be accepted, not on every attempt, so the extra cost is ~1 reviewer call per successful run, not one per retry. Set `false` to disable. |
 | `FACTORY_CONNECTORS_TESTRAIL_BASE_URL` | TestRail instance base URL |
 | `FACTORY_CONNECTORS_TESTRAIL_USERNAME` | TestRail username (email) |
 | `FACTORY_CONNECTORS_TESTRAIL_API_KEY` | TestRail API key |
@@ -1281,7 +1284,7 @@ Part III additionally reuses `ScriptBundleCodec` (`factory-agents`) and TAF's `C
 | `FACTORY_CONNECTORS_TESTRAIL_SUITE_ID` | TestRail suite ID (integer; required on multi-suite projects) |
 | `FACTORY_CONNECTORS_GITHUB_TOKEN` | GitHub personal access token (read for context/examples fetch; write for finalizer PR) |
 | `FACTORY_CONNECTORS_GITHUB_BASE_URL` | GitHub API base URL (default: `https://api.github.com`; override for GHE) |
-| `FACTORY_DEBUG_ENABLED` | Dumps every rendered prompt to `debugPrompts/<executionId>/` and exposes `POST /api/debug/partial-run`. Local use only. |
+| `FACTORY_DEBUG_ENABLED` | Dumps every rendered prompt, with the model's raw response appended below it, to `debugPrompts/<executionId>/`, and exposes `POST /api/debug/partial-run`. Local use only. |
 | `FACTORY_TAF_HAS_ENV_CONFIG` | Set `true` to enable execution mode in `CypressExecutionWorker` (Phase 3+) |
 | `FACTORY_CYPRESS_EXEC_CONFIG` | Path to `cypress-exec.yaml`; defaults to bundled `src/main/resources/cypress-exec.yaml` |
 | `FACTORY_CYPRESS_REGULAR_ENV` | Deploy-time override for regular-test env params (`key=val,key=val`); merged on top of `cypress-exec.yaml` regular block |

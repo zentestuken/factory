@@ -151,6 +151,10 @@ factory:
     max-review-iterations: ${FACTORY_CYPRESS_MAX_REVIEW_ITERATIONS:}
     # Jira projects never added to TestRail refs. Comma-separated. Default FAT.
     refs-excluded-projects: ${FACTORY_CYPRESS_REFS_EXCLUDED_PROJECTS:}
+    # Re-check a PASS verdict with one independent second reviewer call before the plan ships;
+    # a FAIL from either counts as FAIL for that attempt. Default true. Only runs on the attempt
+    # that would otherwise be accepted, not on every attempt.
+    review-double-check: ${FACTORY_CYPRESS_REVIEW_DOUBLE_CHECK:}
 
 logging:
   # OBS-1: JSON logging is opt-in via env so local `mvn spring-boot:run` stays

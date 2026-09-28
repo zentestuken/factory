@@ -24,7 +24,6 @@ import org.slf4j.LoggerFactory;
 import org.springframework.ai.anthropic.AnthropicCacheOptions;
 import org.springframework.ai.anthropic.AnthropicCacheStrategy;
 import org.springframework.ai.anthropic.AnthropicCacheTtl;
-import com.anthropic.models.messages.OutputConfig;
 import org.springframework.ai.anthropic.AnthropicChatOptions;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.messages.MessageType;
@@ -38,7 +37,6 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -82,15 +80,6 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
      * successful and yields nothing.
      */
     private static final int REVIEWER_MAX_TOKENS = 32768;
-
-    /**
-     * Opus tier and above - Opus 4.5+, Fable and Mythos. Effort is an allow-list rather than a
-     * deny-list because older models reject the parameter outright: an unrecognised model id gets
-     * no effort at all, which every model accepts, so a new or unusual id degrades to the previous
-     * behaviour instead of a 400 that would fail the step.
-     */
-    private static final Pattern OPUS_TIER_OR_ABOVE =
-            Pattern.compile("(?i)(opus-(4-5|4-6|4-7|4-8|5)|fable-5|mythos-5|mythos-preview)\\b");
 
     private static final Logger log = LoggerFactory.getLogger(TestCaseGenAgentWorker.class);
 
@@ -159,6 +148,7 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
     private final String model;
     private final String jiraBaseUrl;
     private final int maxReviewIterations;
+    private final boolean reviewDoubleCheck;
 
     public TestCaseGenAgentWorker(ChatClient chatClient, JiraConnector jira, TestRailConnector testRail,
                                   SkillWorkspaceService skills, AreaDetector areaDetector,
@@ -184,6 +174,7 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
         this.model = model == null ? "" : model;
         this.jiraBaseUrl = jiraBaseUrl == null ? "" : jiraBaseUrl.strip();
         this.maxReviewIterations = properties.maxReviewIterations();
+        this.reviewDoubleCheck = Boolean.TRUE.equals(properties.reviewDoubleCheck());
     }
 
     @Override
@@ -215,31 +206,27 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
         return chatOptions(null);
     }
 
+    /**
+     * No explicit {@code effort} override for the reviewer - every model runs its own default.
+     * Removed 2026-09-24: this used to force {@code effort: low} on Opus tier and above, on the
+     * theory that a reasoning model could burn its whole output ceiling thinking about a
+     * checklist scan and return no verdict at all. Never confirmed to actually happen (the only
+     * place that failure mode fires is a deliberately-scripted test, not a production incident),
+     * never exercised by the deployed model (Sonnet was never in the allow-list), and the loop
+     * already degrades safely if it ever does happen - an empty/unparseable verdict stops the
+     * loop and ships the plan with a note to review manually (see the {@code issueCount == 0}
+     * branch in {@link #execute}), independent of this mechanism. Unvalidated complexity with a
+     * safety net that already existed elsewhere - removed rather than kept "just in case."
+     */
     @Override
     protected ChatOptions.Builder<?> chatOptions(String promptId) {
         boolean reviewing = REVIEWER_PROMPT_ID.equals(promptId);
-        AnthropicChatOptions.Builder builder = AnthropicChatOptions.builder()
-                .maxTokens(reviewing ? REVIEWER_MAX_TOKENS : maxTokens());
-        if (reviewing) {
-            reviewerEffort().ifPresent(builder::effort);
-        }
-        return builder
+        return AnthropicChatOptions.builder()
+                .maxTokens(reviewing ? REVIEWER_MAX_TOKENS : maxTokens())
                 .cacheOptions(AnthropicCacheOptions.builder()
                         .strategy(AnthropicCacheStrategy.SYSTEM_ONLY)
                         .messageTypeTtl(MessageType.SYSTEM, AnthropicCacheTtl.FIVE_MINUTES)
                         .build());
-    }
-
-    /**
-     * Low effort for the reviewer, on Opus tier and above. Checking cases against a fixed checklist is a
-     * scan, not deep reasoning, so the depth buys nothing - and on a reasoning model the thinking
-     * it saves is thinking that would otherwise be charged against the same output ceiling as the
-     * verdict. Deliberately not configurable: it follows the model, which is already configured.
-     */
-    private Optional<OutputConfig.Effort> reviewerEffort() {
-        return OPUS_TIER_OR_ABOVE.matcher(model).find()
-                ? Optional.of(OutputConfig.Effort.LOW)
-                : Optional.empty();
     }
 
     @Override
@@ -599,6 +586,7 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
                     "area_table", areaDetector.areaTable());
             dump.write("router", ROUTER_PROMPT_ID, routerVars);
             String response = callForText(ROUTER_PROMPT_ID, routerVars);
+            dump.writeResponse("router", response);
             if (response == null || response.isBlank()) {
                 log.warn("[{}] Router returned nothing - falling back to keyword area detection", ID);
                 return new RouterResult(List.of(), "router returned no content");
@@ -631,6 +619,7 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
                     "coverage", coverage.index());
             dump.write("coverage-triage", TRIAGE_PROMPT_ID, triageVars);
             String response = callForText(TRIAGE_PROMPT_ID, triageVars);
+            dump.writeResponse("coverage-triage", response);
             totalUsage[0] = totalUsage[0].plus(drainUsage());
 
             List<Long> ids = coverage.select(parseCandidateIds(response), MAX_COVERAGE_CANDIDATES);
@@ -723,6 +712,7 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
                                        PromptDump.Run dump, int attempt) {
         dump.write("generate-attempt" + attempt, GEN_PROMPT_ID, vars);
         String plan = callForText(GEN_PROMPT_ID, vars);
+        dump.writeResponse("generate-attempt" + attempt, plan);
         totalUsage[0] = totalUsage[0].plus(drainUsage());
 
         List<TestPlanParser.Problem> problems = parser.validate(parser.parse(plan));
@@ -736,7 +726,10 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
                 + "Your previous response could not be parsed. Reproduce the case-block format "
                 + "EXACTLY as specified, under a `# Test Cases` heading:\n\n"
                 + describe(problems) + "\n");
+        String retryLabel = "generate-attempt" + attempt + "-retry";
+        dump.write(retryLabel, GEN_PROMPT_ID, retryVars);
         plan = callForText(GEN_PROMPT_ID, retryVars);
+        dump.writeResponse(retryLabel, plan);
         totalUsage[0] = totalUsage[0].plus(drainUsage());
 
         problems = parser.validate(parser.parse(plan));
@@ -770,15 +763,46 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
         return AUTOMATION_NOTES.matcher(stripped).replaceAll("");
     }
 
+    /**
+     * A PASS is the one verdict worth distrusting, since it's the moment a plan ships to the
+     * gate unexamined by a human - a FAIL just triggers the same regeneration loop either way,
+     * accurate or not. So when {@code reviewDoubleCheck} is on, a PASS gets one independent
+     * second opinion (fresh call, identical input) before being accepted; either call saying
+     * FAIL makes the whole thing a FAIL for this attempt, using the dissenting call's issues.
+     *
+     * <p>Cost-conscious by construction, not by a token/budget cap: the extra call only ever
+     * fires on a PASS, so a run that fails every attempt (exhausts {@code maxReviewIterations}
+     * without ever passing) pays nothing extra, and a run that passes on attempt N pays for
+     * exactly one extra call total - not one per attempt.</p>
+     */
     private ReviewFeedback reviewTestCases(String casesSection, String issue, int attempt,
                                            PromptDump.Run dump) {
+        ReviewFeedback primary = callReviewer(casesSection, issue, attempt, dump,
+                "review-attempt" + attempt);
+        if (!primary.passed() || !reviewDoubleCheck) {
+            return primary;
+        }
+        log.info("[{}] Attempt {}/{} passed - confirming with an independent second opinion",
+                ID, attempt, maxReviewIterations);
+        ReviewFeedback verification = callReviewer(casesSection, issue, attempt, dump,
+                "review-attempt" + attempt + "-verify");
+        if (!verification.passed()) {
+            log.info("[{}] Second opinion on attempt {}/{} disagreed - treating as FAIL",
+                    ID, attempt, maxReviewIterations);
+        }
+        return verification;
+    }
+
+    private ReviewFeedback callReviewer(String casesSection, String issue, int attempt,
+                                        PromptDump.Run dump, String label) {
         Map<String, Object> reviewVars = Map.of(
                 "test_cases", casesSection,
                 "issue", issue,
                 "attempt", attempt,
                 "max_attempts", maxReviewIterations);
-        dump.write("review-attempt" + attempt, REVIEWER_PROMPT_ID, reviewVars);
+        dump.write(label, REVIEWER_PROMPT_ID, reviewVars);
         String result = callForText(REVIEWER_PROMPT_ID, reviewVars);
+        dump.writeResponse(label, result);
         boolean passed = result.contains("REVIEW_RESULT: PASS");
         return new ReviewFeedback(passed, passed ? "" : extractIssuesBlock(result), result);
     }

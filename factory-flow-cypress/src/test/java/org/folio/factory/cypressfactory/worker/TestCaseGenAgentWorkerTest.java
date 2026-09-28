@@ -183,7 +183,14 @@ class TestCaseGenAgentWorkerTest {
     }
 
     private CypressFlowProperties properties(int maxReviewIterations) {
-        return new CypressFlowProperties("", "main", "", null, null, null, null, maxReviewIterations, null);
+        return properties(maxReviewIterations, false);
+    }
+
+    /** {@code reviewDoubleCheck} defaults to true in production; false here so the many
+     * tests that enqueue exactly one reviewer response per attempt don't all need a second. */
+    private CypressFlowProperties properties(int maxReviewIterations, boolean reviewDoubleCheck) {
+        return new CypressFlowProperties("", "main", "", null, null, null, null,
+                maxReviewIterations, null, reviewDoubleCheck);
     }
 
     private TestCaseGenAgentWorker worker(StubChatModel model) {
@@ -193,6 +200,22 @@ class TestCaseGenAgentWorkerTest {
     private TestCaseGenAgentWorker worker(StubChatModel model, String llmModel) {
         return worker(model, 3, new UnconfiguredConnectors.TestRail(),
                 new PromptDump(false, Path.of("target", "unused-prompt-dump")), llmModel);
+    }
+
+    private TestCaseGenAgentWorker worker(StubChatModel model, boolean reviewDoubleCheck) {
+        CypressFlowProperties props = properties(3, reviewDoubleCheck);
+        SkillWorkspaceService skills = skills();
+        TestRailConnector testRail = new UnconfiguredConnectors.TestRail();
+        return new TestCaseGenAgentWorker(
+                ChatClient.create(model), new FakeJira(), testRail, skills,
+                new AreaDetector(),
+                new ContextPrefetch(skills, new UnconfiguredConnectors.GitHub(), new FakeJira(),
+                        jsonMapper, props, ""),
+                new FragmentPrefetch(new TafSyncService(), new UnconfiguredConnectors.GitHub()),
+                new CoveragePrefetch(testRail, props),
+                new ExamplesPrefetch(skills),
+                codec, new TestPlanParser(), new DevTeamCatalog(),
+                new PromptDump(false, Path.of("target", "unused-prompt-dump")), props, MODEL, "");
     }
 
     private TestCaseGenAgentWorker worker(StubChatModel model, int maxReviewIterations,
@@ -328,6 +351,18 @@ class TestCaseGenAgentWorkerTest {
         String genPrompt = model.receivedPrompts().get(1).getContents();
         assertThat(genPrompt).contains("Mandatory Workflow");
         assertThat(genPrompt).contains("FACTORY DELTAS");
+    }
+
+    @Test
+    void generationPromptIncludesLinkedBugScopingAndDiscriminatingDataRules() {
+        StubChatModel model = new StubChatModel()
+                .enqueue(ROUTER_OK).enqueue(PLAN).enqueue(REVIEW_PASS);
+
+        worker(model).execute(freshContext());
+
+        String genPrompt = model.receivedPrompts().get(1).getContents();
+        assertThat(genPrompt).contains("scoped out explicitly, not silently dropped");
+        assertThat(genPrompt).contains("needs data that could actually catch a regression");
     }
 
     @Test
@@ -631,6 +666,59 @@ class TestCaseGenAgentWorkerTest {
                 .contains("empty or placeholder expected result");
     }
 
+    // ── Review double-check ───────────────────────────────────────────────────
+
+    @Test
+    void doubleCheckRunsASecondIndependentCallOnlyAfterAPass() {
+        StubChatModel model = new StubChatModel()
+                .enqueue(ROUTER_OK).enqueue(PLAN).enqueue(REVIEW_PASS).enqueue(REVIEW_PASS);
+
+        AgentResult result = worker(model, true).execute(freshContext());
+
+        assertThat(result.outputs()).containsKey("test_plan.md");
+        assertThat(model.receivedPrompts()).hasSize(4);
+        assertThat(result.outputs().get("test_plan.md")).contains("review_iterations: 1");
+    }
+
+    @Test
+    void doubleCheckDoesNotRunWhenDisabled() {
+        StubChatModel model = new StubChatModel()
+                .enqueue(ROUTER_OK).enqueue(PLAN).enqueue(REVIEW_PASS);
+
+        worker(model, false).execute(freshContext());
+
+        assertThat(model.receivedPrompts()).hasSize(3);
+    }
+
+    @Test
+    void doubleCheckDoesNotRunOnAFail() {
+        // The verify call only ever fires on a PASS - a FAIL already triggers the same
+        // regeneration loop regardless of whether a second opinion would agree, so there is
+        // nothing for it to buy here. 5 prompts: router, gen1, review1(FAIL), gen2, review2(PASS).
+        StubChatModel model = new StubChatModel()
+                .enqueue(ROUTER_OK).enqueue(PLAN).enqueue(REVIEW_FAIL)
+                .enqueue(PLAN).enqueue(REVIEW_PASS).enqueue(REVIEW_PASS);
+
+        worker(model, true).execute(freshContext());
+
+        assertThat(model.receivedPrompts()).hasSize(6);
+    }
+
+    @Test
+    void aSecondOpinionThatDisagreesFailsTheAttemptAndFeedsBackItsOwnIssues() {
+        // Attempt 1's primary call says PASS, but the second opinion disagrees - that attempt
+        // must count as FAILED, using the second opinion's issues, not the first call's silence.
+        StubChatModel model = new StubChatModel()
+                .enqueue(ROUTER_OK).enqueue(PLAN).enqueue(REVIEW_PASS).enqueue(REVIEW_FAIL)
+                .enqueue(PLAN).enqueue(REVIEW_PASS).enqueue(REVIEW_PASS);
+
+        AgentResult result = worker(model, true).execute(freshContext());
+
+        assertThat(result.outputs().get("test_plan.md")).contains("review_iterations: 2");
+        String secondAttemptPrompt = model.receivedPrompts().get(4).getContents();
+        assertThat(secondAttemptPrompt).contains("Quality gate feedback");
+    }
+
     // ── Review loop ──────────────────────────────────────────────────────────
 
     @Test
@@ -875,21 +963,17 @@ class TestCaseGenAgentWorkerTest {
     }
 
     @Test
-    void effortIsSentOnlyOnOpusTierOrAboveAndOnlyForTheReviewer() {
-        for (String capable : List.of("claude-opus-5", "claude-opus-4-8", "claude-fable-5",
-                "claude-mythos-5")) {
-            assertThat(((AnthropicChatOptions) worker(new StubChatModel(), capable)
-                    .chatOptions("cypress-testcase-reviewer").build()).getOutputConfig())
-                    .as(capable).isNotNull();
+    void noModelGetsAnExplicitEffortOverrideOnAnyPrompt() {
+        // Removed 2026-09-24: the reviewer used to force effort:low on Opus tier and above.
+        // Every model now runs its own default on every prompt, reviewer included.
+        for (String llmModel : List.of("claude-opus-5", "claude-opus-4-8", "claude-fable-5",
+                "claude-mythos-5", "claude-sonnet-4-6", "claude-sonnet-5")) {
+            TestCaseGenAgentWorker worker = worker(new StubChatModel(), llmModel);
+            assertThat(((AnthropicChatOptions) worker.chatOptions("cypress-testcase-reviewer").build())
+                    .getOutputConfig()).as(llmModel).isNull();
+            assertThat(((AnthropicChatOptions) worker.chatOptions("cypress-testcase-gen").build())
+                    .getOutputConfig()).as(llmModel).isNull();
         }
-
-        TestCaseGenAgentWorker opus = worker(new StubChatModel(), "claude-opus-5");
-        assertThat(((AnthropicChatOptions) opus.chatOptions("cypress-testcase-gen").build())
-                .getOutputConfig()).isNull();
-
-        TestCaseGenAgentWorker sonnet = worker(new StubChatModel(), "claude-sonnet-4-6");
-        assertThat(((AnthropicChatOptions) sonnet.chatOptions("cypress-testcase-reviewer").build())
-                .getOutputConfig()).isNull();
     }
 
     @Test
@@ -1061,6 +1145,30 @@ class TestCaseGenAgentWorkerTest {
         assertThat(dumped).contains("Mandatory Workflow");            // SKILL.md was substituted
         assertThat(dumped).contains("AC1: browse returns matches.");  // the raw ticket
         assertThat(dumped).doesNotContain("{{skill}}").doesNotContain("{{issue}}");
+        assertThat(dumped).contains("===== RESPONSE =====").contains("TC001");  // the model's own reply
+    }
+
+    @Test
+    void formatCorrectionRetryGetsItsOwnDumpFileWithPromptAndResponse() throws Exception {
+        Path dir = Path.of("target", "prompt-dump-retry-" + UUID.randomUUID());
+        StubChatModel model = new StubChatModel()
+                .enqueue(ROUTER_OK).enqueue(PLAN_MALFORMED).enqueue(PLAN).enqueue(REVIEW_PASS);
+
+        AgentContext ctx = freshContext();
+        worker(model, 3, new UnconfiguredConnectors.TestRail(), new PromptDump(true, dir)).execute(ctx);
+
+        Path runDir = dir.resolve(ctx.executionId().toString());
+        try (var files = Files.list(runDir)) {
+            assertThat(files.map(f -> f.getFileName().toString()).sorted())
+                    .containsExactly("1-router.md", "2-generate-attempt1.md",
+                            "3-generate-attempt1-retry.md", "4-review-attempt1.md");
+        }
+
+        String malformedDump = Files.readString(runDir.resolve("2-generate-attempt1.md"));
+        assertThat(malformedDump).contains("===== RESPONSE =====");
+        String retryDump = Files.readString(runDir.resolve("3-generate-attempt1-retry.md"));
+        assertThat(retryDump).contains("Output format errors");        // the retry prompt
+        assertThat(retryDump).contains("===== RESPONSE =====").contains("TC001");  // the corrected plan
     }
 
     @Test

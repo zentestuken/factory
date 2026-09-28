@@ -309,20 +309,30 @@ templates, not the rendered result. To capture the real thing, set:
 FACTORY_DEBUG_ENABLED=true
 ```
 
-Every model call then writes its fully rendered system + user prompt to
-`debugPrompts/<executionId>/`, numbered in call order:
+Every model call then writes its fully rendered system + user prompt, **and the model's raw
+response appended below it** (under a `# ===== RESPONSE =====` marker in the same file), to
+`debugPrompts/<executionId>/`. Files are numbered strictly in call order - one number per actual
+model call, so the exact numbers shift depending on what happened during the run:
 
 ```
 1-router.md               area + refs decision
-2-generate-attempt1.md    the big one: SKILL.md + examples + context + ticket
-3-review-attempt1.md      what the reviewer agent saw
-4-generate-attempt2.md    only when the reviewer failed attempt 1
-5-review-attempt2.md
+2-coverage-triage.md      which existing TestRail cases got a full read
+3-generate-attempt1.md    the big one: SKILL.md + examples + context + ticket
+4-review-attempt1.md      what the reviewer agent saw
+5-generate-attempt2.md    only when the reviewer failed attempt 1
+6-review-attempt2.md
 ```
 
+Two extra labels can appear, each taking the next sequential number when they fire rather than
+reusing the number of the call they follow: `generate-attemptN-retry` (attempt N's response
+didn't parse as a valid case block, so one corrective retry ran before falling through to the
+normal reviewer step) and `review-attemptN-verify` (attempt N passed and `review-double-check`
+is on, so one independent second reviewer call re-checked the PASS before it shipped).
+
 Two runs of the same story are then a plain `diff -r` of their directories, which is usually the
-fastest way to answer "why did this one come out worse?". Nothing is written when the flag is
-off, and a dump failure can never fail a run.
+fastest way to answer "why did this one come out worse?" — including, now that responses are
+captured, whether the *same* reviewer call would come out differently on a second pass. Nothing
+is written when the flag is off, and a dump failure can never fail a run.
 
 ### 7 — Checking that prompt caching is working
 
@@ -338,7 +348,7 @@ for `testcase-gen`, and read its detail:
 |---|---|
 | `cacheWriteTokens` on the first generation call, `cacheReadTokens` on later ones | Working as intended. |
 | `cacheReadTokens` on the *first* call too | Even better — a previous run's prefix was still live. |
-| `cacheWriteTokens` every call, `cacheReadTokens` never | Not engaging. The system prompt is probably not byte-identical between calls; with `FACTORY_DEBUG_ENABLED=true`, diff `debugPrompts/<executionId>/2-generate-attempt1.md` against `4-generate-attempt2.md` down to the first `## ` heading. |
+| `cacheWriteTokens` every call, `cacheReadTokens` never | Not engaging. The system prompt is probably not byte-identical between calls; with `FACTORY_DEBUG_ENABLED=true`, diff the two `generate-attemptN.md` files under `debugPrompts/<executionId>/` down to the first `## ` heading (each has its call's prompt above the `# ===== RESPONSE =====` marker and the response below it). |
 | Neither count present | The provider is not Anthropic, or the options were dropped — grep the log for `is not supported ... Ignoring.` |
 
 The same counts are exported as `factory.llm.tokens{type=cache_write}` and `{type=cache_read}`.

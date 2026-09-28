@@ -7,6 +7,7 @@ import org.folio.factory.cypressfactory.CypressFlowProperties;
 import org.folio.factory.cypressfactory.worker.SkillWorkspaceService;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
+import org.jsoup.nodes.Element;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import tools.jackson.databind.JsonNode;
@@ -561,11 +562,29 @@ public class ContextPrefetch {
         }
     }
 
-    /** Strips script/style/nav/header/footer, then takes the remaining body text. Deliberately
-     * a basic heuristic, not a full "readability" algorithm - good enough to ground a prompt. */
+    private static final String BOILERPLATE_SELECTOR =
+            "script, style, nav, header, footer, noscript, aside, form, iframe, svg, "
+            + "[role=navigation], [role=banner], [role=contentinfo], [role=complementary], "
+            + ".sidebar, .breadcrumb, .breadcrumbs, .cookie, .cookie-banner, .advertisement, "
+            + ".ad, .toc, .table-of-contents, .site-header, .site-footer, .menu, .pagination, "
+            + ".comments, .social-share, .related-posts";
+
+    private static final String MAIN_CONTENT_SELECTOR =
+            "article, main, [role=main], .content, #content, .main-content, .article-body, "
+            + ".post-content, .documentation";
+
+    /** Strips common boilerplate regions, then prefers a semantic main-content container when
+     * the page has one. Deliberately a basic heuristic, not a full "readability" algorithm - a
+     * Readability-port library isn't worth it here: the Java ones drag in a Kotlin runtime and
+     * an older jsoup transitively, against this module's own "no transitive bloat" jsoup pin
+     * (see this module's pom.xml) for a page that mostly just needs less boilerplate mixed in. */
     private static String extractReadableHtml(String html) {
         Document doc = Jsoup.parse(html);
-        doc.select("script, style, nav, header, footer, noscript").remove();
+        doc.select(BOILERPLATE_SELECTOR).remove();
+        Element main = doc.selectFirst(MAIN_CONTENT_SELECTOR);
+        if (main != null && main.text().length() > 200) {
+            return main.text();
+        }
         return doc.body() != null ? doc.body().text() : doc.text();
     }
 

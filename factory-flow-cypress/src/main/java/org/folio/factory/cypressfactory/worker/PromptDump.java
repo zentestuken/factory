@@ -7,6 +7,8 @@ import org.slf4j.LoggerFactory;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
 
@@ -45,6 +47,7 @@ public class PromptDump {
 
         private final UUID executionId;
         private int sequence;
+        private final Map<String, Path> filesByLabel = new HashMap<>();
 
         private Run(UUID executionId) {
             this.executionId = executionId;
@@ -78,9 +81,30 @@ public class PromptDump {
                         """.formatted(promptId, label, executionId, system, user),
                         StandardCharsets.UTF_8);
 
+                filesByLabel.put(sanitize(label), file);
                 log.info("[prompt-dump] {}", file);
             } catch (Exception e) {
                 log.warn("[prompt-dump] Could not write '{}' for execution {}: {}",
+                        label, executionId, e.getMessage());
+            }
+        }
+
+        /**
+         * Appends the model's raw response to the file {@link #write} created for the same
+         * label, so a debugging read sees prompt and response together in one file. A label
+         * with no prior {@link #write} call (or one whose write itself failed) is a silent
+         * no-op - same "never fail a run" contract as {@link #write}.
+         */
+        public void writeResponse(String label, String response) {
+            if (!enabled) return;
+            Path file = filesByLabel.get(sanitize(label));
+            if (file == null) return;
+            try {
+                Files.writeString(file,
+                        "\n\n# ===== RESPONSE =====\n\n" + response + "\n",
+                        StandardCharsets.UTF_8, StandardOpenOption.APPEND);
+            } catch (Exception e) {
+                log.warn("[prompt-dump] Could not append response for '{}' execution {}: {}",
                         label, executionId, e.getMessage());
             }
         }

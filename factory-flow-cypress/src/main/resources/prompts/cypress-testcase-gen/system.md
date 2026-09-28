@@ -346,6 +346,37 @@ and note the mismatch in one line at the top of `# Analysis` so a human can fix 
 
     {{marc_examples}}
 
+14. **A linked Bug that's related to this story but not covered by any generated case must be
+    scoped out explicitly, not silently dropped.** When `## Linked issues` includes a Bug whose
+    subject matter overlaps this story's feature area but no case ends up referencing it via
+    delta 6's `- **Refs:**` line, add one line under `# Analysis` (alongside the other notes)
+    stating it's related but out of scope, and why - the same transparency already required for
+    `NOT COVERED` scenarios (delta 10) and for a context-file mismatch (delta 1). Only applies to
+    Bugs plausibly about the same feature; an unrelated linked issue needs no mention.
+
+    ```
+    Linked Bug MODDICORE-509 (comparison-part ineffective without "Use a qualifier",
+    MARC-to-MARC matching) is related but out of scope - no case in this story exercises
+    that qualifier combination.
+    ```
+
+15. **A step whose expected result asserts a behavior does NOT happen, is disabled, or has no
+    effect needs data that could actually catch a regression.** Pick example values so that if
+    the disabled behavior were still silently active, the observed outcome would visibly differ
+    from the expected (passing) one. Don't default to the simplest/cleanest illustrative value
+    for this class of assertion - it often can't distinguish "correctly disabled" from "still
+    silently active":
+
+    ❌ Proving a "Numerics only" comparison-part is now ignored, using an existing/incoming value
+       that's already all-numeric - filtering an all-numeric string is a no-op either way, so the
+       test passes whether the bug is fixed or not.
+    ✅ Use a value with at least one non-numeric character in the position that would matter, so
+       the disabled filter, if still active, would produce a different (mismatching) result than
+       expected.
+
+    Applies to any "X no longer applies / is now a no-op / was removed" claim, not just
+    match-profile comparison parts.
+
 ---
 
 ## Output envelope — mandatory
