@@ -13,6 +13,7 @@ import org.folio.factory.core.agent.ArtifactContent;
 import org.folio.factory.cypressfactory.CypressFlowProperties;
 import org.folio.factory.cypressfactory.plan.DevTeamCatalog;
 import org.folio.factory.cypressfactory.plan.MarcFixtureBuilder;
+import org.folio.factory.cypressfactory.plan.TestPlanLint;
 import org.folio.factory.cypressfactory.plan.TestPlanParser;
 import org.folio.factory.cypressfactory.prefetch.AreaDetector;
 import org.folio.factory.cypressfactory.prefetch.ContextPrefetch;
@@ -72,6 +73,25 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
 
     /** Read in full per run. Triage is told to over-select; this is the hard ceiling. */
     private static final int MAX_COVERAGE_CANDIDATES = 15;
+    /**
+     * Per-linked-issue description budget in the generation prompt. Five issues at this size is
+     * ~0.6% of a generation prompt, so this is not a token-budget lever - it is there to keep a
+     * related ticket from crowding out the story itself. See next_steps for the per-issue-type
+     * allowance idea, which is the shape to reach for if evidence ever says this is too tight.
+     */
+    private static final int LINKED_ISSUE_DESC_CHARS = 1_000;
+
+    /**
+     * Appended to the format-correction retry feedback. Separate from the structural errors because
+     * it is about what must NOT change: the retry is handed the unparseable plan and asked to edit
+     * it, and without this it read a format complaint as licence to re-plan from scratch.
+     */
+    private static final String FORMAT_RETRY_PRESERVATION =
+            "\n**This is a format fix, not a re-plan.** Keep every case, in the same order, with "
+            + "the same steps, and reproduce `# Analysis` in full - including the `## Scenarios` "
+            + "numbered list and the `## Coverage matrix` table, which are mandatory on every "
+            + "attempt. Do not drop, merge or re-derive cases, and do not rewrite the matrix to "
+            + "agree with a shorter list.\n";
 
     /**
      * The reviewer answers in two lines but reasons over every case first, and on a reasoning
@@ -102,6 +122,9 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
             Pattern.compile("(?mi)^##+[ ]*Coverage matrix[ ]*$");
     private static final Pattern SCENARIO_ITEM =
             Pattern.compile("(?m)^[ \\t]*(\\d{1,2})[.)][ ]+\\S");
+    /** A case block heading, counted to detect a retry that silently returned fewer cases. */
+    private static final Pattern CASE_HEADING = Pattern.compile("(?mi)^##+[ ]*TC\\d+");
+
     /** An `## Xxx` heading with nothing but blank lines or a stray `---` under it. */
     private static final Pattern EMPTY_HEADING = Pattern.compile(
             "(?m)^##+[ ][^\\n]+\\R(?:[ \\t]*\\R)*(?:-{3,}[ \\t]*\\R(?:[ \\t]*\\R)*)?(?=##|#[ ]|\\z)");
@@ -125,6 +148,14 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
     /** A `---` fence pair left empty once its fields were stripped. */
     private static final Pattern EMPTY_FENCE =
             Pattern.compile("(?m)^---[ \\t]*\\R(?:[ \\t]*\\R)*^---[ \\t]*\\R");
+    /**
+     * The same thing with a backtick code fence. Delta 4 forbids wrapping the promoted fields in
+     * "`---` separators or any other fence", and a real run used backticks - which left an empty
+     * ``` pair behind that also blocked {@link #EMPTY_HEADING} from clearing the heading above it,
+     * because that pattern needs the next heading to follow directly.
+     */
+    private static final Pattern EMPTY_CODE_FENCE =
+            Pattern.compile("(?m)^```[a-zA-Z0-9]*[ \\t]*\\R(?:[ \\t]*\\R)*^```[ \\t]*\\R");
     private static final Pattern BLANK_RUN = Pattern.compile("(?:[ \\t]*\\R){3,}");
 
     private static final Pattern ANALYSIS_SECTION =
@@ -148,7 +179,6 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
     private final String model;
     private final String jiraBaseUrl;
     private final int maxReviewIterations;
-    private final boolean reviewDoubleCheck;
 
     public TestCaseGenAgentWorker(ChatClient chatClient, JiraConnector jira, TestRailConnector testRail,
                                   SkillWorkspaceService skills, AreaDetector areaDetector,
@@ -174,7 +204,6 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
         this.model = model == null ? "" : model;
         this.jiraBaseUrl = jiraBaseUrl == null ? "" : jiraBaseUrl.strip();
         this.maxReviewIterations = properties.maxReviewIterations();
-        this.reviewDoubleCheck = Boolean.TRUE.equals(properties.reviewDoubleCheck());
     }
 
     @Override
@@ -238,7 +267,8 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
         JsonNode trigger = context.triggerPayload();
         String issueKey = requireIssueKey(trigger);
         JiraIssue issue = fetchIssue(issueKey, trigger);
-        List<JiraIssue> linked = mergeUrlReferencedIssues(issue, fetchLinkedIssues(issueKey));
+        List<JiraIssue> linked = withoutExcludedProjects(
+                mergeUrlReferencedIssues(issue, fetchLinkedIssues(issueKey)));
 
         // SKILL.md is the whole methodology - refuse to generate without it.
         String skill = skills.requireSkill();
@@ -249,7 +279,7 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
         log.info("[{}] Area(s) {} · {}", ID, areas, route.why());
 
         // ── B · Prefetch ─────────────────────────────────────────────────────
-        ContextPrefetch.ContextBundle ctx = contextPrefetch.load(areas, issue);
+        ContextPrefetch.ContextBundle ctx = contextPrefetch.load(areas, issue, linked);
         ExamplesPrefetch.Examples examples = examplesPrefetch.load();
         FragmentPrefetch.Fragments fragments = fragmentPrefetch.scan(areas, issue.summary());
         CoveragePrefetch.Coverage coverage = coveragePrefetch.load(areas);
@@ -277,6 +307,7 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
         vars.put("review_feedback", "");
 
         // ── C/D/E · Generate, validate, review ───────────────────────────────
+        List<String> retryNotes = new ArrayList<>();
         String plan;
         List<TestPlanParser.ParsedCase> cases;
         ReviewFeedback feedback;
@@ -284,7 +315,7 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
 
         if (maxReviewIterations == 0) {
             log.info("[{}] Generating test cases (agent review disabled)", ID);
-            plan = generateAndValidate(vars, totalUsage, dump, 1);
+            plan = generateAndValidate(vars, totalUsage, dump, 1, retryNotes);
             cases = parser.parse(plan);
             feedback = new ReviewFeedback(true, "",
                     "Agent review disabled (FACTORY_CYPRESS_MAX_REVIEW_ITERATIONS=0)");
@@ -292,18 +323,28 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
             do {
                 attempt++;
                 log.info("[{}] Generating test cases, attempt {}/{}", ID, attempt, maxReviewIterations);
-                plan = generateAndValidate(vars, totalUsage, dump, attempt);
+                plan = generateAndValidate(vars, totalUsage, dump, attempt, retryNotes);
                 cases = parser.parse(plan);
                 log.info("[{}] Generated {} test case(s), running quality review...", ID, cases.size());
 
                 feedback = reviewTestCases(forReview(parser.casesSection(plan)),
                         renderIssue(issue), attempt, dump);
                 totalUsage[0] = totalUsage[0].plus(drainUsage());
+                List<String> lintFindings = TestPlanLint.check(cases);
+                if (!lintFindings.isEmpty()) {
+                    log.warn("[{}] Deterministic lint found {} issue(s) on attempt {}/{}: {}",
+                            ID, lintFindings.size(), attempt, maxReviewIterations, lintFindings);
+                }
                 List<String> attachmentErrors = validateAttachments(cases);
                 if (!attachmentErrors.isEmpty()) {
                     log.warn("[{}] Attachment content failed deterministic validation on attempt {}/{}: {}",
                             ID, attempt, maxReviewIterations, attachmentErrors);
-                    feedback = mergeAttachmentErrors(feedback, attachmentErrors);
+                }
+                // Merged in one pass so the issues block never nests a second "Issues:" header.
+                List<String> deterministic = new ArrayList<>(lintFindings);
+                deterministic.addAll(attachmentErrors);
+                if (!deterministic.isEmpty()) {
+                    feedback = mergeDeterministicFindings(feedback, deterministic);
                 }
                 if (feedback.passed()) {
                     log.info("[{}] Quality review PASSED on attempt {}/{}", ID, attempt, maxReviewIterations);
@@ -354,7 +395,8 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
                 replaceReviewSection(plan, renderReviewSection(feedback, attempt)));
         List<String> notes = new ArrayList<>(testGroupNotes(cases));
         notes.addAll(coverageMatrixNotes(cleaned));
-        notes.addAll(ctx.truncationNotes());
+        notes.addAll(retryNotes);
+        notes.addAll(ctx.linkNotes());
         String body = appendFactoryNotes(cleaned, notes);
 
         Map<String, Object> metrics = !totalUsage[0].isEmpty()
@@ -376,6 +418,7 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
         String tail = cases < 0 ? "" : body.substring(cases);
         String stripped = PROMOTED_FIELD.matcher(head).replaceAll("");
         stripped = EMPTY_FENCE.matcher(stripped).replaceAll("");
+        stripped = EMPTY_CODE_FENCE.matcher(stripped).replaceAll("");
         // Removing the delta-4 lines can leave their heading behind with nothing under it
         // ("## Metadata fields" followed by a stray `---`), which ships to every reviewer.
         stripped = EMPTY_HEADING.matcher(stripped).replaceAll("");
@@ -445,10 +488,22 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
                 .filter(n -> !Pattern.compile("(?m)^[^\\S\\r\\n]*[|]?[^\\S\\r\\n]*" + n + "[.)]")
                         .matcher(matrixText).find())
                 .toList();
-        return unaccounted.isEmpty() ? List.of()
-                : List.of("Scenario(s) " + String.join(", ", unaccounted)
-                        + " are not in the coverage matrix - confirm they were merged, already "
-                        + "covered, or deliberately skipped.");
+        if (unaccounted.isEmpty()) {
+            return List.of();
+        }
+        // None of them matched, and the matrix has rows: it is keyed by something else (ACs, case
+        // ids) rather than by scenario number. Saying "N scenarios are not in the matrix" there
+        // reads as lost coverage and sends the gate reviewer hunting for a gap that isn't real -
+        // the honest report is that the cross-check could not run.
+        if (unaccounted.size() == numbers.size() && matrixText.contains("|")) {
+            return List.of("The `## Coverage matrix` is not keyed by scenario number, so per-scenario "
+                    + "coverage could not be verified automatically - each row should begin with the "
+                    + "scenario's number (`| 1. ... | TC001 |`). Check by hand that all "
+                    + numbers.size() + " scenarios are accounted for.");
+        }
+        return List.of("Scenario(s) " + String.join(", ", unaccounted)
+                + " are not in the coverage matrix - confirm they were merged, already "
+                + "covered, or deliberately skipped.");
     }
 
     private static int nextHeading(String body, int from) {
@@ -707,9 +762,19 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
     /**
      * Generates and parses with the same parser TestRail sync uses. One format-correction
      * retry, then the step fails — sync can never receive an unparseable plan.
+     *
+     * <p><b>The retry is an edit, not a re-roll.</b> It used to inherit {@code vars} unchanged, so
+     * {@code previous_plan_block} still held whatever the attempt started with - meaning on attempt
+     * 1 the model was never shown the plan it was meant to be correcting, and simply generated the
+     * whole document again from the original prompt. Observed on UIDATIMP-1781 (2026-10-02): the
+     * re-roll came back with one case fewer, no {@code ## Scenarios} section, and a coverage matrix
+     * rewritten to cite only the cases it had kept. Because the matrix agreed with the shortened
+     * case list, nothing downstream could detect the loss - a matrix-vs-cases cross-check would have
+     * passed it. Handing the failed plan back and asking for a format fix is the actual fix;
+     * {@link #checkForRetryRegression} is the backstop.</p>
      */
     private String generateAndValidate(Map<String, Object> vars, TokenUsage[] totalUsage,
-                                       PromptDump.Run dump, int attempt) {
+                                       PromptDump.Run dump, int attempt, List<String> notes) {
         dump.write("generate-attempt" + attempt, GEN_PROMPT_ID, vars);
         String plan = callForText(GEN_PROMPT_ID, vars);
         dump.writeResponse("generate-attempt" + attempt, plan);
@@ -720,12 +785,16 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
 
         log.warn("[{}] Generated plan failed structural validation ({}) - re-asking once",
                 ID, describe(problems));
+        String before = plan;
         Map<String, Object> retryVars = new HashMap<>(vars);
+        retryVars.put("previous_plan_block", buildUnparseableSection(plan));
         retryVars.put("review_feedback", vars.getOrDefault("review_feedback", "")
                 + "\n\n## Output format errors - fix before anything else\n\n"
-                + "Your previous response could not be parsed. Reproduce the case-block format "
-                + "EXACTLY as specified, under a `# Test Cases` heading:\n\n"
-                + describe(problems) + "\n");
+                + "Your previous response could not be parsed. It is reproduced below. "
+                + "**Edit it to fix the format errors listed here, and change nothing else.** "
+                + "Reproduce the case-block format EXACTLY as specified, under a "
+                + "`# Test Cases` heading:\n\n"
+                + describe(problems) + FORMAT_RETRY_PRESERVATION + "\n");
         String retryLabel = "generate-attempt" + attempt + "-retry";
         dump.write(retryLabel, GEN_PROMPT_ID, retryVars);
         plan = callForText(GEN_PROMPT_ID, retryVars);
@@ -737,7 +806,62 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
             throw new AgentExecutionException(ID + " produced an unparseable test plan twice: "
                     + describe(problems));
         }
+        checkForRetryRegression(before, plan, attempt, notes);
         return plan;
+    }
+
+    /**
+     * Reports a format-correction retry that came back smaller than what it was correcting.
+     *
+     * <p>A format fix cannot legitimately reduce the number of cases or drop the scenario
+     * enumeration, so either means the model re-rolled instead of editing. Both counts come off the
+     * raw text rather than the parse, because the pre-retry plan is by definition one the parser
+     * rejected - its parsed view is exactly the thing that is unreliable here.</p>
+     *
+     * <p>This only notes the regression at the gate; it does not fail the step or retry again. The
+     * plan in hand is structurally valid and a human is about to read it, so the useful move is to
+     * tell them what to look for rather than discard a usable plan over a heuristic.</p>
+     */
+    private static void checkForRetryRegression(String before, String after, int attempt,
+                                                List<String> notes) {
+        int casesBefore = countMatches(CASE_HEADING, before);
+        int casesAfter = countMatches(CASE_HEADING, after);
+        int scenariosBefore = countScenarios(before);
+        int scenariosAfter = countScenarios(after);
+        if (casesAfter >= casesBefore && scenariosAfter >= scenariosBefore) {
+            return;
+        }
+        String note = "The attempt " + attempt + " output-format retry returned a SMALLER plan than "
+                + "the one it was correcting (" + casesBefore + " -> " + casesAfter + " case(s), "
+                + scenariosBefore + " -> " + scenariosAfter + " enumerated scenario(s)). A format "
+                + "fix should not change coverage, so content was probably re-derived rather than "
+                + "edited - check whether a scenario was dropped before approving. The coverage "
+                + "matrix may have been rewritten to agree with the shorter list, so it will not "
+                + "reveal the gap on its own.";
+        log.warn("[{}] {}", ID, note);
+        notes.add(note);
+    }
+
+    /**
+     * Distinct numbered scenarios under `## Scenarios`, via the same tolerant heading match
+     * {@link #coverageMatrixNotes} uses - a plan that writes the label in bold still counts.
+     */
+    private static int countScenarios(String plan) {
+        Matcher heading = SCENARIOS_HEADING.matcher(plan);
+        if (!heading.find()) return 0;
+        int start = heading.end();
+        Matcher item = SCENARIO_ITEM.matcher(plan.substring(start, nextHeading(plan, start)));
+        Set<String> numbers = new LinkedHashSet<>();
+        while (item.find()) numbers.add(item.group(1));
+        return numbers.size();
+    }
+
+    private static int countMatches(Pattern pattern, String text) {
+        if (text == null || text.isBlank()) return 0;
+        Matcher m = pattern.matcher(text);
+        int n = 0;
+        while (m.find()) n++;
+        return n;
     }
 
     private static String describe(List<TestPlanParser.Problem> problems) {
@@ -763,38 +887,9 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
         return AUTOMATION_NOTES.matcher(stripped).replaceAll("");
     }
 
-    /**
-     * A PASS is the one verdict worth distrusting, since it's the moment a plan ships to the
-     * gate unexamined by a human - a FAIL just triggers the same regeneration loop either way,
-     * accurate or not. So when {@code reviewDoubleCheck} is on, a PASS gets one independent
-     * second opinion (fresh call, identical input) before being accepted; either call saying
-     * FAIL makes the whole thing a FAIL for this attempt, using the dissenting call's issues.
-     *
-     * <p>Cost-conscious by construction, not by a token/budget cap: the extra call only ever
-     * fires on a PASS, so a run that fails every attempt (exhausts {@code maxReviewIterations}
-     * without ever passing) pays nothing extra, and a run that passes on attempt N pays for
-     * exactly one extra call total - not one per attempt.</p>
-     */
     private ReviewFeedback reviewTestCases(String casesSection, String issue, int attempt,
                                            PromptDump.Run dump) {
-        ReviewFeedback primary = callReviewer(casesSection, issue, attempt, dump,
-                "review-attempt" + attempt);
-        if (!primary.passed() || !reviewDoubleCheck) {
-            return primary;
-        }
-        log.info("[{}] Attempt {}/{} passed - confirming with an independent second opinion",
-                ID, attempt, maxReviewIterations);
-        ReviewFeedback verification = callReviewer(casesSection, issue, attempt, dump,
-                "review-attempt" + attempt + "-verify");
-        if (!verification.passed()) {
-            log.info("[{}] Second opinion on attempt {}/{} disagreed - treating as FAIL",
-                    ID, attempt, maxReviewIterations);
-        }
-        return verification;
-    }
-
-    private ReviewFeedback callReviewer(String casesSection, String issue, int attempt,
-                                        PromptDump.Run dump, String label) {
+        String label = "review-attempt" + attempt;
         Map<String, Object> reviewVars = Map.of(
                 "test_cases", casesSection,
                 "issue", issue,
@@ -841,17 +936,25 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
         return errors;
     }
 
-    private static ReviewFeedback mergeAttachmentErrors(ReviewFeedback feedback, List<String> attachmentErrors) {
+    /**
+     * Folds deterministic findings (lint, MARC attachment validation) into the LLM's verdict. They
+     * lead the list because they are certain, and they force a FAIL regardless of what the reviewer
+     * said - a rule decided by an algorithm does not get a second opinion.
+     */
+    private static ReviewFeedback mergeDeterministicFindings(ReviewFeedback feedback,
+                                                            List<String> findings) {
         StringBuilder issues = new StringBuilder("Issues:\n");
-        for (String err : attachmentErrors) {
+        for (String err : findings) {
             issues.append("- ").append(err).append('\n');
         }
         if (!feedback.passed() && !feedback.issuesBlock().isBlank()) {
-            issues.append(feedback.issuesBlock()).append('\n');
+            // The reviewer's block starts at its own "Issues:" line (extractIssuesBlock keeps it),
+            // so drop that header rather than emitting a second one mid-list.
+            issues.append(feedback.issuesBlock().replaceFirst("(?s)^\\s*Issues:\\s*\\n?", ""))
+                    .append('\n');
         }
         return new ReviewFeedback(false, issues.toString().strip(),
-                feedback.fullText() + "\n\n[Attachment content also failed deterministic MARC validation - "
-                        + "see merged Issues above.]");
+                feedback.fullText() + "\n\n[Deterministic checks also failed - see merged Issues above.]");
     }
 
     private String buildFeedbackBlock(String issuesBlock, int attempt) {
@@ -885,6 +988,19 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
                 + "itself is subject to this rule too: it may only name the context/screen, not assert a "
                 + "second fact (e.g. \"page opens with an empty X field\" bundles two facts before the "
                 + "bullets even start) - pull any such fact out into its own bullet\n";
+    }
+
+    /**
+     * The review loop equivalent says "fix only the flagged steps"; this one cannot, because what
+     * failed is the structure of the document rather than any particular step. It states the scope
+     * the other way round instead: everything below is to be kept.
+     */
+    private static String buildUnparseableSection(String plan) {
+        return "\n## Previous version (could not be parsed) - fix its format, do not regenerate "
+                + "from scratch\n\n"
+                + "Every case, step and analysis section below is in scope to KEEP. Only the "
+                + "structural errors listed in the feedback above may change.\n\n"
+                + plan + "\n";
     }
 
     private String buildPreviousAttemptSection(String plan, int attempt) {
@@ -1119,6 +1235,40 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
                 + String.join(", ", labelTeams) + " - verify which is current before syncing.";
     }
 
+    /**
+     * Drops linked issues from projects the refs exclusion already names (default {@code FAT}).
+     *
+     * <p>Those projects track test-authoring and automation work rather than product behaviour -
+     * the same reason their keys must never reach a case's {@code Refs} - so their descriptions are
+     * process notes a generator cannot use. Applied once, at the source, so it holds for the router
+     * prompt, the generation prompt and the link scan alike.</p>
+     *
+     * <p>One thing this gives up, knowingly: such a ticket sometimes names the TestRail cases the
+     * team already wrote, which is genuinely useful for avoiding duplicate coverage. That is a
+     * redundant channel - {@link CoveragePrefetch} reads the real cases for the area directly - so
+     * the loss is a second-hand copy of something the pipeline already fetches first-hand.</p>
+     */
+    private List<JiraIssue> withoutExcludedProjects(List<JiraIssue> linked) {
+        Set<String> excluded = properties.refsExcludedProjects();
+        if (linked == null || linked.isEmpty() || excluded.isEmpty()) {
+            return linked == null ? List.of() : linked;
+        }
+        List<JiraIssue> kept = new ArrayList<>();
+        List<String> dropped = new ArrayList<>();
+        for (JiraIssue li : linked) {
+            if (li != null && excluded.contains(projectKey(nullSafe(li.key()).toUpperCase(Locale.ROOT)))) {
+                dropped.add(li.key());
+            } else if (li != null) {
+                kept.add(li);
+            }
+        }
+        if (!dropped.isEmpty()) {
+            log.info("[{}] Ignoring linked issue(s) {} - project(s) {} track test work, not product "
+                    + "behaviour", ID, dropped, excluded);
+        }
+        return kept;
+    }
+
     private static String renderLinkedIssues(List<JiraIssue> linked) {
         if (linked == null || linked.isEmpty()) return "_No linked issues._";
         StringBuilder sb = new StringBuilder();
@@ -1126,13 +1276,41 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
             sb.append("**").append(li.key()).append("** (").append(nullSafe(li.issueType()))
               .append("): ").append(nullSafe(li.summary())).append('\n');
             if (li.description() != null && !li.description().isBlank()) {
-                String desc = li.description();
-                if (desc.length() > 1000) desc = desc.substring(0, 1000) + "…";
-                sb.append("> ").append(desc.replace("\n", "\n> ")).append('\n');
+                sb.append("> ").append(clip(li.description(), LINKED_ISSUE_DESC_CHARS)
+                        .replace("\n", "\n> ")).append('\n');
             }
             sb.append('\n');
         }
         return sb.toString();
+    }
+
+    /**
+     * Truncates at the last paragraph or sentence break before the limit rather than mid-word, and
+     * says so explicitly.
+     *
+     * <p>Two reasons the marker spells out the mechanism. A bare {@code …} is ambiguous - the model
+     * cannot tell it from an ellipsis the ticket's author typed, and may read the gap as "nothing
+     * important followed" when the truth is "nobody looked". And both counts are given because the
+     * ratio changes how much the reading is worth: 1000 of 1100 characters is substantially the
+     * whole description, 1000 of 40000 is a sliver, and the model should weigh them differently.</p>
+     *
+     * <p>The marker trails rather than prefaces the text deliberately: it sits exactly where the
+     * information stops, instead of being announced far above and forgotten by the time the model
+     * reaches the cut.</p>
+     */
+    static String clip(String text, int limit) {
+        if (text == null || text.length() <= limit) return text == null ? "" : text;
+        String head = text.substring(0, limit);
+        int breakAt = Math.max(head.lastIndexOf("\n\n"), head.lastIndexOf(". "));
+        // Only honour a break that keeps most of the budget - otherwise a stray early "." would
+        // throw away far more than the mid-word cut it is meant to improve on.
+        String kept = breakAt > limit / 2
+                ? text.substring(0, breakAt + 1).stripTrailing()
+                : head;
+        return kept + "\n[TRUNCATED BY THE FACTORY: first " + kept.length() + " of " + text.length()
+                + " characters of this description. The rest was not read - it was cut to a length "
+                + "limit, NOT because it was judged irrelevant. Open the ticket if the missing part "
+                + "matters.]";
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────

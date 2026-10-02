@@ -79,7 +79,7 @@ class ContextPrefetchLoadTest {
 
     private ContextPrefetch prefetch() {
         CypressFlowProperties props = new CypressFlowProperties(
-                "", "main", "fake-org/fake-repo", null, null, null, null, 3, null, null);
+                "", "main", "fake-org/fake-repo", null, null, null, null, 3, null);
         return new ContextPrefetch(
                 new SkillWorkspaceService(new FakeGitHub(), props),
                 new FakeGitHub(), new UnconfiguredConnectors.Jira(),
@@ -102,12 +102,15 @@ class ContextPrefetchLoadTest {
 
     @Test
     void completeContextStillFetchesALinkedPage() throws IOException {
-        HttpServer s = startServer("<html><body><p>Search modes support boolean operators.</p></body></html>");
+        // Padded past the plausibility floor: a page that scrapes to a couple of sentences is
+        // treated as a client-rendered shell, not content (see ContextPrefetchLinkEnrichmentTest).
+        HttpServer s = startServer("<html><body><p>"
+                + "Search modes support boolean operators. ".repeat(20) + "</p></body></html>");
         String url = "http://localhost:" + s.getAddress().getPort() + "/docs";
         JiraIssue issue = new JiraIssue("UIEH-1566", "s",
                 "As per the table at " + url + " - apply these rules.", "Open", "Story", List.of(), null);
 
-        ContextPrefetch.ContextBundle bundle = prefetch().load(List.of(AREA), issue);
+        ContextPrefetch.ContextBundle bundle = prefetch().load(List.of(AREA), issue, List.of());
 
         assertThat(bundle.enriched()).isFalse(); // the context-file-quality signal must stay honest
         assertThat(bundle.text())
@@ -121,10 +124,10 @@ class ContextPrefetchLoadTest {
         JiraIssue issue = new JiraIssue("UIEH-1567", "s", "Plain story, no links here.",
                 "Open", "Story", List.of(), null);
 
-        ContextPrefetch.ContextBundle bundle = prefetch().load(List.of(AREA), issue);
+        ContextPrefetch.ContextBundle bundle = prefetch().load(List.of(AREA), issue, List.of());
 
         assertThat(bundle.text()).doesNotContain("### Linked Pages (public)");
-        assertThat(bundle.truncationNotes()).isEmpty();
+        assertThat(bundle.linkNotes()).isEmpty();
     }
 
     @Test
@@ -134,8 +137,8 @@ class ContextPrefetchLoadTest {
         JiraIssue issue = new JiraIssue("UIEH-1568", "s", "See " + url + " for the full rules.",
                 "Open", "Story", List.of(), null);
 
-        ContextPrefetch.ContextBundle bundle = prefetch().load(List.of(AREA), issue);
+        ContextPrefetch.ContextBundle bundle = prefetch().load(List.of(AREA), issue, List.of());
 
-        assertThat(bundle.truncationNotes()).singleElement().asString().contains(url);
+        assertThat(bundle.linkNotes()).singleElement().asString().contains(url);
     }
 }

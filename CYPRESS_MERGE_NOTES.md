@@ -199,6 +199,19 @@ opt-out on the gate rather than re-introducing a flow-id check.
 
 ---
 
+## 2b. BEHAVIOUR CHANGE — two shared LLM defaults moved
+
+Found by sweeping `factory-app/src/main` against the merge base (the check promised when this
+doc was first written). The console itself came out clean — **nothing under
+`factory-app/src/main` names the cypress flow**, so the gate, the retry service and the review
+page stayed flow-agnostic. Two defaults in `application.yaml` did change for everyone, though,
+and neither is additive:
+
+| Change | What it means for your flow |
+|---|---|
+| Anthropic default model `claude-sonnet-4-5` → `claude-sonnet-4-6` | Any flow that does not set `FACTORY_LLM_MODEL` now runs on a different model. Test Factory included. Pin `FACTORY_LLM_MODEL=claude-sonnet-4-5` if you want the old behaviour while you re-baseline. |
+| New `spring.ai.model.timeout: ${FACTORY_LLM_TIMEOUT:300s}` | Previously unset, so Spring AI's own default applied. A long generation that used to time out may now run to completion instead — which is the point, but it changes the failure mode of a wedged call from "fails fast" to "fails in 5 minutes". |
+
 ## 3. Additive — no action needed
 
 | Change | Why it is safe |
@@ -219,6 +232,8 @@ opt-out on the gate rather than re-introducing a flow-id check.
 | `JiraConnector.getLinkedIssues`, `GitHubConnector.listDirectory` | **Not additive if you wrote your own connector** — these are abstract, not `default`. Implemented by the shipped REST and `UnconfiguredConnectors` beans, so stock users are unaffected. See §1d. |
 | `ExecutionEngine` retry log now passes the exception | Stack traces appear on step-retry warnings. No control-flow change. |
 | `DebugPartialRunController` | `@ConditionalOnProperty(factory.debug.enabled)` — the bean does not exist unless you set it. |
+| `review_instructions` now render through `UiFormat.instructionBlocks()` | Gate instructions were previously emitted as one block of text; they are now split into paragraphs and bullet lists. **Every flow's gate page is affected, including Test Factory's** — it is a rendering change only, no descriptor change, and plain prose still renders as one paragraph. Worth a glance at your gate after merging if your instructions lean on manual line breaks. |
+| Gate footer lists `reference_prompts` | Shown only when a gate declares them, so a descriptor that does not is unchanged. Its purpose is to tell a reviewer which automated checks already ran and where to edit them — see §1b. |
 
 ### One trap worth knowing about `optional_inputs`
 

@@ -248,6 +248,7 @@ The gate is a plain server-rendered review page, but three details are load-bear
 - **A decision legend** spells out what Approve / Amend / Reject / Reject-and-Re-generate each
   do, with the destructive Reject last.
 
+Findings at the gate come from two sources merged into one list: the reviewer agent applying its prompt, and `TestPlanLint`. The reviewer prompt is linked from the gate footer and lists the code-checked rules by number, naming `TestPlanLint` as the place to change them — without that, a reviewer reading a `[R4]` finding would click through and find no R4 anywhere.
 
 ## 4. Asset availability and degradation
 
@@ -331,7 +332,8 @@ currently **18,577 bytes** against **27,467** live — already ~33% behind, sile
 | **`TestCaseGenAgentWorker`** | **Yes** | Fetches the Jira issue, runs the router call, assembles the mega-prompt, one call → markdown plan, then the reviewer loop. |
 | ↳ router call | Yes | SKILL.md step 1 judgment: which area(s). ~5k in / ~200 out. `refs` (step 3) is decided per case by the generation call itself, not here — see §6.3. |
 | ↳ reviewer loop | Yes | Existing pattern, same worker, `maxReviewIterations` (default 3, 0 = off). |
-| ↳ `TestPlanValidator` | No | Parses the agent's own output before returning. One format-correction retry, then fail the step. |
+| ↳ `TestPlanValidator` | No | Parses the agent's own output before returning. One format-correction retry (an edit of the failed plan, not a regeneration), then fail the step. |
+| ↳ `TestPlanLint` | No | Deterministic checks for the reviewer rules that are mechanically decidable — R3, R4, R5, R6, R9, R17, plus whether a case's preconditions survived parsing. Findings merge into the LLM reviewer's list and share its retry budget. |
 | ↳ `MarcFixtureBuilder` | No | Merges a case's MARC breaker-text against the golden reference record for its kind. Called here (review loop) purely to surface structural errors as feedback; called again by `TestRailSyncAgentWorker` post-gate for the bytes actually uploaded. See §6.5. |
 | Gate 1 | HITL | Human. |
 | `TestRailSyncAgentWorker` | No | Parses the `# Test Cases` slice and pushes each case to TestRail with the frontmatter metadata; writes real case ids back into the plan. |
@@ -633,7 +635,7 @@ produce no artifacts.
 | Service | Entry point |
 |---|---|
 | `AreaDetector` | `resolve(List<String> routerAreas, JsonNode issue) → List<String>`<br>`areaTable() → String` (the 29-row table for the router prompt) |
-| `ContextPrefetch` | `load(List<String> areas, JsonNode issue) → ContextBundle(text, enriched, enrichmentNote)` |
+| `ContextPrefetch` | `load(List<String> areas, JiraIssue issue, List<JiraIssue> linkedIssues) → ContextBundle(text, sourceNote, missingAreas, enriched, qualityNote, linkNotes)` |
 | `FragmentPrefetch` | `scan(List<String> areas, String summary) → String` |
 | `CoveragePrefetch` | `load(List<String> areas) → Coverage(index, cases, sections)`<br>`Coverage.select(List<Long>, int cap)`, `Coverage.renderCandidates(List<Long>)` |
 | `ExamplesPrefetch` | `load() → String` |
@@ -649,9 +651,26 @@ Notes:
 - Cap at 2 areas (SKILL.md: "A story can span two areas — read both context files"). The router
   is instructed to return at most 2; `resolve()` truncates if it returns more.
 - `ContextPrefetch` owns `isThinContext`, `isDraftContext`, `countKeyBusinessRules`,
-  `countToastsInUiTexts`, `countKnownGaps`, `enrichGitHub`, `enrichJira`, `fetchPermissions`,
+  `countToastsInUiTexts`, `countKnownGaps`, `enrichGitHub`, `fetchPermissions`,
   `fetchTranslations` and `AREA_GITHUB_REPOS`. It reads the context file through
   `SkillWorkspaceService.read("references/context/" + area + ".md")`.
+- **Linked-page resolution** is a chain, most authoritative source first, because scraping
+  rendered HTML is the worst representation of most documentation: `readConfluencePage`
+  (REST, works anonymously on a public space) → `readStorybookStory` (`index.json` → repo
+  readme) → `readMarkdownVariant` (`<url>.md`, content-type guarded, since a SPA answers 200
+  with its shell for any path) → `scrapeHtmlPage`. A plausibility floor
+  (`MIN_PLAUSIBLE_PAGE_CHARS`) stops a JS shell's leftover chrome being accepted as content.
+  Three Confluence URL forms resolve to the same REST call: `/wiki/spaces/<KEY>/pages/<id>`,
+  the legacy `/wiki/pages/viewpage.action?pageId=<id>`, and the tiny `/wiki/x/<hash>` — whose
+  hash *is* the page id, base64url of its little-endian bytes, so it needs no extra request.
+  (Following the tiny link's redirect does not work: it lands on `tinyurl.action`, which answers
+  202 with an AWS WAF bot challenge.)
+- **Budgets**: `MAX_LINK_PAGES` (3) caps pages *accepted into the prompt*, `MAX_LINK_ATTEMPTS`
+  (8) caps distinct URLs tried; a failed read costs an attempt, not a page slot. Candidates are
+  ordered story-links-first, and known-resolver URLs first within each group, so a ticket citing
+  junk ahead of its spec cannot starve the spec. Every link that is truncated, unreadable or cut
+  off by a budget is reported at the gate through `linkNotes` — budget skips share one grouped
+  note.
 - `AREA_KEYWORDS` area names must match the 29 context filenames exactly
   (`agreements`, `bulk-edit`, `check-in`, …). Log a startup WARN for any area name with no
   matching file, and for any context file with no area entry (drift check against MQA's table).
@@ -692,9 +711,19 @@ TestCaseGenAgentWorker(ChatClient chatClient,
 4. **Generate** — `callForText(GEN_PROMPT_ID, vars)`. Free-form markdown; not
    `callForEntity`, and no structured-output schema.
 5. **Validate** — `parser.parse(planMarkdown)`. On failure, one retry with a format-correction
-   message appended; on second failure throw `AgentExecutionException`.
-6. **Review loop** — unchanged shape. Reviewer receives the `# Test Cases` slice. On FAIL,
-   append feedback + the previous plan to `vars` and regenerate (re-validating each time).
+   message appended; on second failure throw `AgentExecutionException`. **The retry is an edit,
+   not a re-roll**: it carries the unparseable plan back in `previous_plan_block` and is told a
+   format fix may not drop cases or re-derive `# Analysis`. Without that it regenerated the whole
+   document from the original prompt — observed losing a case *and* the `## Scenarios` section
+   while rewriting the coverage matrix to agree with the shorter list (so no matrix-vs-cases
+   cross-check could have caught it), and once returning a 1-character response that killed a
+   12-case plan. `checkForRetryRegression` compares case and scenario counts across the retry off
+   the raw text and reports a shrink at the gate rather than failing a structurally valid plan.
+6. **Review loop** — reviewer receives the `# Test Cases` slice. On FAIL, append feedback + the
+   previous plan to `vars` and regenerate (re-validating each time). Two deterministic checks run
+   beside it and merge into the **same** findings list and retry budget: `MarcFixtureBuilder` for
+   attachment bytes, and `TestPlanLint` for the checklist rules that are mechanically decidable
+   — so a lint finding overrides a reviewer PASS.
 7. **Assemble** — worker writes frontmatter per Part I §6.3 G4, validates `testrail_section` via
    `testRail.resolveSectionByPath()`, appends the `# Review` section, returns
    `AgentResult` with `test_plan.md` + accumulated token metrics (`drainUsage()` / `accumulate`
@@ -917,6 +946,7 @@ as the GitHub fallback.
 
 | Class | Covers |
 |---|---|
+| `TestPlanLintTest` | Each mechanically-decidable rule, every violation paired with the shape the prompt explicitly allows — a false positive here costs a whole regeneration, so the carve-outs are pinned as hard as the catches (fenced blocks and inline code spans for R4, `from X to Y` for R3, `Automation notes` being structurally unreachable for R5) |
 | `AreaDetectorTest` | `resolve()` maps router names to real files (case/hyphen tolerant); drops unknown names; falls back to keyword scoring on empty/failed router output; story text beats Jira prefix; two-area spanning; truncates >2 |
 | `TestCaseGenAgentWorkerTest` (router group) | 2-line `AREAS`/`WHY` block parsed correctly (no `REFS:` — area detection only); garbage output → keyword fallback, run continues; LLM exception → keyword fallback, run continues |
 | `TestCaseGenAgentWorkerTest` (`buildRefs`/`unionRefs` group) | issue key always first and always present for any case — when a case's own refs omit it, list unrelated keys only, list malformed junk (`"the story"`, `"ERM"`, `"123"`), list duplicates in mixed case, or are empty; non-Jira-key values dropped; excluded-project keys dropped and reported separately; `unionRefs` dedupes across multiple cases into the plan-level frontmatter value |
@@ -1276,7 +1306,6 @@ Part III additionally reuses `ScriptBundleCodec` (`factory-agents`) and TAF's `C
 | `FACTORY_CYPRESS_TESTRAIL_LABEL` | Label title applied to every created case (default: `cypressFlow-delete`); resolved to a label ID at runtime via `getOrCreateLabel` |
 | `FACTORY_CYPRESS_MAX_REVIEW_ITERATIONS` | Max agent review iterations inside `TestCaseGenAgentWorker` per run (default `3`). Set to `0` to skip automated review entirely. |
 | `FACTORY_CYPRESS_REFS_EXCLUDED_PROJECTS` | Comma-separated Jira project keys never added to any case's `refs` (default `FAT`). The originating ticket is always kept even if its own project is excluded. Enforced twice: the generation prompt is told upfront not to cite these projects (Provenance block), and `buildRefs()` drops them again, silently, at Assemble/sync time as a backstop — unlike the old router-time design, a drop here is not echoed back into `# Analysis`, since generation has already finished by the time sync applies it. |
-| `FACTORY_CYPRESS_REVIEW_DOUBLE_CHECK` | Re-checks a PASS verdict with one independent second reviewer call before the plan ships; a FAIL from either counts as FAIL for that attempt (default `true`). Only runs on the attempt that would otherwise be accepted, not on every attempt, so the extra cost is ~1 reviewer call per successful run, not one per retry. Set `false` to disable. |
 | `FACTORY_CONNECTORS_TESTRAIL_BASE_URL` | TestRail instance base URL |
 | `FACTORY_CONNECTORS_TESTRAIL_USERNAME` | TestRail username (email) |
 | `FACTORY_CONNECTORS_TESTRAIL_API_KEY` | TestRail API key |

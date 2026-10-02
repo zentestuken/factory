@@ -8,6 +8,30 @@ improve, or generate any test cases — only inspect and report.
 
 Check every case and every step against all rules below. Be mechanical: look for the exact patterns.
 
+Some rules that used to be here are now checked deterministically in code before you ever see
+the cases, so they are gone from this list. Their findings are merged with yours automatically, so
+whoever reviews at the HITL gate sees one list. **Do not report them.** Rule numbers are kept
+stable, so the gaps below are expected:
+
+- **R4** - two or more `Field = value` pairs joined inline in one expected result.
+- **R5** - automation framework syntax (`cy.`, `.should(`, `data-testid=`) in a step.
+- **R6** - actor prefixes at the start of an action ("User clicks", "The user", "Tester").
+- **R7** - an empty or placeholder expected result. Enforced harder than review: the plan is
+  re-asked for once and the step fails outright if it persists, so it cannot reach you at all.
+- **R9** - a step citing `Preconditions #N` when the preconditions are a `- ` bulleted list.
+- Not a numbered rule: whether a case's preconditions survived parsing at all.
+
+R17 is the one rule checked in BOTH places on purpose: its verb list is open-ended, so the code
+catches the shapes that recur and you are still expected to flag a chain built from a verb the code
+does not know. Report R17 normally.
+
+All of these except R7 live in
+`factory-flow-cypress/src/main/java/org/folio/factory/cypressfactory/plan/TestPlanLint.java`
+(R7 is in `TestPlanParser.validate`). That is where to change them - editing this prompt will not
+affect them. They moved there because they are mechanically decidable, and one pass applying ~18
+rules to every step of every case was missing them inconsistently across attempts on text that
+had not changed.
+
 ### R1 — Vague expected results
 Flag expected results that are vacuously true — ones that could pass even if the tested feature
 were completely non-functional.
@@ -61,66 +85,13 @@ is stated concretely, it is not a relative assertion.
 
 Flag with: case ID, step number, offending phrase.
 
-### R4 — Inline field lists (HARD RULE)
-Any expected result listing 2+ distinct `Field = value` pairs must use a lead-in line + bullet list.
-Joining them inline — with semicolons, "and", commas, or any other connector — is unconditionally forbidden.
-
-Detect: expected result contains two or more occurrences of ` = ` and no bullet list (`- ` lines).
-The separator is irrelevant: semicolons, "and", commas, or bare prose all trigger the rule equally.
-Quoting or backticking the field names and values does not exempt them - count the ` = ` signs.
-
-Violation: `the "008" row shows "Source" = `\ - National bibliographic agency` and "Roman" = `| - No attempt to code``
-
-Flag with: case ID, step number.
-
-### R5 — Automation framework code in steps
-
-**Scope: `**Action:**` and `**Expected:**` text only.** Those are executed by a person in a
-browser, so no test framework syntax may appear in them.
-
-Banned tokens there: `cy.`, `cy.get(`, `cy.intercept`, `cy.wait`, `cy.visit`, `.should(`,
-`@alias`, `data-testid=`, `.find(`, `.click()`, `expect(`, `describe(`, `it(`, `beforeEach(`.
-
-**NEVER flag the `**Automation notes:**` line.** It is a factory field addressed to an automation
-engineer, not to the executor, and it exists precisely to name real helpers from the fragment
-library. File names (`marcAuthority.js`), interactor calls (`Select('Source')`,
-`Select(or('Roman', 'Roman*'))`), method names (`edit()`, `verifyAfterSaveAndClose()`) and
-property names (`checkedOptionText`) are all **required** content there. Reporting them is a
-false positive that costs a whole regeneration.
-
-The same applies to the `Automatable` attribute line.
-
-Flag with: case ID, step number, exact offending token.
-
-### R6 — Actor prefix in steps
-Step actions must use imperative style with no actor prefix.
-
-Banned at start of action: `User clicks`, `User navigates`, `User selects`, `User opens`,
-`User enters`, `User fills`, `The user`, `QA engineer`, `Tester`.
-
-Flag with: case ID, step number.
-
-### R7 — Empty or placeholder expected results
-Every step must have a non-empty expected result.
-
-Banned values: empty string, `N/A`, `n/a`, `-`, `—`, `TBD`, `TODO`, `(none)`, `(see above)`.
-
-Flag with: case ID, step number.
-
-### R9 — Broken precondition references
-Every `Preconditions #N` reference in a step must resolve to an actual numbered precondition in
-that case. Count the numbered precondition items (1., 2., 3., ...). If a step references
-`Preconditions #N` and N exceeds the count → flag.
-
-Flag with: case ID, broken reference, actual precondition count.
-
 ### R11 — Inline enumeration of 3+ named items
 Any expected result listing 3 or more distinct named items (column names, menu options,
 accordion names, field names, or any enumerated set) must use a lead-in line + bullet list.
 Listing them as a comma- or semicolon-separated prose sentence is unconditionally banned.
 
-This rule does NOT overlap with R4: R4 catches `Field = value` pairs; R11 catches plain
-named-item lists that have no `=` signs (e.g. column names, option labels).
+R11 is only about plain named-item lists with no `=` signs (column names, option labels).
+Inline `Field = value` pairs are a separate rule checked in code, so do not report those.
 
 Detect: expected result contains 3 or more comma- or semicolon-separated capitalized nouns
 or noun phrases in a single sentence with no bullet structure (`- ` lines).
@@ -204,7 +175,7 @@ Expected:
 - "008" row shows "Roman" = <value>
 ```
 
-This is broader than R4 (which needs `= ` pairs) and R11 (which needs 3+ named items of one
+This is broader than the code-checked `Field = value` rule and than R11 (which needs 3+ named items of one
 kind). Report the most specific rule that applies; do not report the same text under two rules.
 
 **The "already has bullets" exemption applies per bullet, not per step.** An expected result
@@ -309,7 +280,7 @@ Flag with: case ID, step number, the redundant phrase.
 
 ### R17 - Action steps bundling 3+ actions with no separators
 
-Step **action** text (not expected results - see R4/R11/R14 for those) that chains 3 or more
+Step **action** text (not expected results - see R11/R14 for those) that chains 3 or more
 imperative actions in one run-on sentence, joined by commas/"and" with no structure, must be
 split into either separate numbered steps or `->`/bullet-separated sub-actions within the step.
 

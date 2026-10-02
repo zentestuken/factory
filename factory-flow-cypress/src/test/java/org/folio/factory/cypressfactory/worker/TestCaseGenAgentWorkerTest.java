@@ -85,6 +85,59 @@ class TestCaseGenAgentWorkerTest {
             # Review
             """;
 
+    /**
+     * Two cases and a scenario enumeration, but TC002 step 1 has an empty expected result, so the
+     * parser rejects it. Deliberately RICHER than {@link #PLAN}: it is what a format-correction
+     * retry is given, so a retry that answers with PLAN has lost a case and the whole
+     * `## Scenarios` list.
+     */
+    private static final String PLAN_MALFORMED_BUT_RICHER = """
+            # Analysis
+
+            ## Scenarios
+            1. Browse by personal name.
+            2. Browse by corporate name.
+
+            ## Coverage matrix
+            | Scenario | Outcome |
+            |---|---|
+            | 1. Personal name | TC001 |
+            | 2. Corporate name | TC002 |
+
+            team: Spitfire
+            ecs_story: non-ecs
+
+            # Test Cases
+
+            ## TC001: Browse authority records by personal name
+            - **Test Group:** critical
+            - **User Journey:** No
+            - **Automatable:** Yes
+            - **ECS:** No
+
+            **Preconditions**
+            - User is logged in as admin
+
+            **Steps**
+            1. **Action:** Navigate to MARC authority
+               **Expected:** Browse pane is displayed with the "Search" tab active
+
+            ## TC002: Browse authority records by corporate name
+            - **Test Group:** critical
+            - **User Journey:** No
+            - **Automatable:** Yes
+            - **ECS:** No
+
+            **Preconditions**
+            - User is logged in as admin
+
+            **Steps**
+            1. **Action:** Select the "Corporate name" browse option
+               **Expected:**
+
+            # Review
+            """;
+
     /** No `# Test Cases` heading and no case blocks — must fail structural validation. */
     private static final String PLAN_MALFORMED = """
             # Analysis
@@ -166,13 +219,19 @@ class TestCaseGenAgentWorkerTest {
 
     private static class FakeJira implements JiraConnector {
         private final JiraIssue issue;
+        private final List<JiraIssue> linked;
 
         FakeJira() { this(ISSUE); }
 
-        FakeJira(JiraIssue issue) { this.issue = issue; }
+        FakeJira(JiraIssue issue) { this(issue, List.of()); }
+
+        FakeJira(JiraIssue issue, List<JiraIssue> linked) {
+            this.issue = issue;
+            this.linked = linked;
+        }
 
         @Override public JiraIssue getIssue(String issueKey) { return issue; }
-        @Override public List<JiraIssue> getLinkedIssues(String issueKey) { return List.of(); }
+        @Override public List<JiraIssue> getLinkedIssues(String issueKey) { return linked; }
         @Override public void addComment(String issueKey, String body) { }
         @Override public void transitionIssue(String issueKey, String transitionName) { }
     }
@@ -183,14 +242,8 @@ class TestCaseGenAgentWorkerTest {
     }
 
     private CypressFlowProperties properties(int maxReviewIterations) {
-        return properties(maxReviewIterations, false);
-    }
-
-    /** {@code reviewDoubleCheck} defaults to true in production; false here so the many
-     * tests that enqueue exactly one reviewer response per attempt don't all need a second. */
-    private CypressFlowProperties properties(int maxReviewIterations, boolean reviewDoubleCheck) {
         return new CypressFlowProperties("", "main", "", null, null, null, null,
-                maxReviewIterations, null, reviewDoubleCheck);
+                maxReviewIterations, null);
     }
 
     private TestCaseGenAgentWorker worker(StubChatModel model) {
@@ -200,22 +253,6 @@ class TestCaseGenAgentWorkerTest {
     private TestCaseGenAgentWorker worker(StubChatModel model, String llmModel) {
         return worker(model, 3, new UnconfiguredConnectors.TestRail(),
                 new PromptDump(false, Path.of("target", "unused-prompt-dump")), llmModel);
-    }
-
-    private TestCaseGenAgentWorker worker(StubChatModel model, boolean reviewDoubleCheck) {
-        CypressFlowProperties props = properties(3, reviewDoubleCheck);
-        SkillWorkspaceService skills = skills();
-        TestRailConnector testRail = new UnconfiguredConnectors.TestRail();
-        return new TestCaseGenAgentWorker(
-                ChatClient.create(model), new FakeJira(), testRail, skills,
-                new AreaDetector(),
-                new ContextPrefetch(skills, new UnconfiguredConnectors.GitHub(), new FakeJira(),
-                        jsonMapper, props, ""),
-                new FragmentPrefetch(new TafSyncService(), new UnconfiguredConnectors.GitHub()),
-                new CoveragePrefetch(testRail, props),
-                new ExamplesPrefetch(skills),
-                codec, new TestPlanParser(), new DevTeamCatalog(),
-                new PromptDump(false, Path.of("target", "unused-prompt-dump")), props, MODEL, "");
     }
 
     private TestCaseGenAgentWorker worker(StubChatModel model, int maxReviewIterations,
@@ -351,6 +388,40 @@ class TestCaseGenAgentWorkerTest {
         String genPrompt = model.receivedPrompts().get(1).getContents();
         assertThat(genPrompt).contains("Mandatory Workflow");
         assertThat(genPrompt).contains("FACTORY DELTAS");
+    }
+
+    @Test
+    void anEmptyExpectedResultNeverReachesTheReviewer() {
+        // Why R7 was removed from the reviewer prompt: the parser catches it, re-asks once, and
+        // throws if it is still there - so a placeholder expected result cannot reach review. The
+        // reviewer slice here is asserted to be unreachable by making both attempts malformed.
+        StubChatModel model = new StubChatModel()
+                .enqueue(ROUTER_OK).enqueue(PLAN_PLACEHOLDER_EXPECTED).enqueue(PLAN_PLACEHOLDER_EXPECTED);
+
+        assertThatThrownBy(() -> worker(model).execute(freshContext()))
+                .isInstanceOf(AgentExecutionException.class)
+                .hasMessageContaining("unparseable test plan twice")
+                .hasMessageContaining("placeholder expected result");
+
+        // Router + two generation calls, and crucially no reviewer call at all.
+        assertThat(model.receivedPrompts()).hasSize(3);
+    }
+
+    @Test
+    void theGoldenExamplesCarveOutWarnsAgainstCopyingTheirSemicolonProse() {
+        // The examples are real TestRail cases and predate the bulleting rule: 31 of the 170
+        // "Expected" lines in the rendered prompt are semicolon-joined, none marked as bad. The
+        // carve-out is what stops the model copying the majority of its own prompt.
+        StubChatModel model = new StubChatModel()
+                .enqueue(ROUTER_OK).enqueue(PLAN).enqueue(REVIEW_PASS);
+
+        worker(model).execute(freshContext());
+
+        String genPrompt = model.receivedPrompts().get(1).getContents();
+        assertThat(genPrompt)
+                .contains("One thing in them is out of date")
+                .contains("no semicolons")
+                .contains("superseded");
     }
 
     @Test
@@ -666,57 +737,75 @@ class TestCaseGenAgentWorkerTest {
                 .contains("empty or placeholder expected result");
     }
 
-    // ── Review double-check ───────────────────────────────────────────────────
+    /** Same as PLAN, but TC001 step 2's expected result is the placeholder `N/A` (old R7). */
+    private static final String PLAN_PLACEHOLDER_EXPECTED = PLAN.replace(
+            "   **Expected:** Results list shows Status = \"Active\"", "   **Expected:** N/A");
+
+    /** Same as PLAN, but TC001 step 1 cites a precondition ordinal that cannot resolve (R9). */
+    private static final String PLAN_WITH_LINT_VIOLATION =
+            PLAN.replace("1. **Action:** Navigate to MARC authority",
+                    "1. **Action:** Open the record from Preconditions #2");
 
     @Test
-    void doubleCheckRunsASecondIndependentCallOnlyAfterAPass() {
+    void aDeterministicLintFindingOverridesAReviewerPassAndDrivesARegeneration() {
+        // The whole point of moving mechanical rules into code: the reviewer can say PASS and be
+        // wrong, and the plan still must not ship. Attempt 1's plan has an unresolvable
+        // "Preconditions #2"; the reviewer passes it, lint fails it, attempt 2 fixes it.
         StubChatModel model = new StubChatModel()
-                .enqueue(ROUTER_OK).enqueue(PLAN).enqueue(REVIEW_PASS).enqueue(REVIEW_PASS);
+                .enqueue(ROUTER_OK).enqueue(PLAN_WITH_LINT_VIOLATION).enqueue(REVIEW_PASS)
+                .enqueue(PLAN).enqueue(REVIEW_PASS);
 
-        AgentResult result = worker(model, true).execute(freshContext());
+        AgentResult result = worker(model).execute(freshContext());
 
-        assertThat(result.outputs()).containsKey("test_plan.md");
-        assertThat(model.receivedPrompts()).hasSize(4);
-        assertThat(result.outputs().get("test_plan.md")).contains("review_iterations: 1");
+        assertThat(result.outputs().get("test_plan.md")).contains("review_iterations: 2");
+        String regenerationPrompt = model.receivedPrompts().get(3).getContents();
+        assertThat(regenerationPrompt)
+                .contains("Quality gate feedback")
+                .contains("[R9]")
+                .contains("Preconditions #2");
     }
 
     @Test
-    void doubleCheckDoesNotRunWhenDisabled() {
+    void mergedFeedbackCarriesOneIssuesHeaderNotTwo() {
+        // Lint findings lead the list and the reviewer's own block is appended after them; that
+        // block starts at its own "Issues:" line, which must not survive into the middle of the list.
+        StubChatModel model = new StubChatModel()
+                .enqueue(ROUTER_OK).enqueue(PLAN_WITH_LINT_VIOLATION).enqueue(REVIEW_FAIL)
+                .enqueue(PLAN).enqueue(REVIEW_PASS);
+
+        worker(model).execute(freshContext());
+
+        String regenerationPrompt = model.receivedPrompts().get(3).getContents();
+        String feedbackBlock = regenerationPrompt.substring(
+                regenerationPrompt.indexOf("Quality gate feedback"));
+        assertThat(feedbackBlock.split("Issues:", -1)).hasSize(2); // exactly one occurrence
+        assertThat(feedbackBlock).contains("[R9]");   // lint finding survived
+        assertThat(feedbackBlock).contains("[R1]");   // reviewer's own issues survived too
+    }
+
+    @Test
+    void aCleanPlanIsNotHeldUpByTheLint() {
         StubChatModel model = new StubChatModel()
                 .enqueue(ROUTER_OK).enqueue(PLAN).enqueue(REVIEW_PASS);
 
-        worker(model, false).execute(freshContext());
+        AgentResult result = worker(model).execute(freshContext());
 
+        assertThat(result.outputs().get("test_plan.md")).contains("review_iterations: 1");
         assertThat(model.receivedPrompts()).hasSize(3);
     }
 
     @Test
-    void doubleCheckDoesNotRunOnAFail() {
-        // The verify call only ever fires on a PASS - a FAIL already triggers the same
-        // regeneration loop regardless of whether a second opinion would agree, so there is
-        // nothing for it to buy here. 5 prompts: router, gen1, review1(FAIL), gen2, review2(PASS).
+    void aPassIsAcceptedOnOneReviewerCallWithNoSecondOpinion() {
+        // The review double-check was removed 2026-09-30: it only ever guarded a PASS, while both
+        // observed reviewer misses were FAILs with an incomplete issue list, so it never caught
+        // one. Deterministic lint covers the mechanical rules instead, for free and every attempt.
         StubChatModel model = new StubChatModel()
-                .enqueue(ROUTER_OK).enqueue(PLAN).enqueue(REVIEW_FAIL)
-                .enqueue(PLAN).enqueue(REVIEW_PASS).enqueue(REVIEW_PASS);
+                .enqueue(ROUTER_OK).enqueue(PLAN).enqueue(REVIEW_PASS);
 
-        worker(model, true).execute(freshContext());
+        AgentResult result = worker(model).execute(freshContext());
 
-        assertThat(model.receivedPrompts()).hasSize(6);
-    }
-
-    @Test
-    void aSecondOpinionThatDisagreesFailsTheAttemptAndFeedsBackItsOwnIssues() {
-        // Attempt 1's primary call says PASS, but the second opinion disagrees - that attempt
-        // must count as FAILED, using the second opinion's issues, not the first call's silence.
-        StubChatModel model = new StubChatModel()
-                .enqueue(ROUTER_OK).enqueue(PLAN).enqueue(REVIEW_PASS).enqueue(REVIEW_FAIL)
-                .enqueue(PLAN).enqueue(REVIEW_PASS).enqueue(REVIEW_PASS);
-
-        AgentResult result = worker(model, true).execute(freshContext());
-
-        assertThat(result.outputs().get("test_plan.md")).contains("review_iterations: 2");
-        String secondAttemptPrompt = model.receivedPrompts().get(4).getContents();
-        assertThat(secondAttemptPrompt).contains("Quality gate feedback");
+        assertThat(model.receivedPrompts()).hasSize(3); // router, generate, review - nothing more
+        assertThat(result.outputs().get("test_plan.md")).contains("review_iterations: 1");
     }
 
     // ── Review loop ──────────────────────────────────────────────────────────
@@ -1425,6 +1514,37 @@ class TestCaseGenAgentWorkerTest {
     }
 
     @Test
+    void aMatrixKeyedByAcsInsteadOfScenarioNumbersSaysTheCheckCouldNotRun() {
+        // Observed on the 2026-09-30 UIEH-1566 run: the matrix was complete but keyed by AC, so
+        // every scenario looked "missing" and the gate reviewer was told 9 scenarios were
+        // unaccounted for. The honest report is that the cross-check couldn't run.
+        String matrix = "## Coverage matrix" + "\n" + "\n"
+                + "| Scenario / AC | Outcome |" + "\n"
+                + "| AC1 - defaults on create | TC001 |" + "\n"
+                + "| AC2 - values survive a save | TC001 |" + "\n"
+                + "| AC3 - changed default persists | TC002 |" + "\n" + "\n";
+
+        assertThat(TestCaseGenAgentWorker.coverageMatrixNotes(scenarioPlan(matrix)))
+                .singleElement().asString()
+                .contains("not keyed by scenario number")
+                .contains("all 3 scenarios")
+                .doesNotContain("are not in the coverage matrix");
+    }
+
+    @Test
+    void aPartiallyKeyedMatrixStillNamesTheMissingScenario() {
+        // Guard on the branch above: when SOME rows are scenario-keyed the matrix is being used as
+        // intended, so a genuine gap must still be named rather than excused as a keying problem.
+        String matrix = "## Coverage matrix" + "\n" + "\n"
+                + "| 1. Defaults | TC001 |" + "\n"
+                + "| AC2 - values survive a save | TC001 |" + "\n"
+                + "| 3. Changed | TC002 |" + "\n" + "\n";
+
+        assertThat(TestCaseGenAgentWorker.coverageMatrixNotes(scenarioPlan(matrix)))
+                .singleElement().asString().contains("Scenario(s) 2");
+    }
+
+    @Test
     void aMissingMatrixIsReportedWithTheScenarioCount() {
         assertThat(TestCaseGenAgentWorker.coverageMatrixNotes(scenarioPlan("")))
                 .singleElement().asString().contains("3 numbered scenario");
@@ -1457,6 +1577,115 @@ class TestCaseGenAgentWorkerTest {
 
         assertThat(out).doesNotContain("## Metadata fields").doesNotContain("team: Promin");
         assertThat(out).contains("# Test Cases").contains("## TC001: x");
+    }
+
+    @Test
+    void aBacktickFenceLeftEmptyByStrippingIsRemovedWithItsHeading() {
+        // The exact shape from the 2026-09-30 UIEH-1566 run: the model wrapped the promoted fields
+        // in a ``` fence rather than `---`, so the old `---`-only pattern left the empty pair behind
+        // - which in turn blocked the heading cleanup, because that needs the next heading to follow
+        // directly. Result was a stray "## Fields" + empty fence shipping to the gate.
+        String body = "# Analysis" + "\n" + "\n"
+                + "## Fields" + "\n" + "\n"
+                + "```" + "\n"
+                + "testrail_section: eHoldings > Titles" + "\n"
+                + "team: Promin" + "\n"
+                + "ecs_story: non-ecs" + "\n"
+                + "```" + "\n" + "\n"
+                + "## Notes" + "\n" + "\n"
+                + "Something real." + "\n" + "\n"
+                + "# Test Cases" + "\n" + "## TC001: x" + "\n";
+
+        String out = TestCaseGenAgentWorker.stripPromotedFields(body);
+
+        assertThat(out)
+                .doesNotContain("## Fields")
+                .doesNotContain("```")
+                .doesNotContain("team: Promin");
+        assertThat(out).contains("## Notes").contains("Something real.")
+                .contains("# Test Cases").contains("## TC001: x");
+    }
+
+    @Test
+    void aCodeFenceWithRealContentSurvives() {
+        // Only an EMPTY pair is debris - a fenced block that still has content must be left alone.
+        String body = "# Analysis" + "\n" + "\n"
+                + "## Notes" + "\n" + "\n"
+                + "```" + "\n"
+                + "=245  10$aTC001_MarcBibInstance" + "\n"
+                + "```" + "\n" + "\n"
+                + "# Test Cases" + "\n";
+
+        assertThat(TestCaseGenAgentWorker.stripPromotedFields(body))
+                .contains("```").contains("=245  10$aTC001_MarcBibInstance");
+    }
+
+    // ── Linked issues from excluded projects ─────────────────────────────────
+
+    @Test
+    void aLinkedIssueFromAnExcludedProjectNeverReachesThePrompt() {
+        // FAT tracks test-authoring work, not product behaviour - the same reason its keys are
+        // barred from Refs. Its description is process notes a generator cannot use.
+        JiraIssue fat = new JiraIssue("FAT-29000", "Review of the UIEH-1497 test cases",
+                "Check the cases written for this story.", "Open", "Task", List.of(), null);
+        JiraIssue real = new JiraIssue("MODDICORE-509", "Comparison part ignored",
+                "The qualifier pairing is required.", "Open", "Bug", List.of(), null);
+        StubChatModel model = new StubChatModel()
+                .enqueue(ROUTER_OK).enqueue(PLAN).enqueue(REVIEW_PASS);
+
+        worker(model, new FakeJira(ISSUE, List.of(fat, real))).execute(freshContext());
+
+        String genPrompt = model.receivedPrompts().get(1).getContents();
+        assertThat(genPrompt).contains("MODDICORE-509");   // a real Bug still comes through
+        assertThat(genPrompt).doesNotContain("FAT-29000");
+        assertThat(genPrompt).doesNotContain("Review of the UIEH-1497 test cases");
+    }
+
+    // ── Linked-issue description clipping ────────────────────────────────────
+
+    @Test
+    void clipBreaksAtAParagraphBoundaryRatherThanMidWord() {
+        String text = "First paragraph with the summary.\n\n"
+                + "Steps to reproduce: open the profile and look at the qualifier column.\n\n"
+                + "Tail that must not survive the clip.";
+
+        String out = TestCaseGenAgentWorker.clip(text, 110);
+
+        assertThat(out).startsWith("First paragraph with the summary.")
+                .contains("Steps to reproduce")
+                .doesNotContain("Tail that must not survive");
+    }
+
+    @Test
+    void clipSaysTheCutWasMechanicalAndHowMuchExists() {
+        // A bare "…" is ambiguous - the model cannot tell it from an ellipsis the author typed, and
+        // may read the gap as "nothing important followed". Both counts let it judge how much of the
+        // description it is actually holding.
+        String text = "Summary sentence. " + "word ".repeat(400);
+
+        String out = TestCaseGenAgentWorker.clip(text, 1000);
+
+        assertThat(out)
+                .contains("TRUNCATED BY THE FACTORY")
+                .contains(" of " + text.length() + " characters")
+                .contains("NOT because it was judged irrelevant");
+    }
+
+    @Test
+    void clipFallsBackToAHardCutWhenAnEarlyBreakWouldThrowAwayTooMuch() {
+        // A stray "." near the start must not cost most of the budget - better a mid-word cut than
+        // discarding two thirds of what was allowed.
+        String text = "v1. " + "word ".repeat(200);
+
+        String out = TestCaseGenAgentWorker.clip(text, 100);
+
+        assertThat(out).startsWith("v1. word").contains("first 100 of " + text.length());
+    }
+
+    @Test
+    void clipLeavesShortTextAlone() {
+        assertThat(TestCaseGenAgentWorker.clip("Short enough.", 100)).isEqualTo("Short enough.");
+        assertThat(TestCaseGenAgentWorker.clip(null, 100)).isEmpty();
     }
 
     @Test
@@ -1495,5 +1724,65 @@ class TestCaseGenAgentWorkerTest {
                 .contains("Review them manually")
                 .doesNotContain("Remaining issues");
         assertThat(plan).contains("review_passed: false");
+    }
+
+    // ── The format-correction retry must edit, not re-roll ───────────────────
+
+    @Test
+    void formatCorrectionRetryShowsTheModelThePlanItMustEdit() {
+        // The real defect behind the UIDATIMP-1781 case drop: the retry inherited vars unchanged,
+        // so previous_plan_block still held the pre-generation value and the model never saw the
+        // plan it was correcting - it regenerated the document from the original prompt instead.
+        StubChatModel model = new StubChatModel()
+                .enqueue(ROUTER_OK).enqueue(PLAN_MALFORMED).enqueue(PLAN).enqueue(REVIEW_PASS);
+
+        worker(model).execute(freshContext());
+
+        String retryPrompt = model.receivedPrompts().get(2).getContents();
+        assertThat(retryPrompt)
+                .contains("could not be parsed")
+                .contains("I could not produce cases in the requested format.")
+                .contains("in scope to KEEP");
+    }
+
+    @Test
+    void formatCorrectionRetryIsToldNotToRePlan() {
+        StubChatModel model = new StubChatModel()
+                .enqueue(ROUTER_OK).enqueue(PLAN_MALFORMED).enqueue(PLAN).enqueue(REVIEW_PASS);
+
+        worker(model).execute(freshContext());
+
+        assertThat(model.receivedPrompts().get(2).getContents())
+                .contains("This is a format fix, not a re-plan.")
+                .contains("`## Scenarios` numbered list")
+                .contains("do not rewrite the matrix to agree with a shorter list");
+    }
+
+    @Test
+    void aFormatRetryThatComesBackSmallerIsReportedAtTheGate() {
+        // The retry is handed a 2-case, 2-scenario plan and answers with a 1-case plan that has no
+        // `## Scenarios` at all. Its coverage matrix is self-consistent, so nothing else downstream
+        // can see the loss - this note is the only signal the gate reviewer gets.
+        StubChatModel model = new StubChatModel()
+                .enqueue(ROUTER_OK).enqueue(PLAN_MALFORMED_BUT_RICHER).enqueue(PLAN)
+                .enqueue(REVIEW_PASS);
+
+        AgentResult result = worker(model).execute(freshContext());
+
+        assertThat(result.outputs().get("test_plan.md"))
+                .contains("output-format retry returned a SMALLER plan")
+                .contains("2 -> 1 case(s)")
+                .contains("2 -> 0 enumerated scenario(s)");
+    }
+
+    @Test
+    void aFormatRetryThatLosesNothingAddsNoNote() {
+        StubChatModel model = new StubChatModel()
+                .enqueue(ROUTER_OK).enqueue(PLAN_MALFORMED).enqueue(PLAN).enqueue(REVIEW_PASS);
+
+        AgentResult result = worker(model).execute(freshContext());
+
+        assertThat(result.outputs().get("test_plan.md"))
+                .doesNotContain("returned a SMALLER plan");
     }
 }

@@ -34,6 +34,10 @@ agent_chain:
         - "# Review" — the automated reviewer's verdict, plus any issues it could not fix
           within its retry budget.
 
+        Findings in "# Review" come from two places, merged into one list: the reviewer agent
+        applying the checklist in its prompt, and a handful of rules enforced by deterministic
+        code instead. The prompt linked below says which are which, and where to change them.
+
         The YAML frontmatter carries the four fields TestRail sync reads. Correct them here
         if they are wrong:
 

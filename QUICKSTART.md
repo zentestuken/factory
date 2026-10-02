@@ -263,9 +263,7 @@ any of the three tiers the step fails rather than generating from a thin prompt.
 
 **With Jira credentials** (fetches story live):
 ```bash
-curl -s -X POST http://localhost:8080/api/triggers/manual \
-  -H "Content-Type: application/json" \
-  -d "{\"flowId\":\"cypress-factory\",\"payload\":{\"issueKey\":\"UIMARCAUTH-553\"}}"
+curl -s -X POST http://localhost:8080/api/triggers/manual -H "Content-Type: application/json" -d "{\"flowId\":\"cypress-factory\",\"payload\":{\"issueKey\":\"UIMARCAUTH-553\"}}"
 ```
 
 **Without Jira credentials** (inline story):
@@ -323,15 +321,13 @@ model call, so the exact numbers shift depending on what happened during the run
 6-review-attempt2.md
 ```
 
-Two extra labels can appear, each taking the next sequential number when they fire rather than
-reusing the number of the call they follow: `generate-attemptN-retry` (attempt N's response
-didn't parse as a valid case block, so one corrective retry ran before falling through to the
-normal reviewer step) and `review-attemptN-verify` (attempt N passed and `review-double-check`
-is on, so one independent second reviewer call re-checked the PASS before it shipped).
+One extra label can appear, taking the next sequential number rather than reusing the number of
+the call it follows: `generate-attemptN-retry`, when attempt N's response didn't parse as a valid
+case block and one corrective retry ran before falling through to the normal reviewer step.
 
 Two runs of the same story are then a plain `diff -r` of their directories, which is usually the
 fastest way to answer "why did this one come out worse?" — including, now that responses are
-captured, whether the *same* reviewer call would come out differently on a second pass. Nothing
+captured, what the reviewer actually said rather than only which issues survived. Nothing
 is written when the flag is off, and a dump failure can never fail a run.
 
 ### 7 — Checking that prompt caching is working

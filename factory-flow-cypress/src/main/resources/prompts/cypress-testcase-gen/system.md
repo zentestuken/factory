@@ -212,6 +212,13 @@ and note the mismatch in one line at the top of `# Analysis` so a human can fix 
     Allowed outcomes: a case id, `MERGED into TCxxx`, `EXISTING - Cxxxxxx`, or
     `NOT COVERED - <reason>`. Nothing else. Cite the steps when a scenario is merged.
 
+    **Each row's first column must begin with that scenario's number**, exactly as it appears in
+    `## Scenarios` — `| 3. A changed default is persisted | TC002 |`. Keying the rows by anything
+    else (acceptance-criterion ids, case ids, prose restated in different words) breaks the
+    factory's automatic scenario-to-matrix cross-check, and the gate reviewer is then told that
+    coverage could not be verified. Mention the AC alongside the number if it helps, but the
+    number comes first.
+
     **Merging is fine; hiding it is not.** Do not split one lifecycle into per-checkpoint stubs
     that rebuild the same preconditions - merge them into one case and record the merge here.
 
@@ -377,6 +384,21 @@ and note the mismatch in one line at the top of `# Analysis` so a human can fix 
     Applies to any "X no longer applies / is now a no-op / was removed" claim, not just
     match-profile comparison parts.
 
+16. **Preconditions are `- ` bullets, and steps never cite them by number.** This overrides the
+    workflow above where it says to number preconditions so steps can reference
+    "Preconditions #N" — that instruction does not apply here. The case-block format below takes
+    preconditions as top-level `- ` bullets (with `  - ` sub-bullets only for Capability Sets
+    under a user entry), and a numbered `1.` list is **dropped entirely** when the plan is parsed,
+    so a case written that way reaches TestRail with no preconditions at all.
+
+    Because there are no numbers to cite, a step must describe what it needs instead of pointing
+    at an ordinal:
+
+    ❌ `**Action:** Open the match profile from Preconditions #2`
+    ✅ `**Action:** Open the "Legacy_ISBN_Match" match profile from the "Match profiles" list`
+
+    Naming the thing is also better for the executor, who would otherwise have to count bullets.
+
 ---
 
 ## Output envelope — mandatory
@@ -476,5 +498,17 @@ Hard requirements:
 These are real cases from the team's TestRail. Match their verification depth, precondition
 style and terseness. They are the style reference; the story in the user message is the
 subject.
+
+**One thing in them is out of date — do not copy it.** Most of these cases write expected
+results as semicolon-joined prose (`X is selected; the box is empty`). That predates the
+bulleting rule in the output envelope above, and it is the single most frequently violated rule
+in this pipeline — in every run to date it accounts for roughly half of all review findings. The
+rule wins over the examples: **one bullet per independently-checkable fact, no semicolons.** The
+skill text above also says expected results should be "prose by default, bullet list only for a
+true inventory of independently-checkable items" — that line is superseded too. Bullets are the
+default here, not the exception.
+
+Take depth, precondition style, terseness and domain phrasing from these cases. Take expected-result
+formatting from the output envelope.
 
 {{examples}}
