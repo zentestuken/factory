@@ -1,12 +1,16 @@
 package org.folio.factory.connectors.jira;
 
 import org.folio.factory.connectors.ConnectorHealth;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.client.RestClient;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ObjectNode;
 
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -18,15 +22,28 @@ import java.util.Map;
  */
 public class JiraRestConnector implements JiraConnector, ConnectorHealth {
 
+    private static final Logger log = LoggerFactory.getLogger(JiraRestConnector.class);
+
     // Custom fields whose values are semantically meaningful; all others are stripped.
     // Key = Jira custom field ID, value = name used in the cleaned fields node.
     private static final Map<String, String> KNOWN_CUSTOM_FIELDS = Map.of(
             "customfield_10057", "devTeam"
     );
 
+    /** Attachment downloads redirect once to a pre-signed media URL; 3 is slack, not a need. */
+    private static final int MAX_ATTACHMENT_REDIRECTS = 3;
+
     private final RestClient restClient;
 
+    /**
+     * Same transport, deliberately no credentials. Cloned before the Authorization default is
+     * added, because the attachment redirect target is a different host that needs no Jira
+     * credentials - and must not be sent them.
+     */
+    private final RestClient mediaClient;
+
     public JiraRestConnector(JiraProperties properties, RestClient.Builder builder) {
+        this.mediaClient = builder.clone().build();
         this.restClient = builder
                 .baseUrl(properties.baseUrl())
                 .defaultHeader(HttpHeaders.AUTHORIZATION, "Basic " + HttpHeaders.encodeBasicAuth(
@@ -37,8 +54,16 @@ public class JiraRestConnector implements JiraConnector, ConnectorHealth {
 
     @Override
     public JiraIssue getIssue(String issueKey) {
+        return getIssue(issueKey, false);
+    }
+
+    @Override
+    public JiraIssue getIssue(String issueKey, boolean withRenderedBody) {
         JsonNode body = restClient.get()
-                .uri("/rest/api/2/issue/{key}", issueKey)
+                .uri(withRenderedBody
+                                ? "/rest/api/2/issue/{key}?expand=renderedFields"
+                                : "/rest/api/2/issue/{key}",
+                        issueKey)
                 .retrieve()
                 .body(JsonNode.class);
         if (body.path("fields") instanceof ObjectNode fieldsNode) {
@@ -91,6 +116,50 @@ public class JiraRestConnector implements JiraConnector, ConnectorHealth {
             }
         }
         return linkedKeys.stream().limit(5).map(this::getIssue).toList();
+    }
+
+    /**
+     * Attachment bytes. Two hops, which is not optional: Jira answers the attachment content
+     * endpoint with <b>303</b> and a {@code Location} pointing at a pre-signed
+     * {@code api.media.atlassian.com} URL, and only that second URL carries the image. Spring
+     * {@code RestClient} does not follow redirects, so a single-hop implementation silently got an
+     * empty body - which is exactly how UIU-3562 reached the gate with both of its mockups marked
+     * "download failed".
+     *
+     * <p>The first hop is authenticated because the Jira endpoint requires it. Every later hop uses
+     * {@link #mediaClient}, which carries no credentials: the signed URL authorizes itself, and
+     * forwarding Basic auth to another host would leak it for nothing. Enabling redirect-following
+     * on the shared client would have done exactly that, and to every other Jira call too.</p>
+     *
+     * <p>Returns {@code null} rather than throwing on any failure: the caller is enriching a
+     * prompt, and a missing image must degrade to "no image" instead of failing a run.</p>
+     */
+    @Override
+    public byte[] downloadAttachment(String contentUrl) {
+        try {
+            URI uri = URI.create(contentUrl);
+            for (int hop = 0; hop <= MAX_ATTACHMENT_REDIRECTS; hop++) {
+                ResponseEntity<byte[]> response = (hop == 0 ? restClient : mediaClient).get()
+                        .uri(uri)
+                        .accept(MediaType.ALL)
+                        .retrieve()
+                        .toEntity(byte[].class);
+                if (!response.getStatusCode().is3xxRedirection()) {
+                    return response.getBody();
+                }
+                URI location = response.getHeaders().getLocation();
+                if (location == null) {
+                    log.warn("[jira] Attachment {} redirected with no Location header", contentUrl);
+                    return null;
+                }
+                uri = uri.resolve(location);
+            }
+            log.warn("[jira] Attachment {} exceeded {} redirects", contentUrl, MAX_ATTACHMENT_REDIRECTS);
+            return null;
+        } catch (Exception e) {
+            log.warn("[jira] Could not download attachment {}: {}", contentUrl, e.getMessage());
+            return null;
+        }
     }
 
     @Override

@@ -232,6 +232,9 @@ class TestCaseGenAgentWorkerTest {
 
         @Override public JiraIssue getIssue(String issueKey) { return issue; }
         @Override public List<JiraIssue> getLinkedIssues(String issueKey) { return linked; }
+        @Override public byte[] downloadAttachment(String contentUrl) {
+            return new byte[] {(byte) 0x89, 'P', 'N', 'G'};
+        }
         @Override public void addComment(String issueKey, String body) { }
         @Override public void transitionIssue(String issueKey, String transitionName) { }
     }
@@ -243,7 +246,7 @@ class TestCaseGenAgentWorkerTest {
 
     private CypressFlowProperties properties(int maxReviewIterations) {
         return new CypressFlowProperties("", "main", "", null, null, null, null,
-                maxReviewIterations, null);
+                maxReviewIterations, null, true);
     }
 
     private TestCaseGenAgentWorker worker(StubChatModel model) {
@@ -1784,5 +1787,65 @@ class TestCaseGenAgentWorkerTest {
 
         assertThat(result.outputs().get("test_plan.md"))
                 .doesNotContain("returned a SMALLER plan");
+    }
+
+    // -- Inline description images ------------------------------------------
+
+    /** A v2-shaped story: wiki-markup image embed plus the attachment list Jira returns with it. */
+    private JiraIssue issueWithInlineImage() {
+        return new JiraIssue("UIU-3562", "Add a User capabilities accordion",
+                "Something like this:\n\n!image-20260430-204850.png|width=844,height=812!\n",
+                "Open", "Story", List.of(),
+                jsonMapper.readTree("{\"fields\":{\"attachment\":[{"
+                        + "\"filename\":\"image-20260430-204850.png\",\"mimeType\":\"image/png\","
+                        + "\"size\":66950,\"content\":\"https://jira.example/attachment/1\"}]}}"));
+    }
+
+    private static long mediaCount(Prompt prompt) {
+        return prompt.getInstructions().stream()
+                .filter(m -> m.getMessageType() == MessageType.USER)
+                .filter(org.springframework.ai.content.MediaContent.class::isInstance)
+                .mapToLong(m -> ((org.springframework.ai.content.MediaContent) m).getMedia().size())
+                .sum();
+    }
+
+    @Test
+    void anInlineDescriptionImageIsAttachedToTheGenerationCallOnly() {
+        // Media rides in the user message and caching is system-only, so every call that carries an
+        // image pays for it again. The router picks an area and the reviewer sees only the rendered
+        // cases - neither has anything to look at a picture for.
+        StubChatModel model = new StubChatModel()
+                .enqueue(ROUTER_OK).enqueue(PLAN).enqueue(REVIEW_PASS);
+
+        worker(model, new FakeJira(issueWithInlineImage())).execute(freshContext());
+
+        assertThat(mediaCount(model.receivedPrompts().get(0))).isZero();   // router
+        assertThat(mediaCount(model.receivedPrompts().get(1))).isEqualTo(1);   // generation
+        assertThat(mediaCount(model.receivedPrompts().get(2))).isZero();   // reviewer
+    }
+
+    @Test
+    void theRawImageMarkupIsReplacedByAPlaceholderInEveryPrompt() {
+        // Raw `!image-x.png|width=844!` is noise, and with an image attached the model needs to
+        // know which sentence it belongs to.
+        StubChatModel model = new StubChatModel()
+                .enqueue(ROUTER_OK).enqueue(PLAN).enqueue(REVIEW_PASS);
+
+        worker(model, new FakeJira(issueWithInlineImage())).execute(freshContext());
+
+        String generation = model.receivedPrompts().get(1).getContents();
+        assertThat(generation)
+                .contains("[IMAGE \"image-20260430-204850.png\" - attached to this message]")
+                .doesNotContain("!image-20260430-204850.png|width=844");
+    }
+
+    @Test
+    void aStoryWithNoInlineImageSendsNoMediaAtAll() {
+        StubChatModel model = new StubChatModel()
+                .enqueue(ROUTER_OK).enqueue(PLAN).enqueue(REVIEW_PASS);
+
+        worker(model).execute(freshContext());
+
+        assertThat(model.receivedPrompts()).allSatisfy(p -> assertThat(mediaCount(p)).isZero());
     }
 }

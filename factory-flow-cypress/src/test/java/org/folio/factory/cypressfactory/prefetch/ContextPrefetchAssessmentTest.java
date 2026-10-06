@@ -16,7 +16,7 @@ class ContextPrefetchAssessmentTest {
 
     private ContextPrefetch prefetch() {
         CypressFlowProperties props =
-                new CypressFlowProperties("", "main", "", null, null, null, null, 3, null);
+                new CypressFlowProperties("", "main", "", null, null, null, null, 3, null, true);
         return new ContextPrefetch(
                 new SkillWorkspaceService(new UnconfiguredConnectors.GitHub(), props),
                 new UnconfiguredConnectors.GitHub(), new UnconfiguredConnectors.Jira(),

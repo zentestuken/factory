@@ -149,6 +149,10 @@ factory:
     testrail-label: ${FACTORY_CYPRESS_TESTRAIL_LABEL:}
     # Max agent review iterations per test-spec run. Default 3. Set to 0 to skip agent review.
     max-review-iterations: ${FACTORY_CYPRESS_MAX_REVIEW_ITERATIONS:}
+    # Send images embedded inline in the story description to the model. Default true.
+    # Set false when FACTORY_LLM_MODEL points at a model without image support - such a model
+    # rejects a call carrying images outright rather than ignoring them.
+    send-images: ${FACTORY_CYPRESS_SEND_IMAGES:}
     # Jira projects never added to TestRail refs. Comma-separated. Default FAT.
     refs-excluded-projects: ${FACTORY_CYPRESS_REFS_EXCLUDED_PROJECTS:}
 

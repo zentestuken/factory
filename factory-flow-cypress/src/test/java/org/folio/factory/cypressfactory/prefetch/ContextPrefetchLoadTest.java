@@ -79,7 +79,7 @@ class ContextPrefetchLoadTest {
 
     private ContextPrefetch prefetch() {
         CypressFlowProperties props = new CypressFlowProperties(
-                "", "main", "fake-org/fake-repo", null, null, null, null, 3, null);
+                "", "main", "fake-org/fake-repo", null, null, null, null, 3, null, true);
         return new ContextPrefetch(
                 new SkillWorkspaceService(new FakeGitHub(), props),
                 new FakeGitHub(), new UnconfiguredConnectors.Jira(),

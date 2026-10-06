@@ -10,9 +10,11 @@ import org.springframework.ai.chat.client.ResponseEntity;
 import org.springframework.ai.chat.metadata.Usage;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.ChatOptions;
+import org.springframework.ai.content.Media;
 import tools.jackson.core.JacksonException;
 
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
@@ -161,16 +163,42 @@ public abstract class AbstractLlmAgentWorker implements AgentWorker {
     }
 
     private ChatClient.ChatClientRequestSpec buildPrompt(String system, String user) {
-        return buildPrompt(null, system, user);
+        return buildPrompt(null, system, user, Map.of());
     }
 
-    private ChatClient.ChatClientRequestSpec buildPrompt(String promptId, String system, String user) {
+    private ChatClient.ChatClientRequestSpec buildPrompt(String promptId, String system, String user,
+                                                         Map<String, Object> variables) {
         ChatClient.ChatClientRequestSpec spec = chatClient.prompt();
         ChatOptions.Builder<?> options = chatOptions(promptId);
         if (options != null) {
             spec = spec.options(options);
         }
-        return spec.system(system).user(user);
+        spec = spec.system(system);
+        List<Media> media = media(promptId, variables);
+        // The String overload is kept for the no-media case so every existing worker takes the
+        // byte-identical code path it always did.
+        return media.isEmpty() ? spec.user(user) : spec.user(u -> u.text(user).media(media.toArray(Media[]::new)));
+    }
+
+    /**
+     * Images or other media to attach to the <i>user</i> message of this call. Empty by default, so
+     * a worker that does not override it is unaffected.
+     *
+     * <p>Two things to know before overriding. Media rides in the user message, and prompt caching
+     * is system-only, so every attachment is re-sent at full price on each attempt of a retry loop.
+     * And not every model accepts it: a non-vision model, or a provider configured through
+     * {@code FACTORY_LLM_MODEL} that has no image support, will reject the call outright rather
+     * than ignore the attachment - so an override is responsible for deciding whether media is
+     * safe to send, not just whether it is available.</p>
+     *
+     * @param promptId  the prompt being called, or {@code null} for the variables-only overloads,
+     *                  so a worker with several calls can attach media to just one of them
+     * @param variables that call's prompt variables. Media is passed through here rather than held
+     *                  on the worker, because workers are stateless singletons shared by every
+     *                  execution - a field would leak one run's images into another.
+     */
+    protected List<Media> media(String promptId, Map<String, Object> variables) {
+        return List.of();
     }
 
     private <T> T captureUsage(ResponseEntity<ChatResponse, T> result) {
@@ -235,7 +263,7 @@ public abstract class AbstractLlmAgentWorker implements AgentWorker {
         USAGE.remove();
         String system = PromptLoader.render(PromptLoader.load(promptId, "system"), variables);
         String user = PromptLoader.render(PromptLoader.load(promptId, "user"), variables);
-        ChatResponse response = buildPrompt(promptId, system, user).call().chatResponse();
+        ChatResponse response = buildPrompt(promptId, system, user, variables).call().chatResponse();
         captureUsageFromResponse(response);
         return textOf(response, promptId);
     }

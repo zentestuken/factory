@@ -51,7 +51,7 @@ class ContextPrefetchLinkEnrichmentTest {
 
     private ContextPrefetch prefetch() {
         CypressFlowProperties props =
-                new CypressFlowProperties("", "main", "", null, null, null, null, 3, null);
+                new CypressFlowProperties("", "main", "", null, null, null, null, 3, null, true);
         return new ContextPrefetch(
                 new SkillWorkspaceService(new UnconfiguredConnectors.GitHub(), props),
                 new UnconfiguredConnectors.GitHub(), new UnconfiguredConnectors.Jira(),
@@ -528,26 +528,29 @@ class ContextPrefetchLinkEnrichmentTest {
 
     @Test
     void theStorysOwnLinksAreTriedBeforeALinkedIssuesLinks() throws IOException {
-        // Origin outranks resolvability: with a 3-page budget, a linked ticket's links must not
-        // displace the story's own, even when the linked one would resolve more cheaply.
+        // Origin outranks resolvability: a linked ticket's links must not displace the story's
+        // own, even when the linked one would resolve more cheaply. The story cites exactly
+        // MAX_LINK_PAGES readable links so the budget is full by the time the linked one is reached.
         AtomicInteger requests = new AtomicInteger();
         String page = "<html><body><p>" + FILLER + "</p></body></html>";
         HttpServer s = startServer(requests,
                 new Stub("/story-a", 200, "text/html", page),
                 new Stub("/story-b", 200, "text/html", page),
                 new Stub("/story-c", 200, "text/html", page),
+                new Stub("/story-d", 200, "text/html", page),
                 new Stub("/wiki/api/v2/pages/7", 200, "application/json",
                         "{\"title\":\"Spec\",\"body\":{\"storage\":{\"value\":\"<p>from the spike</p>\"}}}"));
         int port = s.getAddress().getPort();
         JiraIssue story = issueWithDescription("Docs: "
                 + "http://localhost:" + port + "/story-a?n=1 "
                 + "http://localhost:" + port + "/story-b?n=2 "
-                + "http://localhost:" + port + "/story-c?n=3");
+                + "http://localhost:" + port + "/story-c?n=3 "
+                + "http://localhost:" + port + "/story-d?n=4");
 
         Result result = enrich(story, List.of(linkedIssue("MODDATAIMP-1328",
                 "Q&A at http://localhost:" + port + "/wiki/spaces/FOLIJET/pages/7")));
 
-        // All three story links fill the budget; the linked issue's Confluence page is reported,
+        // The story's own links fill the budget; the linked issue's Confluence page is reported,
         // not silently dropped - and it is NOT fetched, since the budget filled first.
         assertThat(result.text()).doesNotContain("from the spike");
         assertThat(result.notes()).singleElement().asString()
@@ -610,13 +613,13 @@ class ContextPrefetchLinkEnrichmentTest {
                 "<html><body><p>" + FILLER + "</p></body></html>", requests);
         int port = s.getAddress().getPort();
         List<String> urls = new ArrayList<>();
-        for (int i = 0; i < 5; i++) {
+        for (int i = 0; i < 6; i++) {
             urls.add("http://localhost:" + port + "/p?n=" + i);
         }
 
         Result result = enrichAll(urls);
 
-        assertThat(requests.get()).isEqualTo(3); // MAX_LINK_PAGES worth of readable pages
+        assertThat(requests.get()).isEqualTo(4); // MAX_LINK_PAGES worth of readable pages
         // Reported, not silently dropped - but as one note for all of them, not one note each.
         assertThat(result.notes()).singleElement().asString()
                 .contains("2 linked pages were not read")
@@ -679,6 +682,7 @@ class ContextPrefetchLinkEnrichmentTest {
                 new Stub("/a", 200, "text/html", page),
                 new Stub("/b", 200, "text/html", page),
                 new Stub("/c", 200, "text/html", page),
+                new Stub("/d", 200, "text/html", page),
                 new Stub("/wiki/api/v2/pages/7", 200, "application/json",
                         "{\"title\":\"The spec\",\"body\":{\"storage\":{\"value\":"
                                 + "\"<p>requirements live here</p>\"}}}"));
@@ -687,6 +691,7 @@ class ContextPrefetchLinkEnrichmentTest {
                 "http://localhost:" + port + "/a?n=1",
                 "http://localhost:" + port + "/b?n=2",
                 "http://localhost:" + port + "/c?n=3",
+                "http://localhost:" + port + "/d?n=4",
                 "http://localhost:" + port + "/wiki/spaces/FOLIJET/pages/7");
 
         Result result = enrichAll(urls);
@@ -696,7 +701,7 @@ class ContextPrefetchLinkEnrichmentTest {
                 .contains("requirements live here");
         // The budget is full, so the last scrape-only link is the one reported instead.
         assertThat(result.notes()).singleElement().asString()
-                .contains("/c?n=3")
+                .contains("/d?n=4")
                 .contains("already filled this run's context budget");
     }
 
@@ -770,16 +775,17 @@ class ContextPrefetchLinkEnrichmentTest {
                 new Stub("/b", 200, "text/html", "<html><body><p>" + FILLER + "</p></body></html>"),
                 new Stub("/c", 200, "text/html", "<html><body><p>" + FILLER + "</p></body></html>"),
                 new Stub("/d", 200, "text/html", "<html><body><p>" + FILLER + "</p></body></html>"),
-                new Stub("/e", 200, "text/html", "<html><body><p>" + FILLER + "</p></body></html>"));
+                new Stub("/e", 200, "text/html", "<html><body><p>" + FILLER + "</p></body></html>"),
+                new Stub("/f", 200, "text/html", "<html><body><p>" + FILLER + "</p></body></html>"));
         String origin = "http://localhost:" + s.getAddress().getPort();
 
         Result result = enrichAll(List.of(origin + "/a", origin + "/b", origin + "/c",
-                origin + "/d", origin + "/e"));
+                origin + "/d", origin + "/e", origin + "/f"));
 
         assertThat(result.notes()).singleElement().asString()
                 .contains("2 linked pages were not read")
-                .contains("/d")
-                .contains("/e");
+                .contains("/e")
+                .contains("/f");
     }
 
     // -------------------------------------------------------------------------

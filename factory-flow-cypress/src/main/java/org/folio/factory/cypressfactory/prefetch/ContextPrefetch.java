@@ -64,8 +64,17 @@ public class ContextPrefetch {
      * full price on each generation attempt, and it competes with the ticket and the area context
      * file for the model's attention. Bounding wall-clock is not the point - the engine's step
      * lease is half an hour and a real run is dominated by the LLM calls themselves.
+     *
+     * <p>Raised 3 -> 4 on 2026-10-05 against evidence rather than feel. UIDATIMP-1781 cites four
+     * pages worth reading - three Confluence pages and a PR diff - and at 3 the newly-resolvable
+     * tiny link took the third slot from
+     * {@code data-import-processing-core/pull/444} (execution ca7071a8). The cost was not just the
+     * lost page: the previous run had used that diff to ground its API field names AND to flag
+     * them as inferred rather than confirmed, and the run without it asserted the endpoint and
+     * payload with no caveat at all. One extra uncached page per attempt is the cheaper side of
+     * that trade.
      */
-    private static final int MAX_LINK_PAGES = 3;
+    private static final int MAX_LINK_PAGES = 4;
     /**
      * How many URLs may be tried per run, readable or not. Deliberately larger than
      * {@link #MAX_LINK_PAGES}: a link that turns out to be unreadable costs one round trip but no

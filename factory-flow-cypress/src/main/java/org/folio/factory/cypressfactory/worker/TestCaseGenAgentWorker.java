@@ -20,6 +20,7 @@ import org.folio.factory.cypressfactory.prefetch.ContextPrefetch;
 import org.folio.factory.cypressfactory.prefetch.CoveragePrefetch;
 import org.folio.factory.cypressfactory.prefetch.ExamplesPrefetch;
 import org.folio.factory.cypressfactory.prefetch.FragmentPrefetch;
+import org.folio.factory.cypressfactory.prefetch.InlineImagePrefetch;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.anthropic.AnthropicCacheOptions;
@@ -29,6 +30,7 @@ import org.springframework.ai.anthropic.AnthropicChatOptions;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.messages.MessageType;
 import org.springframework.ai.chat.prompt.ChatOptions;
+import org.springframework.ai.content.Media;
 import tools.jackson.databind.JsonNode;
 
 import java.util.ArrayList;
@@ -79,6 +81,14 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
      * related ticket from crowding out the story itself. See next_steps for the per-issue-type
      * allowance idea, which is the shape to reach for if evidence ever says this is too tight.
      */
+    /**
+     * Where inline description images ride from {@code execute()} to {@link #media(String, Map)}.
+     * It has to travel in the prompt variables because workers are stateless singletons shared by
+     * every execution - a field would leak one run images into another. No prompt template
+     * references this key, so it renders nothing.
+     */
+    private static final String MEDIA_VAR = "__inline_images";
+
     private static final int LINKED_ISSUE_DESC_CHARS = 1_000;
 
     /**
@@ -167,6 +177,7 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
     private final TestRailConnector testRail;
     private final SkillWorkspaceService skills;
     private final AreaDetector areaDetector;
+    private final InlineImagePrefetch inlineImages;
     private final ContextPrefetch contextPrefetch;
     private final FragmentPrefetch fragmentPrefetch;
     private final CoveragePrefetch coveragePrefetch;
@@ -192,6 +203,7 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
         this.testRail = testRail;
         this.skills = skills;
         this.areaDetector = areaDetector;
+        this.inlineImages = new InlineImagePrefetch(jira);
         this.contextPrefetch = contextPrefetch;
         this.fragmentPrefetch = fragmentPrefetch;
         this.coveragePrefetch = coveragePrefetch;
@@ -267,6 +279,11 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
         JsonNode trigger = context.triggerPayload();
         String issueKey = requireIssueKey(trigger);
         JiraIssue issue = fetchIssue(issueKey, trigger);
+        // Resolved before anything renders the description, so every prompt sees the placeholder
+        // rather than raw `!image-x.png|width=844!` markup - and so an image that could not be
+        // fetched says so in the same place the picture would have been.
+        InlineImagePrefetch.InlineImages images = inlineImages.load(issue, properties.sendImages());
+        issue = withImagePlaceholders(issue, images);
         List<JiraIssue> linked = withoutExcludedProjects(
                 mergeUrlReferencedIssues(issue, fetchLinkedIssues(issueKey)));
 
@@ -297,6 +314,7 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
         vars.put("context_files", ctx.text());
         vars.put("enrichment", buildProvenanceBlock(route, areas, ctx, examples, fragments, skill));
         vars.put("issue", renderIssue(issue));
+        vars.put(MEDIA_VAR, images.media());
         vars.put("dev_teams", devTeams.nameList());
         vars.put("linked_issues", renderLinkedIssues(linked));
         vars.put("fragments", fragments.text());
@@ -396,6 +414,7 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
         List<String> notes = new ArrayList<>(testGroupNotes(cases));
         notes.addAll(coverageMatrixNotes(cleaned));
         notes.addAll(retryNotes);
+        notes.addAll(images.notes());
         notes.addAll(ctx.linkNotes());
         String body = appendFactoryNotes(cleaned, notes);
 
@@ -549,7 +568,9 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
                     inline);
         }
         try {
-            return jira.getIssue(issueKey);
+            // Rendered body opt-in: it is the only representation where an inline image carries its
+            // attachment id, which is what makes image ingestion work on both v2 and v3 bodies.
+            return jira.getIssue(issueKey, true);
         } catch (Exception e) {
             throw new AgentExecutionException(
                     "Could not fetch " + issueKey + " from Jira and no inline issue was supplied: "
@@ -1180,6 +1201,41 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
                 + "Keep the structure and scope where the feedback does not require changes. "
                 + "Fix only what the feedback calls out.\n\n"
                 + previousPlan.content() + "\n";
+    }
+
+    /**
+     * Images only ever go to the generation call. The router and coverage-triage calls decide an
+     * area and pick candidate case ids - a mockup tells them nothing - and the reviewer is given
+     * only the rendered `# Test Cases` slice, so it has nothing to look at a picture for. Sending
+     * them anywhere else would just re-pay for them, since media sits in the user message and
+     * caching is system-only.
+     */
+    @Override
+    protected List<Media> media(String promptId, Map<String, Object> variables) {
+        if (!GEN_PROMPT_ID.equals(promptId) || variables == null) {
+            return List.of();
+        }
+        return variables.get(MEDIA_VAR) instanceof List<?> list
+                ? list.stream().filter(Media.class::isInstance).map(Media.class::cast).toList()
+                : List.of();
+    }
+
+    /**
+     * Substitutes the image markup in the description once, so every later render inherits it.
+     * Returns a new record rather than threading a placeholder map through four {@code
+     * renderIssue} call sites.
+     */
+    private static JiraIssue withImagePlaceholders(JiraIssue issue,
+                                                   InlineImagePrefetch.InlineImages images) {
+        if (images.placeholders().isEmpty() || issue.description() == null) {
+            return issue;
+        }
+        String description = issue.description();
+        for (Map.Entry<String, String> entry : images.placeholders().entrySet()) {
+            description = description.replace(entry.getKey(), entry.getValue());
+        }
+        return new JiraIssue(issue.key(), issue.summary(), description, issue.status(),
+                issue.issueType(), issue.labels(), issue.raw());
     }
 
     private String renderIssue(JiraIssue issue) {

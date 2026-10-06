@@ -231,8 +231,19 @@ FACTORY_CYPRESS_FOLIO_AI_REPO=folio-org/folio-eureka-ai-dev
 # FACTORY_CONNECTORS_TESTRAIL_SUITE_ID=        # only for multi-suite projects
 # Default section fallback (used when LLM suggestion is absent or unresolvable)
 # FACTORY_CYPRESS_TESTRAIL_SECTION_ID=114774
-# FACTORY_CYPRESS_TESTRAIL_CASE_TYPE_ID=1      # 1=Functional on foliotest
-# FACTORY_CYPRESS_TESTRAIL_PRIORITY_ID=3       # 3=Medium (default)
+# Case type and priority are resolved BY NAME against TestRail own get_case_types at sync
+# time - ids drift whenever TestRail is re-templated, so they are not configured as ids.
+# FACTORY_CYPRESS_TESTRAIL_CASE_TYPE_NAME=Functional
+# FACTORY_CYPRESS_TESTRAIL_PRIORITY_NAME=Medium
+# FACTORY_CYPRESS_TESTRAIL_LABEL=cypressFlow-delete
+# Max agent review iterations per run (default 3; 0 skips automated review entirely)
+# FACTORY_CYPRESS_MAX_REVIEW_ITERATIONS=3
+# Jira projects never written into TestRail refs (default FAT)
+# FACTORY_CYPRESS_REFS_EXCLUDED_PROJECTS=FAT
+# Send images embedded inline in the story description to the model (default true). Set false
+# if FACTORY_LLM_MODEL points at a model with no image support - such a model REJECTS a call
+# carrying images rather than ignoring them.
+# FACTORY_CYPRESS_SEND_IMAGES=true
 ```
 
 Then source it in Git Bash:
@@ -265,6 +276,12 @@ any of the three tiers the step fails rather than generating from a thin prompt.
 ```bash
 curl -s -X POST http://localhost:8080/api/triggers/manual -H "Content-Type: application/json" -d "{\"flowId\":\"cypress-factory\",\"payload\":{\"issueKey\":\"UIMARCAUTH-553\"}}"
 ```
+
+The `issueKey`-only form is also the only one that can use **images embedded in the story
+description**: the factory fetches the issue itself, asks Jira for the rendered body and the
+attachment list, and attaches the pictures to the generation call. The inline form below skips the
+Jira fetch entirely, so a story whose requirements live in a screenshot will be generated without
+them.
 
 **Without Jira credentials** (inline story):
 ```bash

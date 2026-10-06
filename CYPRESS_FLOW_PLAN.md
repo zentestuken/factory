@@ -639,6 +639,7 @@ produce no artifacts.
 | `FragmentPrefetch` | `scan(List<String> areas, String summary) → String` |
 | `CoveragePrefetch` | `load(List<String> areas) → Coverage(index, cases, sections)`<br>`Coverage.select(List<Long>, int cap)`, `Coverage.renderCandidates(List<Long>)` |
 | `ExamplesPrefetch` | `load() → String` |
+| `InlineImagePrefetch` | `load(JiraIssue issue, boolean visionEnabled) → InlineImages(media, placeholders, notes)` |
 
 Notes:
 - `AreaDetector` holds `AREA_KEYWORDS`, `PROJECT_KEY_AREAS` and `detectAreas()`. It does not
@@ -665,12 +666,44 @@ Notes:
   hash *is* the page id, base64url of its little-endian bytes, so it needs no extra request.
   (Following the tiny link's redirect does not work: it lands on `tinyurl.action`, which answers
   202 with an AWS WAF bot challenge.)
-- **Budgets**: `MAX_LINK_PAGES` (3) caps pages *accepted into the prompt*, `MAX_LINK_ATTEMPTS`
+- **Budgets**: `MAX_LINK_PAGES` (4) caps pages *accepted into the prompt*, `MAX_LINK_ATTEMPTS`
   (8) caps distinct URLs tried; a failed read costs an attempt, not a page slot. Candidates are
   ordered story-links-first, and known-resolver URLs first within each group, so a ticket citing
   junk ahead of its spec cannot starve the spec. Every link that is truncated, unreadable or cut
   off by a budget is reported at the gate through `linkNotes` — budget skips share one grouped
   note.
+- `InlineImagePrefetch` sends the model images embedded **inline in the story's own
+  description** - and only those. An author who writes "Something like this:" above a screenshot has
+  put requirements in it (UIU-3562 specifies its accordion that way); an attachment that is merely
+  attached carries no such signal, since that list accretes error shots, HARs and debugging files.
+  Linked issues are skipped too - their descriptions are already clipped to a char budget for
+  attention reasons. The scoping needs no rule of its own: an attachment nothing references never
+  matches. Images go to the **generation call only** (`media(promptId, variables)` keyed on
+  `GEN_PROMPT_ID`), since the router picks an area and the reviewer sees only the rendered cases.
+- **Image identity comes from Jira's rendered HTML, which is why this works on v2 and v3 alike.**
+  Neither description body identifies an image usefully: v2 wiki markup has
+  `!image-20260430-204850.png|width=844!` (a filename, which at least matches an attachment) and a
+  v3 ADF body has `![](blob:...id=00d03e57-...)` - a Media Services uuid matching nothing, since
+  attachment entries carry no media id. The rendered body is
+  `<img src=".../attachment/content/122774" alt="image-20260430-204850.png">` in both, carrying the
+  real attachment id, the filename and the document position. So `fetchIssue` opts into
+  `JiraConnector.getIssue(key, withRenderedBody = true)` and the rendered images are paired with the
+  description's image tokens **by document order** - both lists come from the same document, so
+  order is exact rather than a guess. Filename matching remains as the fallback for a run with no
+  rendered body at all (a manual trigger that passes the story inline), and a v3 body arriving
+  without one is reported at the gate rather than looking like a story with no pictures.
+- **Downloading an attachment takes two hops, and that is not optional.** Jira answers the
+  attachment content endpoint with **303** and a `Location` pointing at a pre-signed
+  `api.media.atlassian.com` URL; only that second URL carries the bytes. Spring `RestClient` does
+  not follow redirects, so the first implementation silently got an empty body - UIU-3562 reached
+  the gate with both mockups marked "download failed" (execution 7c0caa24) while every other part
+  of the chain had worked. The second hop deliberately uses a **credential-free** client cloned
+  before the Authorization default is added: the signed URL authorizes itself, and forwarding Basic
+  auth to another host would leak it for nothing. Turning redirect-following on for the shared
+  client would have done exactly that, and to every other Jira call.
+- Every image that does not reach the model leaves a placeholder in the description text **and** a
+  gate note. `FACTORY_CYPRESS_SEND_IMAGES=false` turns the whole thing off, which matters because a
+  non-vision model rejects a call carrying media rather than ignoring it.
 - `AREA_KEYWORDS` area names must match the 29 context filenames exactly
   (`agreements`, `bulk-edit`, `check-in`, …). Log a startup WARN for any area name with no
   matching file, and for any context file with no area entry (drift check against MQA's table).
