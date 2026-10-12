@@ -72,7 +72,15 @@ public class InlineImagePrefetch {
 
     /** Keeps one oversized screenshot from dominating a prompt that is already ~190k tokens. */
     private static final int MAX_IMAGE_BYTES = 4 * 1024 * 1024;
-    private static final int MAX_IMAGES = 3;
+
+    /**
+     * Raised 3 -> 4 on 2026-10-09 against evidence. UIQM-822 embeds four screenshots and the
+     * fourth - the one the cap dropped - showed the expected search-box population, which is the
+     * entire subject of that story (execution 60283f78). The gate note is what surfaced it. Kept
+     * finite because each image is re-sent on every attempt: media rides in the user message and
+     * caching is system-only.
+     */
+    private static final int MAX_IMAGES = 4;
 
     private final JiraConnector jira;
 
@@ -107,7 +115,11 @@ public class InlineImagePrefetch {
     /** One image as Jira's rendered HTML describes it: real id, real filename, real position. */
     private record RenderedImage(String attachmentId, String filename, String src) {}
 
-    /** Never throws — images are grounding material, never a required input. */
+    /**
+     * Never throws — images are grounding material, never a required input.
+     * Notes include the issue key so a gate reviewer knows which ticket the image came from
+     * without having to infer it from context.
+     */
     public InlineImages load(JiraIssue issue, boolean visionEnabled) {
         try {
             return doLoad(issue, visionEnabled);
@@ -118,6 +130,7 @@ public class InlineImagePrefetch {
     }
 
     private InlineImages doLoad(JiraIssue issue, boolean visionEnabled) {
+        String issueKey = issue != null && issue.key() != null ? issue.key() : "main ticket";
         String description = issue == null ? null : issue.description();
         if (description == null || description.isBlank()) {
             return InlineImages.empty();
@@ -156,12 +169,12 @@ public class InlineImagePrefetch {
             if (media.size() >= MAX_IMAGES) {
                 placeholders.put(token, placeholder(label,
                         "not sent: the per-run limit of " + MAX_IMAGES + " images was reached"));
-                notes.add(unseen(label, "the per-run limit of " + MAX_IMAGES + " images was reached"));
+                notes.add(unseen(issueKey, label, "the per-run limit of " + MAX_IMAGES + " images was reached"));
                 continue;
             }
             if (attachment == null) {
                 placeholders.put(token, placeholder(label, "not sent: could not be identified"));
-                notes.add(unidentified(label, image == null && rendered.isEmpty()));
+                notes.add(unidentified(issueKey, label, image == null && rendered.isEmpty()));
                 continue;
             }
             String mimeType = attachment.path("mimeType").asString("");
@@ -173,7 +186,7 @@ public class InlineImagePrefetch {
             if (size > MAX_IMAGE_BYTES) {
                 placeholders.put(token, placeholder(label, "not sent: " + size / 1024 + " KB over the "
                         + MAX_IMAGE_BYTES / 1024 / 1024 + " MB limit"));
-                notes.add(unseen(label, size / 1024 + " KB exceeds the size limit"));
+                notes.add(unseen(issueKey, label, size / 1024 + " KB exceeds the size limit"));
                 continue;
             }
             String contentUrl = attachment.path("content").asString("");
@@ -183,7 +196,7 @@ public class InlineImagePrefetch {
             byte[] bytes = jira.downloadAttachment(contentUrl);
             if (bytes == null || bytes.length == 0) {
                 placeholders.put(token, placeholder(label, "not sent: download failed"));
-                notes.add(unseen(label, "it could not be downloaded from Jira"));
+                notes.add(unseen(issueKey, label, "it could not be downloaded from Jira"));
                 continue;
             }
             media.add(new Media(parseMimeType(mimeType), new ByteArrayResource(bytes)));
@@ -191,9 +204,9 @@ public class InlineImagePrefetch {
         }
 
         if (!visionEnabled) {
-            notes.add("This story embeds " + tokens.size() + " inline image(s), but image input is "
-                    + "disabled for this run (FACTORY_CYPRESS_SEND_IMAGES), so none reached the "
-                    + "model. Describe anything they specify in the feedback below.");
+            notes.add(issueKey + ": this story embeds " + tokens.size() + " inline image(s), but "
+                    + "image input is disabled for this run (FACTORY_CYPRESS_SEND_IMAGES), so none "
+                    + "reached the model. Describe anything they specify in the feedback below.");
         } else if (!media.isEmpty()) {
             log.info("[images] Attached {} of {} inline image(s) from {}",
                     media.size(), tokens.size(), issue.key());
@@ -247,8 +260,8 @@ public class InlineImagePrefetch {
         return images;
     }
 
-    private static String unseen(String label, String reason) {
-        return "Inline image " + label + " did not reach the model because " + reason
+    private static String unseen(String issueKey, String label, String reason) {
+        return issueKey + ": inline image " + label + " did not reach the model because " + reason
                 + ". If it carries requirements, describe them in the feedback below.";
     }
 
@@ -257,9 +270,9 @@ public class InlineImagePrefetch {
      * v3-style description is exactly what a connector change would look like, and it would
      * otherwise be indistinguishable from a story with no pictures.
      */
-    private static String unidentified(String label, boolean noRenderedBody) {
-        String base = "Inline image " + label + " is referenced in the description but could not be "
-                + "matched to an attachment, so the model never saw it.";
+    private static String unidentified(String issueKey, String label, boolean noRenderedBody) {
+        String base = issueKey + ": inline image " + label + " is referenced in the description but "
+                + "could not be matched to an attachment, so the model never saw it.";
         if (noRenderedBody) {
             base += " Jira returned no rendered body for this issue, which is where inline images "
                     + "get their attachment id - if the Jira client stopped requesting "

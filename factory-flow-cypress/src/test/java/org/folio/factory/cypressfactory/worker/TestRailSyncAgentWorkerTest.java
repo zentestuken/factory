@@ -25,7 +25,7 @@ class TestRailSyncAgentWorkerTest {
     // -------------------------------------------------------------------------
 
     private TestRailSyncAgentWorker worker(CapturingConnector connector, Long defaultSectionId) {
-        CypressFlowProperties props = new CypressFlowProperties("", "main", "", defaultSectionId, null, null, null, null, null, true);
+        CypressFlowProperties props = new CypressFlowProperties("", "main", "", defaultSectionId, null, null, null, null, null, null, true);
         return new TestRailSyncAgentWorker(connector, codec, props, new TestPlanParser(),
                 new DevTeamCatalog());
     }

@@ -766,7 +766,7 @@ Retry inputs: `test_plan.md` (optional) → "revise this, do not regenerate from
 `hitl_feedback.md` (optional) → a priority corrections block. Built by `buildPreviousPlanBlock`
 and `buildHitlFeedbackBlock`.
 
-`maxTokens()` is `16384`.
+`maxTokens()` is `16384`. `chatOptions()` also sets a **15-minute per-request call timeout** (`FACTORY_CYPRESS_LLM_TIMEOUT`, default 15m) via `AnthropicChatOptions.Builder.timeout(Duration)`. This overrides the shared `FACTORY_LLM_TIMEOUT` default — Spring AI builds a separate client keyed on client-level settings including timeout, so the per-flow value wins. The shared default stays at 300s for other flows.
 
 **Prompts — router:** `factory-flow-cypress/src/main/resources/prompts/cypress-area-router/`
 
@@ -1338,6 +1338,8 @@ Part III additionally reuses `ScriptBundleCodec` (`factory-agents`) and TAF's `C
 | `FACTORY_CYPRESS_TESTRAIL_PRIORITY_NAME` | TestRail priority name, resolved against `get_priorities` the same way; code default `Medium` |
 | `FACTORY_CYPRESS_TESTRAIL_LABEL` | Label title applied to every created case (default: `cypressFlow-delete`); resolved to a label ID at runtime via `getOrCreateLabel` |
 | `FACTORY_CYPRESS_MAX_REVIEW_ITERATIONS` | Max agent review iterations inside `TestCaseGenAgentWorker` per run (default `3`). Set to `0` to skip automated review entirely. |
+| `FACTORY_CYPRESS_LLM_TIMEOUT` | Per-request LLM call timeout for this flow (default `900s`). Overrides the shared `FACTORY_LLM_TIMEOUT` — applied via `AnthropicChatOptions.Builder.timeout()`, which Spring AI uses to build a separate client keyed on client-level settings, so the per-flow value always wins. Do not set it too low: a client-side cancel stops neither the server's work nor the billing, so a timeout firing on a slow-but-valid call pays full price for output it discards. |
+| `FACTORY_CYPRESS_SEND_IMAGES` | Send images embedded inline in the story description to the model (default `true`). Set `false` if `FACTORY_LLM_MODEL` points at a model without image support — such a model **rejects** the call outright rather than ignoring the attachment. |
 | `FACTORY_CYPRESS_REFS_EXCLUDED_PROJECTS` | Comma-separated Jira project keys never added to any case's `refs` (default `FAT`). The originating ticket is always kept even if its own project is excluded. Enforced twice: the generation prompt is told upfront not to cite these projects (Provenance block), and `buildRefs()` drops them again, silently, at Assemble/sync time as a backstop — unlike the old router-time design, a drop here is not echoed back into `# Analysis`, since generation has already finished by the time sync applies it. |
 | `FACTORY_CONNECTORS_TESTRAIL_BASE_URL` | TestRail instance base URL |
 | `FACTORY_CONNECTORS_TESTRAIL_USERNAME` | TestRail username (email) |

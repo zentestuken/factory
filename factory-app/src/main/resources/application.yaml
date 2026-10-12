@@ -42,6 +42,10 @@ spring:
       chat: ${FACTORY_LLM_PROVIDER:anthropic}
     anthropic:
       api-key: ${ANTHROPIC_API_KEY:}
+      # Deliberately low: fail-fast is right for a small call, and most flows make small calls.
+      # A flow whose calls are large overrides it per request instead of raising this - see
+      # TestCaseGenAgentWorker.chatOptions(), which sets its own 15-minute timeout. Raising this
+      # globally would also change the failure mode of every other flow.
       timeout: ${FACTORY_LLM_TIMEOUT:300s}
       chat:
         options:
@@ -152,6 +156,10 @@ factory:
     # Send images embedded inline in the story description to the model. Default true.
     # Set false when FACTORY_LLM_MODEL points at a model without image support - such a model
     # rejects a call carrying images outright rather than ignoring them.
+    # Per-request LLM call timeout for this flow (default 15m). Overrides FACTORY_LLM_TIMEOUT
+    # rather than competing with it: it is applied through AnthropicChatOptions.timeout, which
+    # Spring AI uses to build its own client for the call.
+    llm-timeout: ${FACTORY_CYPRESS_LLM_TIMEOUT:}
     send-images: ${FACTORY_CYPRESS_SEND_IMAGES:}
     # Jira projects never added to TestRail refs. Comma-separated. Default FAT.
     refs-excluded-projects: ${FACTORY_CYPRESS_REFS_EXCLUDED_PROJECTS:}

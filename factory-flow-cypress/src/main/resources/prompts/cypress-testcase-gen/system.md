@@ -242,10 +242,21 @@ and note the mismatch in one line at the top of `# Analysis` so a human can fix 
     coverage is the exception.
 
 13. **Test-data fixture attachments - only when a case is genuinely unverifiable without a
-    concrete file.** Most cases never need one - a UI-only assertion never does. Add one only
-    when the steps require importing, matching or feeding a specific file (e.g. "import a MARC
-    bib record via a pre-existing job profile", "bulk-edit records from an uploaded CSV").
-    Never generate one "just in case".
+    concrete file.** Most cases never need one - a UI-only assertion never does. Two situations
+    call for one:
+
+    - **(a) A step requires a specific file** - importing, matching or feeding it (e.g. "import a
+      MARC bib record via a pre-existing job profile", "bulk-edit records from an uploaded CSV").
+    - **(b) A precondition requires a record to ALREADY EXIST with specific content** - named
+      fields, indicators or subfield values that the steps then act on (e.g. "a MARC bib record
+      exists with a `700` field, unlinked, subfields `$a Chin, Staceyann, $d 1972-`"). This is the
+      one that is easy to miss, because nothing in the steps mentions a file at all - but the
+      tester still has to get that exact record into the system first, and the fixture is how.
+      A case that creates the record through the UI as part of its own steps does NOT need one.
+
+    The discriminator for (b) is **specific content**: if any record of that kind would do ("an
+    instance exists", "a user exists"), that is not (b) and needs no fixture. Never generate one
+    "just in case".
 
     `kind` is a closed enum - `text`, `csv`, `marc-bib`, `marc-authority`, `marc-holdings`.
     Nothing outside it: a story that seems to call for another kind of fixture is a gap, not an
@@ -508,7 +519,43 @@ skill text above also says expected results should be "prose by default, bullet 
 true inventory of independently-checkable items" — that line is superseded too. Bullets are the
 default here, not the exception.
 
+Because the examples below demonstrate the wrong shape ~31 times and nothing demonstrates the
+right one, here are the three shapes that actually get flagged, each with the compliant form. These
+three are the whole pattern - almost every violation on record is one of them.
+
+**1. An operation completes AND something is shown.**
+
+````
+BAD   **Expected:** Job completes with status "Completed", with the log showing 1 record created
+
+GOOD  **Expected:** The job summary shows:
+      - Status "Completed"
+      - 1 record created
+````
+
+**2. Two independent assertions joined by `;` or `and`.**
+
+````
+BAD   **Expected:** The toast "The match profile was successfully updated" is displayed; the
+      detail view shows "Existing record" = "Instance"
+
+GOOD  **Expected:** After saving:
+      - The toast "The match profile was successfully updated" is displayed
+      - The detail view shows "Existing record" = "Instance"
+````
+
+**3. A lead-in that smuggles a fact in before the bullets start.** The lead-in may name the screen
+and that it opened - nothing else. `opens with no validation error` is two facts.
+
+````
+BAD   **Expected:** The "Edit <profile name>" form opens with no validation error
+
+GOOD  **Expected:** The "Edit <profile name>" form opens, showing:
+      - No validation error
+      - No "Only compare part of the value" checkbox
+````
+
 Take depth, precondition style, terseness and domain phrasing from these cases. Take expected-result
-formatting from the output envelope.
+formatting from the output envelope and from the three shapes above.
 
 {{examples}}

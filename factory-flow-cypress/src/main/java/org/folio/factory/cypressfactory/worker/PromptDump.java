@@ -11,6 +11,8 @@ import java.nio.file.StandardOpenOption;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Writes the fully rendered prompts of a run to disk so "why did it do that?" can be answered
@@ -39,6 +41,9 @@ public class PromptDump {
     }
 
     /** Per-execution sink. Created fresh in {@code execute()}, so it holds no shared state. */
+    /** The leading number in a dump filename, e.g. {@code 3-generate-attempt1.md}. */
+    private static final Pattern LEADING_NUMBER = Pattern.compile("^(\\d+)-");
+
     public Run forExecution(UUID executionId) {
         return new Run(executionId);
     }
@@ -47,10 +52,38 @@ public class PromptDump {
 
         private final UUID executionId;
         private int sequence;
+        private boolean sequenceSeeded;
         private final Map<String, Path> filesByLabel = new HashMap<>();
 
         private Run(UUID executionId) {
             this.executionId = executionId;
+        }
+
+        /**
+         * Starts this run numbering after whatever is already in the directory.
+         *
+         * <p>A {@code Run} is created per {@code execute()}, so an engine-level step retry gets a
+         * fresh one with {@code sequence} back at zero - and used to overwrite the previous
+         * attempt file for file. Execution 6e2abf8c (2026-10-09) timed out three times and left
+         * exactly three dumps, the last attempt sitting on top of the two that mattered. The
+         * engine attempt number is not visible here ({@code AgentContext} does not carry it, and
+         * a debugging aid is no reason to widen a core record), so continuing the numbering is the
+         * cheap equivalent: later attempts append, and reading the directory in order still shows
+         * what happened when.</p>
+         */
+        private void seedSequence(Path dir) {
+            if (sequenceSeeded) return;
+            sequenceSeeded = true;
+            try (var existing = Files.list(dir)) {
+                sequence = existing.map(f -> f.getFileName().toString())
+                        .map(LEADING_NUMBER::matcher)
+                        .filter(Matcher::find)
+                        .mapToInt(m -> Integer.parseInt(m.group(1)))
+                        .max()
+                        .orElse(0);
+            } catch (Exception e) {
+                // Unreadable directory just means numbering restarts - not worth failing over.
+            }
         }
 
         /**
@@ -66,6 +99,7 @@ public class PromptDump {
 
                 Path dir = root.resolve(executionId.toString());
                 Files.createDirectories(dir);
+                seedSequence(dir);
                 Path file = dir.resolve("%d-%s.md".formatted(++sequence, sanitize(label)));
 
                 Files.writeString(file, """

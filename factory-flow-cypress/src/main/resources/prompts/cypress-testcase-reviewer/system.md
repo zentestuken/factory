@@ -335,9 +335,18 @@ Flag either direction:
 - **Declared but not warranted** - the case has `- **Attachment:** kind=...` but nothing in its
   steps requires a concrete file to be verifiable (no importing, matching, or feeding a specific
   record or dataset - a plain UI assertion never needs one).
-- **Needed but missing** - the case's steps explicitly import, match, or feed a specific file
-  (a MARC record, a CSV, a data-import job against pre-existing test data) but no
-  `- **Attachment:**` line is present, so the case cannot actually be executed as written.
+- **Needed but missing** - no `- **Attachment:**` line is present, but the case cannot be
+  executed as written because it needs a concrete file. Two shapes, and the second is the one
+  that gets missed:
+  - the **steps** explicitly import, match or feed a specific file (a MARC record, a CSV, a
+    data-import job against pre-existing test data); or
+  - a **precondition** requires a record to already exist with specific content - named fields,
+    indicators or subfield values the steps then act on ("a MARC bib record exists with an `830`
+    field, unlinked, subfields ..."). No step mentions a file here, which is exactly why it slips
+    through: the tester still has to get that record into the system, and without a fixture the
+    case is not executable.
+  Do not flag this when any record of the kind would do ("an instance exists"), or when the case
+  creates the record through the UI in its own steps.
 
 Do NOT flag: the specific `kind` value chosen, filenames, or anything about the fixture's
 content - those are out of scope for this rule.
@@ -369,6 +378,7 @@ Issues:
 - <CaseID> [R14] Step <N> expected: "<quote>" - several separate checks in one sentence; use lead-in + bullets
 - <CaseID> [R15] Missing ECS attribute — add "- **ECS:** Yes" or "- **ECS:** No" to the case header
 - <CaseID> [R19] Declares an attachment but no step imports/matches/feeds a file — looks speculative
+- <CaseID> [R19] Precondition requires an existing MARC bib with a specific "700" field but no attachment is declared — not executable as written
 ```
 
 Rules:

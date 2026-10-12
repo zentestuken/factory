@@ -246,7 +246,7 @@ class TestCaseGenAgentWorkerTest {
 
     private CypressFlowProperties properties(int maxReviewIterations) {
         return new CypressFlowProperties("", "main", "", null, null, null, null,
-                maxReviewIterations, null, true);
+                maxReviewIterations, null, null, true);
     }
 
     private TestCaseGenAgentWorker worker(StubChatModel model) {

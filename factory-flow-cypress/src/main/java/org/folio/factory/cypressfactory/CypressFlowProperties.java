@@ -1,5 +1,6 @@
 package org.folio.factory.cypressfactory;
 
+import java.time.Duration;
 import java.util.LinkedHashSet;
 import java.util.Locale;
 import java.util.Set;
@@ -22,6 +23,12 @@ public record CypressFlowProperties(
         Integer maxReviewIterations, // set FACTORY_CYPRESS_MAX_REVIEW_ITERATIONS; default 3; 0 = skip agent review
         Set<String> refsExcludedProjects, // set FACTORY_CYPRESS_REFS_EXCLUDED_PROJECTS; comma-separated Jira
                                           // project keys never added to TestRail refs; default FAT
+        Duration llmTimeout, // set FACTORY_CYPRESS_LLM_TIMEOUT (e.g. 900s); default 15m. Applied per
+                             // request via AnthropicChatOptions.timeout, which Spring AI uses to build
+                             // its own client - so this OVERRIDES the shared FACTORY_LLM_TIMEOUT rather
+                             // than competing with it. A generation call here sends ~140k input tokens
+                             // and may emit 32k, and cancelling such a call is the expensive mistake:
+                             // a client-side cancel stops neither the server work nor the billing.
         Boolean sendImages) { // set FACTORY_CYPRESS_SEND_IMAGES=false to stop sending inline description
                               // images to the model; default true. Needed because a non-vision model
                               // configured through FACTORY_LLM_MODEL REJECTS a call carrying images
@@ -33,6 +40,7 @@ public record CypressFlowProperties(
     static final int DEFAULT_MAX_REVIEW_ITERATIONS = 3;
     static final Set<String> DEFAULT_REFS_EXCLUDED_PROJECTS = Set.of("FAT");
     static final boolean DEFAULT_SEND_IMAGES = true;
+    static final Duration DEFAULT_LLM_TIMEOUT = Duration.ofMinutes(15);
 
     public CypressFlowProperties {
         baseBranch = baseBranch == null || baseBranch.isBlank() ? "main" : baseBranch;
@@ -44,6 +52,8 @@ public record CypressFlowProperties(
                 ? DEFAULT_TESTRAIL_PRIORITY_NAME : testrailPriorityName.strip();
         testrailLabel = (testrailLabel == null || testrailLabel.isBlank()) ? DEFAULT_TESTRAIL_LABEL : testrailLabel;
         sendImages = sendImages == null ? DEFAULT_SEND_IMAGES : sendImages;
+        llmTimeout = llmTimeout == null || llmTimeout.isZero() || llmTimeout.isNegative()
+                ? DEFAULT_LLM_TIMEOUT : llmTimeout;
         if (testrailLabel.length() > 20) {
             throw new IllegalArgumentException(
                     "FACTORY_CYPRESS_TESTRAIL_LABEL is " + testrailLabel.length() + " characters" +

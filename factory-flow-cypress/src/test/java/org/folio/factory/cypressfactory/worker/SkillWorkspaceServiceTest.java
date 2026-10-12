@@ -15,7 +15,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class SkillWorkspaceServiceTest {
 
     private CypressFlowProperties properties(String folioAiRepo) {
-        return new CypressFlowProperties("", "main", folioAiRepo, null, null, null, null, 3, null, true);
+        return new CypressFlowProperties("", "main", folioAiRepo, null, null, null, null, 3, null, null, true);
     }
 
     private SkillWorkspaceService service(GitHubConnector gitHub, String folioAiRepo) {

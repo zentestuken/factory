@@ -208,6 +208,7 @@ class InlineImagePrefetchTest {
 
         assertThat(images.media()).isEmpty();
         assertThat(images.notes()).singleElement().asString()
+                .contains("UIU-3562")
                 .contains("missing.png")
                 .contains("could not be matched to an attachment");
         assertThat(images.placeholders()).containsEntry("!missing.png!",
@@ -223,6 +224,7 @@ class InlineImagePrefetchTest {
 
         assertThat(images.media()).isEmpty();
         assertThat(images.notes()).singleElement().asString()
+                .contains("UIU-3562")
                 .contains("shot.png")
                 .contains("could not be downloaded");
     }
@@ -270,7 +272,7 @@ class InlineImagePrefetchTest {
         InlineImagePrefetch prefetch = new InlineImagePrefetch(connectorReturning(PNG));
         StringBuilder description = new StringBuilder();
         StringBuilder attachments = new StringBuilder("[");
-        for (int i = 1; i <= 5; i++) {
+        for (int i = 1; i <= 6; i++) {
             description.append("Shot ").append(i).append(": !shot").append(i).append(".png!\n");
             attachments.append(i > 1 ? "," : "")
                     .append(attachment(String.valueOf(i), "shot" + i + ".png", "image/png", 1000));
@@ -278,9 +280,9 @@ class InlineImagePrefetchTest {
 
         var images = prefetch.load(issue(description.toString(), attachments.append("]").toString()), true);
 
-        assertThat(images.media()).hasSize(3);
+        assertThat(images.media()).hasSize(4);
         assertThat(images.notes()).hasSize(2);
-        assertThat(images.notes().get(0)).contains("per-run limit of 3 images");
+        assertThat(images.notes().get(0)).contains("per-run limit of 4 images");
     }
 
     @Test

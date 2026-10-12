@@ -67,19 +67,16 @@
                 <p class="card-description" th:text="'Version ' + ${artifact.path('version').asInt()}"></p>
             </div>
             <div class="card-content">
-                <div class="compare-grid">
-                    <div class="field">
-                        <span class="label"
-                              th:text="'v' + ${artifact.path('version').asInt()} + ' (original)'">v1 (original)</span>
-                        <pre class="code-block" th:text="${artifact.path('content').asString()}"></pre>
-                    </div>
-                    <div class="field">
-                        <label class="label" th:for="'edit-' + ${artifact.path('name').asString()}">Your edit (AMEND)</label>
-                        <textarea class="textarea textarea-code" wrap="off"
-                                  th:id="'edit-' + ${artifact.path('name').asString()}"
-                                  th:name="'artifact:' + ${artifact.path('name').asString()}"
-                                  th:text="${artifact.path('content').asString()}"></textarea>
-                    </div>
+                <details class="artifact-original">
+                    <summary class="muted">v<span th:text="${artifact.path('version').asInt()}">1</span> (original, read-only)</summary>
+                    <pre class="code-block" th:text="${artifact.path('content').asString()}"></pre>
+                </details>
+                <div class="field">
+                    <label class="label" th:for="'edit-' + ${artifact.path('name').asString()}">Edit to amend</label>
+                    <textarea class="textarea textarea-code" wrap="off"
+                              th:id="'edit-' + ${artifact.path('name').asString()}"
+                              th:name="'artifact:' + ${artifact.path('name').asString()}"
+                              th:text="${artifact.path('content').asString()}"></textarea>
                 </div>
             </div>
         </div>

@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Test;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -54,5 +55,29 @@ class PromptDumpTest {
         run.writeResponse("triage", "some response");
 
         assertThat(Files.exists(dir)).isFalse();
+    }
+
+    @Test
+    void aSecondRunForTheSameExecutionAppendsInsteadOfOverwriting() throws Exception {
+        // An engine-level step retry gets a fresh Run with its sequence back at zero. It used to
+        // overwrite the previous attempt file for file: execution 6e2abf8c timed out three times
+        // and left three dumps, the last attempt sitting on top of the two that mattered.
+        Path dir = Files.createTempDirectory("prompt-dump-retry");
+        UUID execution = UUID.randomUUID();
+        PromptDump dump = new PromptDump(true, dir);
+
+        PromptDump.Run first = dump.forExecution(execution);
+        first.write("router", "cypress-area-router", Map.of());
+        first.write("generate-attempt1", "cypress-testcase-gen", Map.of());
+
+        PromptDump.Run retry = dump.forExecution(execution);
+        retry.write("router", "cypress-area-router", Map.of());
+
+        try (var files = Files.list(dir.resolve(execution.toString()))) {
+            List<String> names = files.map(f -> f.getFileName().toString()).sorted().toList();
+            assertThat(names)
+                    .contains("1-router.md", "2-generate-attempt1.md", "3-router.md")
+                    .hasSize(3);
+        }
     }
 }

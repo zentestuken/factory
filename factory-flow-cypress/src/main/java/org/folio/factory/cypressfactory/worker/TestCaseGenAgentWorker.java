@@ -33,6 +33,7 @@ import org.springframework.ai.chat.prompt.ChatOptions;
 import org.springframework.ai.content.Media;
 import tools.jackson.databind.JsonNode;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -110,6 +111,8 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
      * successful and yields nothing.
      */
     private static final int REVIEWER_MAX_TOKENS = 32768;
+
+
 
     private static final Logger log = LoggerFactory.getLogger(TestCaseGenAgentWorker.class);
 
@@ -263,6 +266,7 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
     protected ChatOptions.Builder<?> chatOptions(String promptId) {
         boolean reviewing = REVIEWER_PROMPT_ID.equals(promptId);
         return AnthropicChatOptions.builder()
+                .timeout(properties.llmTimeout())
                 .maxTokens(reviewing ? REVIEWER_MAX_TOKENS : maxTokens())
                 .cacheOptions(AnthropicCacheOptions.builder()
                         .strategy(AnthropicCacheStrategy.SYSTEM_ONLY)

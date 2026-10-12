@@ -210,7 +210,7 @@ and neither is additive:
 | Change | What it means for your flow |
 |---|---|
 | Anthropic default model `claude-sonnet-4-5` → `claude-sonnet-4-6` | Any flow that does not set `FACTORY_LLM_MODEL` now runs on a different model. Test Factory included. Pin `FACTORY_LLM_MODEL=claude-sonnet-4-5` if you want the old behaviour while you re-baseline. |
-| New `spring.ai.model.timeout: ${FACTORY_LLM_TIMEOUT:300s}` | Previously unset, so Spring AI's own default applied. A long generation that used to time out may now run to completion instead — which is the point, but it changes the failure mode of a wedged call from "fails fast" to "fails in 5 minutes". |
+| New `spring.ai.model.timeout: ${FACTORY_LLM_TIMEOUT:300s}` | Previously unset, so Spring AI's own default applied. **This stays low on purpose** - fail-fast suits small calls, and raising it globally would change every flow's failure mode. A flow with large calls overrides it **per request** instead: `AnthropicChatOptions.Builder.timeout(Duration)` is read by `AnthropicChatModel` (verified in its bytecode), and `TestCaseGenAgentWorker.chatOptions()` sets 15 minutes for the cypress flow. Worth knowing why: a client-side cancel stops neither the server's work nor the billing, so a timeout firing on a slow-but-working call pays full price for a discarded response - execution 6e2abf8c burned ~$2 that way. |
 
 ## 3. Additive — no action needed
 
@@ -235,6 +235,9 @@ and neither is additive:
 | `JiraConnector.getLinkedIssues`, `GitHubConnector.listDirectory` | **Not additive if you wrote your own connector** — these are abstract, not `default`. Implemented by the shipped REST and `UnconfiguredConnectors` beans, so stock users are unaffected. See §1d. |
 | `ExecutionEngine` retry log now passes the exception | Stack traces appear on step-retry warnings. No control-flow change. |
 | `DebugPartialRunController` | `@ConditionalOnProperty(factory.debug.enabled)` — the bean does not exist unless you set it. |
+| `FACTORY_CYPRESS_LLM_TIMEOUT` and `FACTORY_CYPRESS_SEND_IMAGES` | New `CypressFlowProperties` fields. Both are `default`-safe: `LLM_TIMEOUT` falls back to 15 minutes, `SEND_IMAGES` to `true`. The timeout is applied per-request via `AnthropicChatOptions.Builder.timeout()`, overriding the shared `FACTORY_LLM_TIMEOUT` for this flow only. |
+| Gate UI: original artifact now `<details>` collapsed | The read-only `<pre>` block in `review.html` is wrapped in `<details>` (collapsed by default); the editable `<textarea>` is the primary view. Visual change only — `Amend` logic and all existing gate behaviour are unchanged. Affects every flow's gate page. |
+| `PromptDump` retry-numbering | A second `Run` for the same execution now seeds its sequence counter from existing files, so engine-level step retries append to the dump directory rather than overwriting it. Debug aid only; no production behaviour change. |
 | `review_instructions` now render through `UiFormat.instructionBlocks()` | Gate instructions were previously emitted as one block of text; they are now split into paragraphs and bullet lists. **Every flow's gate page is affected, including Test Factory's** — it is a rendering change only, no descriptor change, and plain prose still renders as one paragraph. Worth a glance at your gate after merging if your instructions lean on manual line breaks. |
 | Gate footer lists `reference_prompts` | Shown only when a gate declares them, so a descriptor that does not is unchanged. Its purpose is to tell a reviewer which automated checks already ran and where to edit them — see §1b. |
 
