@@ -4,6 +4,7 @@ import jakarta.annotation.PostConstruct;
 import org.folio.factory.connectors.github.GitHubConnector;
 import org.folio.factory.core.agent.AgentExecutionException;
 import org.folio.factory.cypressfactory.CypressFlowProperties;
+import org.folio.factory.cypressfactory.prefetch.AreaDetector;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -15,6 +16,7 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.TreeSet;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -99,6 +101,7 @@ public class SkillWorkspaceService {
         }
         warnOnBundleDrift();
         warnOnDeltaDrift();
+        warnOnAreaDrift();
     }
 
     private void cloneRepo() throws Exception {
@@ -256,6 +259,37 @@ public class SkillWorkspaceService {
                         unanchored);
             }
         });
+    }
+
+    /**
+     * Context files the router cannot select (missing from {@link AreaDetector#KNOWN_AREAS}) and
+     * known areas with no context file in the given {@code references/context} directory.
+     */
+    static List<String> areaDrift(Path contextDir) {
+        if (!Files.isDirectory(contextDir)) return List.of();
+        TreeSet<String> onDisk = new TreeSet<>();
+        try (var files = Files.list(contextDir)) {
+            files.map(f -> f.getFileName().toString())
+                    .filter(n -> n.endsWith(".md"))
+                    .forEach(n -> onDisk.add(n.substring(0, n.length() - 3)));
+        } catch (IOException e) {
+            return List.of();
+        }
+        List<String> drift = new java.util.ArrayList<>();
+        onDisk.stream().filter(a -> !AreaDetector.KNOWN_AREAS.contains(a))
+                .forEach(a -> drift.add("unroutable:" + a));
+        AreaDetector.KNOWN_AREAS.stream().filter(a -> !onDisk.contains(a))
+                .forEach(a -> drift.add("missing-file:" + a));
+        return drift;
+    }
+
+    private void warnOnAreaDrift() {
+        List<String> drift = areaDrift(skillRoot().resolve("references/context"));
+        if (!drift.isEmpty()) {
+            log.warn("[SKILL] Area context files out of sync with AreaDetector.KNOWN_AREAS {} - "
+                    + "'unroutable' files can never be selected by the router; "
+                    + "update AreaDetector (KNOWN_AREAS, PROJECT_KEY_AREAS, AREA_KEYWORDS)", drift);
+        }
     }
 
     /** Cheap drift signal: the bundled fallback silently rotting is the real hazard, not availability. */

@@ -26,11 +26,11 @@ public class AreaDetector {
     /** SKILL.md: "A story can span two areas — read both context files." */
     public static final int MAX_AREAS = 2;
 
-    /** The 29 context-file stems under {@code references/context/}. */
+    /** The 30 context-file stems under {@code references/context/}. */
     public static final List<String> KNOWN_AREAS = List.of(
             "agreements", "bulk-edit", "check-in", "check-out", "circulation-log",
             "circulation-settings", "consortium-manager", "course-reserves", "data-export",
-            "data-import", "dcb", "eholdings", "fees-fines", "finance", "inventory",
+            "data-import", "dcb", "eholdings", "eureka", "fees-fines", "finance", "inventory",
             "invoices", "licenses", "lists", "loans", "marc-authority",
             "marc-bib-quickmarc", "mediated-requests", "oai-pmh", "orders", "organizations",
             "patron-notices", "receiving", "requests", "users");
@@ -46,6 +46,16 @@ public class AreaDetector {
             Map.entry("CIRC", List.of("circulation-settings")),
             Map.entry("CIRCSTORE", List.of("circulation-settings")),
             Map.entry("DIUTILS", List.of("data-import")),
+            Map.entry("EUREKA", List.of("eureka")),
+            Map.entry("KEYCLOAK", List.of("eureka")),
+            Map.entry("MGRENTITLE", List.of("eureka")),
+            Map.entry("MODLOGINKC", List.of("eureka")),
+            Map.entry("MODROLESKC", List.of("eureka")),
+            Map.entry("MODSCHED", List.of("eureka")),
+            Map.entry("STCOR", List.of("eureka")),
+            Map.entry("UID", List.of("eureka")),
+            Map.entry("UIPSELAPP", List.of("eureka")),
+            Map.entry("UISAUTHCOM", List.of("eureka")),
             Map.entry("EDGCOURSES", List.of("course-reserves")),
             Map.entry("EDGEINV", List.of("inventory")),
             Map.entry("EDGEUSERS", List.of("users")),
@@ -100,7 +110,7 @@ public class AreaDetector {
             Map.entry("MODUIMP", List.of("users")),
             Map.entry("MODUSERBL", List.of("users")),
             Map.entry("MODUSERS", List.of("users")),
-            Map.entry("MODUSERSKC", List.of("users")),
+            Map.entry("MODUSERSKC", List.of("eureka")),
             Map.entry("UIBULKED", List.of("bulk-edit")),
             Map.entry("UICAL", List.of("circulation-settings")),
             Map.entry("UICAT", List.of("marc-authority")),
@@ -129,7 +139,7 @@ public class AreaDetector {
             Map.entry("UIREC", List.of("receiving")),
             Map.entry("UIREQ", List.of("requests")),
             Map.entry("UIREQMED", List.of("mediated-requests", "requests")),
-            Map.entry("UIROLES", List.of("users")),
+            Map.entry("UIROLES", List.of("eureka")),
             Map.entry("UISINVCOMP", List.of("inventory")),
             Map.entry("UISMRCCOMP", List.of("marc-authority")),
             Map.entry("UIU", List.of("users"))
@@ -168,6 +178,12 @@ public class AreaDetector {
             Map.entry("oai-pmh", "oai-pmh"),
             Map.entry("oai pmh", "oai-pmh"),
             Map.entry("harvest", "oai-pmh"),
+            Map.entry("keycloak", "eureka"),
+            Map.entry("capability set", "eureka"),
+            Map.entry("authorization role", "eureka"),
+            Map.entry("authorization policy", "eureka"),
+            Map.entry("refresh token", "eureka"),
+            Map.entry("session timeout", "eureka"),
             Map.entry("consortium manager", "consortium-manager"),
             Map.entry("consortia", "consortium-manager"),
             Map.entry("consortium", "consortium-manager"),

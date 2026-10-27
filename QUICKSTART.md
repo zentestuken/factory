@@ -217,7 +217,7 @@ FACTORY_CONNECTORS_JIRA_API_TOKEN=your-token
 # GitHub — both clones are public and need no token. The token is used for the API
 # fallback tiers and for context enrichment (package.json / en_US.json from ui-* repos).
 FACTORY_CONNECTORS_GITHUB_TOKEN=ghp_...
-# Repo containing FOLIO AI skills — SKILL.md, examples.md and the 29 area context files.
+# Repo containing FOLIO AI skills — SKILL.md, examples.md and the 30 area context files.
 # Cloned to skillsClone/ at startup; GitHub API and the bundled jar copies are the fallbacks.
 FACTORY_CYPRESS_FOLIO_AI_REPO=folio-org/folio-eureka-ai-dev
 # Repo where generated Cypress specs will be committed (Phase 3+)
@@ -264,7 +264,7 @@ On first startup two background clones run (shallow, ~30 s each, non-blocking):
 
 - `TafSyncService` → `folio-org/stripes-testing` into `cypressTafClone/` (Cypress fragments)
 - `SkillWorkspaceService` → `FACTORY_CYPRESS_FOLIO_AI_REPO` into `skillsClone/` (SKILL.md,
-  `examples.md`, the 29 area context files)
+  `examples.md`, the 30 area context files)
 
 Until the clones are ready both fall back to the GitHub API and then to copies bundled in the
 jar — no action needed. `SKILL.md` is the one hard dependency: if it cannot be resolved from

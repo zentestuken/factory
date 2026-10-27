@@ -146,4 +146,24 @@ class SkillWorkspaceServiceTest {
                 .isInstanceOf(AgentExecutionException.class)
                 .hasMessageContaining("refusing to generate");
     }
+
+    @Test
+    void areaDriftFlagsContextFilesTheRouterCannotSelectAndKnownAreasWithoutAFile(
+            @org.junit.jupiter.api.io.TempDir java.nio.file.Path dir) throws Exception {
+        for (String area : org.folio.factory.cypressfactory.prefetch.AreaDetector.KNOWN_AREAS) {
+            java.nio.file.Files.writeString(dir.resolve(area + ".md"), "x");
+        }
+        assertThat(SkillWorkspaceService.areaDrift(dir)).isEmpty();
+
+        java.nio.file.Files.writeString(dir.resolve("brand-new.md"), "x");
+        java.nio.file.Files.delete(dir.resolve("dcb.md"));
+
+        assertThat(SkillWorkspaceService.areaDrift(dir))
+                .containsExactly("unroutable:brand-new", "missing-file:dcb");
+    }
+
+    @Test
+    void areaDriftIsSilentWhenThereIsNoCloneToInspect(@org.junit.jupiter.api.io.TempDir java.nio.file.Path dir) {
+        assertThat(SkillWorkspaceService.areaDrift(dir.resolve("absent"))).isEmpty();
+    }
 }

@@ -130,4 +130,15 @@ class AreaDetectorTest {
         assertThat(table).contains("UIMARCAUTH");
         assertThat(table).contains("quickmarc");
     }
+
+    @Test
+    void eurekaIsARoutableAreaAndOwnsTheRolesAndAuthPrefixes() {
+        assertThat(detector.resolve(List.of("eureka"), issue("X-1", "", ""))).containsExactly("eureka");
+        assertThat(detector.detectByKeywords(issue("UIROLES-202", "Show hidden capabilities", "")))
+                .containsExactly("eureka");
+        assertThat(detector.detectByKeywords(issue("MODUSERSKC-1", "", ""))).containsExactly("eureka");
+        assertThat(detector.detectByKeywords(issue("ZZZZ-1", "Keycloak realm setup", "")))
+                .containsExactly("eureka");
+        assertThat(detector.areaTable()).contains("`eureka` | ").contains("UIROLES");
+    }
 }

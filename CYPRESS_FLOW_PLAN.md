@@ -47,7 +47,7 @@ flow keeps no per-step artifacts, only the finished plan and, on a retry, the hu
 ```
 [SkillWorkspaceService]   NEW   git clone/pull FACTORY_CYPRESS_FOLIO_AI_REPO
      └─ {user.dir}/skillsClone/skills/write-testrail-cases/
-          SKILL.md · references/examples.md · references/context/*.md  (29 area files)
+          SKILL.md · references/examples.md · references/context/*.md  (30 area files)
 
 [TafSyncService]                git clone/pull stripes-testing
      └─ {user.dir}/cypressTafClone/
@@ -73,9 +73,9 @@ flow keeps no per-step artifacts, only the finished plan and, on a retry, the hu
      │      ── SKILL.md step 1 is AGENT JUDGMENT, not keyword matching:
      │           "the story itself is the source of truth"; story text outranks the
      │           Jira project prefix
-     │      ── input: raw issue + linked issues + the 29-area table lifted from SKILL.md
+     │      ── input: raw issue + linked issues + the 30-area table lifted from SKILL.md
      │      ── returns: areas[1–2] · one-line detection rationale
-     │      ── AreaDetector validates the names against the 29 real context files;
+     │      ── AreaDetector validates the names against the 30 real context files;
      │           unknown / empty / call failure → keyword-score fallback
      │      ── output is 3 small FACTS, not a summary — the mega-call still receives
      │           the raw issue and re-reasons with everything visible
@@ -274,7 +274,7 @@ Degradation is **not uniform**. One asset is a hard dependency; the rest are sof
 **Bundle scope: `SKILL.md` + `examples.md` only** (~100 KB), under
 `factory-flow-cypress/src/main/resources/references/`.
 
-- Not the 29 context files (890 KB). Their absence has a documented graceful path, and checking
+- Not the 30 context files (890 KB). Their absence has a documented graceful path, and checking
   in files we do not own creates a fork that drifts.
 - `folio-eureka-ai-dev` is **public**, so tiers 1 and 2 both work with no credentials
   (`git clone` needs none; the GitHub API is unauthenticated at 60 req/hr, far above our usage).
@@ -323,7 +323,7 @@ currently **18,577 bytes** against **27,467** live — already ~33% behind, sile
 |---|---|---|
 | `SkillWorkspaceService` | No | git clone/pull of the FOLIO AI skills repo → local disk. Modelled on `TafSyncService`. Not a flow step. |
 | `TafSyncService` | No | git clone/pull of `stripes-testing` → local disk. Not a flow step. |
-| `AreaDetector` | No | **Validator + fallback** for the router call: resolves returned area names against the 29 real context files; keyword-scores story text + Jira prefix when the router fails or returns something unknown. |
+| `AreaDetector` | No | **Validator + fallback** for the router call: resolves returned area names against the 30 real context files; keyword-scores story text + Jira prefix when the router fails or returns something unknown. |
 | `ContextPrefetch` | No | Reads area context file(s) from the skill clone; runs the 5 thin-context triggers; enriches from GitHub/Jira when triggered. |
 | `FragmentPrefetch` | No | Lists + keyword-scores TAF fragments for the detected area. |
 | `CoveragePrefetch` | No | Area-matched TestRail sections → existing cases; dedup by case id, cap 150. Renders a title + precondition index, and full bodies for triage-nominated candidates. |
@@ -634,7 +634,7 @@ produce no artifacts.
 
 | Service | Entry point |
 |---|---|
-| `AreaDetector` | `resolve(List<String> routerAreas, JsonNode issue) → List<String>`<br>`areaTable() → String` (the 29-row table for the router prompt) |
+| `AreaDetector` | `resolve(List<String> routerAreas, JsonNode issue) → List<String>`<br>`areaTable() → String` (the 30-row table for the router prompt) |
 | `ContextPrefetch` | `load(List<String> areas, JiraIssue issue, List<JiraIssue> linkedIssues) → ContextBundle(text, sourceNote, missingAreas, enriched, qualityNote, linkNotes)` |
 | `FragmentPrefetch` | `scan(List<String> areas, String summary) → String` |
 | `CoveragePrefetch` | `load(List<String> areas) → Coverage(index, cases, sections)`<br>`Coverage.select(List<Long>, int cap)`, `Coverage.renderCandidates(List<Long>)` |
@@ -644,11 +644,11 @@ produce no artifacts.
 Notes:
 - `AreaDetector` holds `AREA_KEYWORDS`, `PROJECT_KEY_AREAS` and `detectAreas()`. It does not
   choose the area — the router call does. Its two jobs:
-  - `resolve(routerAreas, issue)` — map each router-returned name to one of the 29 real context
+  - `resolve(routerAreas, issue)` — map each router-returned name to one of the 30 real context
     files (case-insensitive, hyphen/space tolerant). Any name that does not resolve is dropped
     and logged at WARN. If nothing resolves, or the router call failed, fall back to keyword
     scoring on raw issue `summary` + `description` + `labels` + project key.
-  - `areaTable()` — the 29-row Area/context-file/keywords table, rendered for the router prompt.
+  - `areaTable()` — the 30-row Area/context-file/keywords table, rendered for the router prompt.
 - Cap at 2 areas (SKILL.md: "A story can span two areas — read both context files"). The router
   is instructed to return at most 2; `resolve()` truncates if it returns more.
 - `ContextPrefetch` owns `isThinContext`, `isDraftContext`, `countKeyBusinessRules`,
@@ -704,9 +704,13 @@ Notes:
 - Every image that does not reach the model leaves a placeholder in the description text **and** a
   gate note. `FACTORY_CYPRESS_SEND_IMAGES=false` turns the whole thing off, which matters because a
   non-vision model rejects a call carrying media rather than ignoring it.
-- `AREA_KEYWORDS` area names must match the 29 context filenames exactly
-  (`agreements`, `bulk-edit`, `check-in`, …). Log a startup WARN for any area name with no
-  matching file, and for any context file with no area entry (drift check against MQA's table).
+- `KNOWN_AREAS` must match the 30 context filenames exactly (`agreements`, `bulk-edit`,
+  `check-in`, …) - the router can only choose from it, so a context file missing from the list is
+  unroutable (this hid `eureka` from the router: UIROLES-202 was grounded on `users.md`).
+  `SkillWorkspaceService.warnOnAreaDrift()` logs a startup WARN for any context file in the clone
+  that is not in `KNOWN_AREAS` (`unroutable:<stem>`) and any known area with no file
+  (`missing-file:<stem>`). When MQA adds a context file, also add its Jira prefixes and keywords to
+  `PROJECT_KEY_AREAS` / `AREA_KEYWORDS`.
 
 ### The generation worker
 
@@ -985,7 +989,7 @@ as the GitHub fallback.
 | `TestCaseGenAgentWorkerTest` (`buildRefs`/`unionRefs` group) | issue key always first and always present for any case — when a case's own refs omit it, list unrelated keys only, list malformed junk (`"the story"`, `"ERM"`, `"123"`), list duplicates in mixed case, or are empty; non-Jira-key values dropped; excluded-project keys dropped and reported separately; `unionRefs` dedupes across multiple cases into the plan-level frontmatter value |
 | `TestPlanParserTest` | `# Test Cases` scoping (a `## Notes: x` heading in `# Analysis` must **not** parse as a case); multi-line expected; nested preconditions; validator catches zero cases / zero steps / blank expected |
 | `ContextPrefetchTest` | reads from clone; GitHub fallback; classpath fallback; each of the 5 thin-context triggers |
-| `SkillWorkspaceServiceTest` | tier resolution clone → GitHub → classpath, and the reported `Source` for each; `isReady()` false before sync; **`requireSkill()` throws when all three tiers fail**; missing context file returns empty (soft) while missing SKILL.md throws (hard); stale-clone-used-when-pull-fails |
+| `SkillWorkspaceServiceTest` | tier resolution clone → GitHub → classpath, and the reported `Source` for each; `isReady()` false before sync; `areaDrift()` flags unroutable context files / known areas without a file; **`requireSkill()` throws when all three tiers fail**; missing context file returns empty (soft) while missing SKILL.md throws (hard); stale-clone-used-when-pull-fails |
 | `DevTeamCatalogTest` | all 27 teams parse; name → TestRail id; case-insensitive and `"… Team"`-tolerant lookup; the TestRail spelling resolves where it differs from Jira (`BAMA` → `Bama`); unknown team left untouched rather than guessed; a recognised team with no TestRail id is found but not syncable |
 
 **Unit — worker behaviour**
@@ -1040,7 +1044,7 @@ Docker must be running (Testcontainers). Full gate: `mvn verify`.
 | Prompt is ~48–64k input tokens; 3 review iterations ≈ 200k total | Measured acceptable (~$0.60–1.20/run). **Prompt caching is implemented** over the stable SKILL.md + examples prefix (P3), which removes most of the repeat cost inside a run. |
 | Router picks a wrong or non-existent area | `AreaDetector.resolve()` drops unresolvable names; total failure falls back to keyword scoring. The generation prompt also tells the agent to flag a mismatched context file in `# Analysis` rather than generate against it — so a bad route is visible at Gate 1 instead of silent. |
 | Router adds a call and a failure mode to every run | ~5k tokens / ~$0.02 / ~2s. Every failure path falls back to the old keyword behaviour — the router can degrade the run but never break it. |
-| `AREA_KEYWORDS` names drift from MQA's 29 context files | Startup WARN drift check. Affects only the keyword fallback path. |
+| MQA adds a context file that `KNOWN_AREAS` lacks | Startup WARN (`unroutable:<stem>`) from `SkillWorkspaceService.warnOnAreaDrift()`. Without the fix the router cannot select the area at all, not just the keyword fallback. |
 | Skill clone unavailable | Three-tier chain per asset (Part I §4). `SKILL.md` is a hard dependency and fails the step rather than degrading; everything else proceeds with a note in `# Analysis`. |
 | Bundled classpath copies go stale unnoticed | Source + age printed in `# Analysis` every run; startup WARN on >10% size drift; `scripts/update-cypress-testcase-skill-bundle.sh` run deliberately (Part I §4). |
 | `# Analysis` is a section rather than its own artifact, so amending it at Gate 1 means editing one textarea | Fewer fields, not more. Revisit if reviewers complain. |
@@ -1051,7 +1055,7 @@ Docker must be running (Testcontainers). Full gate: `mvn verify`.
 
 1. **Area table source of truth** — the Java `AREA_KEYWORDS` map is authoritative, with a
    warn-only drift check against SKILL.md's table rather than parsing that table at runtime.
-   The map feeds both the router prompt and the keyword fallback, so drift is costly.
+   The map feeds both the router prompt and the keyword fallback, so drift is costly (see `warnOnAreaDrift()`).
 2. **Reviewer scope** — the reviewer currently sees only the cases. Consider giving it
    `# Analysis` too so it can flag AC coverage gaps, not just formatting. Defer to a follow-up.
 3. **Tool-calling / `claude -p`** — out of scope. The step boundary and artifact contract hold
@@ -1319,7 +1323,7 @@ factory-flow-cypress/
 | GitHub connector | `factory-connectors` | Second-tier asset fetch (`getFileContent`, `listDirectory`) and context enrichment. |
 | `write-testrail-cases/SKILL.md` | MQA skill repo | Loaded at runtime as the generation system prompt. Never forked. |
 | `references/examples.md` | MQA skill repo | Loaded at runtime as the few-shot style anchor. |
-| Area context files (29 × `references/context/*.md`) | MQA skill repo | Loaded at runtime for the detected area. |
+| Area context files (30 × `references/context/*.md`) | MQA skill repo | Loaded at runtime for the detected area. |
 | TAF fragments and `permissions.js` | `stripes-testing` | Scored and excerpted for automation notes and the `Automatable` flag. |
 
 Part III additionally reuses `ScriptBundleCodec` (`factory-agents`) and TAF's `CLAUDE.md` and
