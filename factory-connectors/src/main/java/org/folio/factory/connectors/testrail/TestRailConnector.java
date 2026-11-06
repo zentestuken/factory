@@ -1,5 +1,8 @@
 package org.folio.factory.connectors.testrail;
 
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.util.JSONPObject;
+
 import java.util.List;
 import java.util.Map;
 
@@ -69,6 +72,11 @@ public interface TestRailConnector {
     default List<TestRailCase> getCases(long sectionId) {
         throw new UnsupportedOperationException("getCases not supported by this TestRail connector");
     }
+
+    /**
+     * Returns details of a single test case
+     */
+    JsonNode getTestCaseDetails(String testCaseId);
 
     /**
      * Returns all sections with their full hierarchical paths (e.g. {@code "MARC › MARC authority"}).

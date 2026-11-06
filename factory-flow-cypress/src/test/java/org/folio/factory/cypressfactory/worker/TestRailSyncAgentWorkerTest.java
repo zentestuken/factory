@@ -10,6 +10,8 @@ import org.folio.factory.cypressfactory.plan.DevTeamCatalog;
 import org.folio.factory.cypressfactory.plan.TestPlanParser;
 import org.junit.jupiter.api.Test;
 
+import tools.jackson.databind.JsonNode;
+
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -697,6 +699,10 @@ class TestRailSyncAgentWorkerTest {
         }
 
         @Override
+        public JsonNode getTestCaseDetails(String testCaseId) {
+            return null;
+        }
+
         public List<org.folio.factory.connectors.testrail.TestRailFieldOption> getCaseTypes() {
             return List.of(
                     new org.folio.factory.connectors.testrail.TestRailFieldOption(1, "Automated", null),

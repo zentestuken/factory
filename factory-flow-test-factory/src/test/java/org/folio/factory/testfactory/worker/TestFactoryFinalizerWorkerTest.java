@@ -27,6 +27,7 @@ import ch.qos.logback.core.read.ListAppender;
 import org.slf4j.LoggerFactory;
 
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import tools.jackson.databind.JsonNode;
 
 import java.util.List;
 import java.util.Map;
@@ -88,6 +89,11 @@ class TestFactoryFinalizerWorkerTest {
 
         @Override
         public void addResults(long runId, Map<Long, Boolean> results, String comment) {
+        }
+
+        @Override
+        public JsonNode getTestCaseDetails(String testCaseId) {
+            return null;
         }
     }
 

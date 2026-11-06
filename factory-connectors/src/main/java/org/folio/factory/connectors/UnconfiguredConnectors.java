@@ -4,6 +4,7 @@ import org.folio.factory.connectors.github.GitHubConnector;
 import org.folio.factory.connectors.jira.JiraConnector;
 import org.folio.factory.connectors.jira.JiraIssue;
 import org.folio.factory.connectors.testrail.TestRailConnector;
+import tools.jackson.databind.JsonNode;
 
 import java.util.List;
 import java.util.Map;
@@ -148,6 +149,11 @@ public final class UnconfiguredConnectors {
         @Override
         public List<org.folio.factory.connectors.testrail.TestRailCase> getCases(long sectionId) {
             return List.of();
+        }
+
+        @Override
+        public JsonNode getTestCaseDetails(String testCaseId) {
+            throw notConfigured();
         }
 
         @Override
