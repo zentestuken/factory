@@ -86,7 +86,7 @@ public abstract class AbstractLlmAgentWorker implements AgentWorker {
         }
     }
 
-    private ChatClient.ChatClientRequestSpec buildPrompt(String system, String user) {
+    protected ChatClient.ChatClientRequestSpec buildPrompt(String system, String user) {
         ChatClient.ChatClientRequestSpec spec = chatClient.prompt();
         Integer tokens = maxTokens();
         if (tokens != null) {

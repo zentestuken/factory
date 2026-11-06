@@ -8,6 +8,7 @@ import org.folio.factory.core.agent.AgentResult;
 import org.folio.factory.core.agent.ArtifactContent;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.client.ChatClient;
+import tools.jackson.databind.JsonNode;
 
 import java.util.List;
 import java.util.Map;
@@ -70,6 +71,12 @@ class ScenarioAnalysisAgentWorkerTest {
             @Override public long addCase(long s, String t, String steps, String exp) { return 0; }
             @Override public long addRun(String n, List<Long> ids) { return 0; }
             @Override public void addResults(long r, Map<Long, Boolean> res, String c) {}
+
+            @Override
+            public JsonNode getTestCaseDetails(String testCaseId) {
+                return null;
+            }
+
             @Override public List<String> listSectionPaths() { return sections; }
         };
 

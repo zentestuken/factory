@@ -120,6 +120,14 @@ public class TestRailRestConnector implements TestRailConnector, ConnectorHealth
     }
 
     @Override
+    public JsonNode getTestCaseDetails(String testCaseId) {
+        return restClient.get()
+                .uri("/index.php?/api/v2/get_case/{testCaseId}", testCaseId)
+                .retrieve()
+                .body(JsonNode.class);
+    }
+
+    @Override
     public long getOrCreateLabel(String title) {
         JsonNode response = restClient.get()
                 .uri("/index.php?/api/v2/get_labels/{projectId}", properties.projectId())

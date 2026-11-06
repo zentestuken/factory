@@ -9,6 +9,7 @@ import org.folio.factory.core.agent.AgentResult;
 import org.folio.factory.core.agent.ArtifactContent;
 import org.folio.factory.cypressfactory.CypressFlowProperties;
 import org.junit.jupiter.api.Test;
+import tools.jackson.databind.JsonNode;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -81,6 +82,11 @@ class CoverageLoaderWorkerTest {
         @Override
         public List<TestRailCase> getCases(long sectionId) {
             return casesBySection.getOrDefault(sectionId, List.of());
+        }
+
+        @Override
+        public JsonNode getTestCaseDetails(String testCaseId) {
+            return null;
         }
     }
 

@@ -7,6 +7,7 @@ import org.folio.factory.core.agent.AgentResult;
 import org.folio.factory.core.agent.ArtifactContent;
 import org.folio.factory.cypressfactory.CypressFlowProperties;
 import org.junit.jupiter.api.Test;
+import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 import java.util.List;
@@ -479,6 +480,11 @@ class TestRailSyncAgentWorkerTest {
         @Override
         public long resolveSectionByPath(String path) {
             return resolvedSectionId;
+        }
+
+        @Override
+        public JsonNode getTestCaseDetails(String testCaseId) {
+            return null;
         }
     }
 }

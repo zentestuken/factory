@@ -1,0 +1,42 @@
+id: test-automation-factory
+name: Test Automation Factory
+version: 1.0.0
+triggers:
+  - event_type: manual
+input_schema:
+  required: [testCaseId]
+output_schema:
+  artifacts: [automated_test.md]
+retry_policy:
+  max_attempts: 1
+  backoff_seconds: [30, 120, 300]
+agent_chain:
+  - step_id: testrail-get-test
+    type: AGENT
+    worker_id: cypress-testrail-get-test
+    inputs: ["$trigger"]
+    outputs: [testCaseDetails]
+
+  - step_id: find-similar-automated-test
+    type: AGENT
+    worker_id: cypress-test-framework-explorer
+    inputs: [testCaseDetails]
+    outputs: [relatedFiles]
+
+#  - step_id: draft-automate-test-case
+#    type: AGENT
+#    worker_id: cypress-draft-automate-test-case
+#    inputs: [testCaseDetails, relatedFiles]
+#    outputs: [draftTestScripts]
+
+  - step_id: automate-test-case
+    type: AGENT
+    worker_id: cypress-automate-test-case
+    inputs: [testCaseDetails, relatedFiles]
+    outputs: [generationSummary]
+
+  - step_id: review-automated-test-case
+    type: AGENT
+    worker_id: cypress-review-automated-test-case
+    inputs: [ testCaseDetails, relatedFiles, generationSummary ]
+    outputs: [ reviewSummary ]
