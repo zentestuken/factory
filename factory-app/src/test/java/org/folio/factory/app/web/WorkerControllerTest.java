@@ -81,7 +81,7 @@ class WorkerControllerTest {
         when(registry.all()).thenReturn(Map.of("triage", llm, "finalizer", plain));
 
         StepDescriptor agentStep = new StepDescriptor("triage-step", StepType.AGENT, "triage",
-                null, null, List.of(), List.of(), Map.of());
+                null, null, List.of(), null, List.of(), Map.of());
         FlowDescriptor flow = new FlowDescriptor("test-factory", "Test Factory", "1.0.0",
                 List.of(), null, null, List.of(agentStep), RetryPolicy.DEFAULT);
         when(flowRegistry.all()).thenReturn(List.of(flow));

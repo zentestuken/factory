@@ -19,12 +19,43 @@
         <span th:text="'Error: ' + ${pkg.path('error').asString()}"></span>
     </div>
 
+    <div class="alert alert-info" role="alert" th:if="${isRetry}">
+        <span><strong>Retry run</strong> - this execution was re-generated from QA feedback.
+        See <em>hitl_feedback.md</em> in the artifacts below for what was asked for.</span>
+    </div>
+
     <div class="card">
         <div class="card-header">
             <h2 class="card-title">Instructions</h2>
         </div>
         <div class="card-content">
-            <p th:text="${pkg.path('instructions').asString()}"></p>
+            <th:block th:each="block : ${instructionBlocks}">
+                <p th:if="${block['type'] == 'paragraph'}" th:text="${block['text']}"></p>
+                <ul class="instruction-list" th:if="${block['type'] == 'list'}">
+                    <li th:each="item : ${block['items']}" th:text="${item}"></li>
+                </ul>
+            </th:block>
+            <p th:if="${#lists.isEmpty(instructionBlocks)}" class="muted">
+                No instructions were provided for this gate.</p>
+        </div>
+        <div class="card-footer" th:if="${!#lists.isEmpty(referencePrompts)}">
+            <p class="muted reference-prompts">
+                <strong>Automated checks already applied.</strong>
+                Before reaching this gate the artifacts were reviewed by an agent against the
+                criteria in
+                <th:block th:each="prompt,it : ${referencePrompts}">
+                    <a th:href="@{'/prompts/' + ${prompt['id']}}"
+                       th:text="${prompt['id']}">prompt</a><th:block
+                       th:text="${it.last} ? '.' : ', '"></th:block>
+                </th:block>
+                Read it to see exactly what was and was not checked — approval still rests on your
+                judgement of coverage and correctness, which no checklist covers.
+            </p>
+            <p class="muted reference-prompts" th:each="prompt : ${referencePrompts}">
+                Wrong or out of date? Edit
+                <code th:text="${prompt['sourcePath']}">path</code>
+                in the factory repo and restart the app.
+            </p>
         </div>
     </div>
 
@@ -36,19 +67,16 @@
                 <p class="card-description" th:text="'Version ' + ${artifact.path('version').asInt()}"></p>
             </div>
             <div class="card-content">
-                <div class="compare-grid">
-                    <div class="field">
-                        <span class="label"
-                              th:text="'v' + ${artifact.path('version').asInt()} + ' (original)'">v1 (original)</span>
-                        <pre class="code-block" th:text="${artifact.path('content').asString()}"></pre>
-                    </div>
-                    <div class="field">
-                        <label class="label" th:for="'edit-' + ${artifact.path('name').asString()}">Your edit (AMEND)</label>
-                        <textarea class="textarea textarea-code" wrap="off"
-                                  th:id="'edit-' + ${artifact.path('name').asString()}"
-                                  th:name="'artifact:' + ${artifact.path('name').asString()}"
-                                  th:text="${artifact.path('content').asString()}"></textarea>
-                    </div>
+                <details class="artifact-original">
+                    <summary class="muted">v<span th:text="${artifact.path('version').asInt()}">1</span> (original, read-only)</summary>
+                    <pre class="code-block" th:text="${artifact.path('content').asString()}"></pre>
+                </details>
+                <div class="field">
+                    <label class="label" th:for="'edit-' + ${artifact.path('name').asString()}">Edit to amend</label>
+                    <textarea class="textarea textarea-code" wrap="off"
+                              th:id="'edit-' + ${artifact.path('name').asString()}"
+                              th:name="'artifact:' + ${artifact.path('name').asString()}"
+                              th:text="${artifact.path('content').asString()}"></textarea>
                 </div>
             </div>
         </div>
@@ -61,18 +89,65 @@
                            placeholder="your name">
                 </div>
                 <div class="field">
-                    <label class="label" for="comments">Comments</label>
-                    <textarea class="textarea" id="comments" name="comments" rows="3"></textarea>
+                    <label class="label" for="comments">Notes / Re-generation feedback</label>
+                    <textarea class="textarea" id="comments" name="comments" rows="3"
+                              th:placeholder="${retryEnabled} ? 'Describe what needs to change (required for Re-generate, optional otherwise)' : 'Optional notes'"></textarea>
+                </div>
+            </div>
+            <div class="card-content">
+                <div class="table-wrap">
+                    <table class="decision-legend">
+                        <caption class="sr-only">What each decision does</caption>
+                        <tbody>
+                        <tr>
+                            <th scope="row">Approve</th>
+                            <td>Accept as-is. The pipeline continues to the next step.</td>
+                        </tr>
+                        <tr>
+                            <th scope="row">Amend</th>
+                            <td>Save your edits from the boxes above as a new artifact version,
+                                then continue. The original version is kept.</td>
+                        </tr>
+                        <tr th:if="${retryEnabled}">
+                            <th scope="row">Reject and Re-generate</th>
+                            <td>Terminate this execution and immediately start a new one seeded
+                                with the current artifacts plus your notes.
+                                <strong>Notes are required.</strong></td>
+                        </tr>
+                        <tr>
+                            <th scope="row">Reject</th>
+                            <td>Terminate permanently — nothing is re-run. Use this when the story
+                                is not ready, not when the output needs another pass.</td>
+                        </tr>
+                        </tbody>
+                    </table>
                 </div>
             </div>
             <div class="card-footer">
                 <button class="btn btn-primary" type="submit" name="decision" value="APPROVE">Approve</button>
                 <button class="btn btn-outline" type="submit" name="decision" value="AMEND">Amend (save edits)</button>
+                <button th:if="${retryEnabled}" class="btn btn-outline" type="submit"
+                        name="decision" value="REJECT_AND_RETRY"
+                        id="reject-retry-btn" disabled="disabled"
+                        data-confirm="Reject and re-generate? The current execution will be terminated and a new one started with your feedback.">Reject and Re-generate</button>
                 <button class="btn btn-destructive" type="submit" name="decision" value="REJECT"
-                        data-confirm="Reject this review? The execution will be terminated.">Reject</button>
+                        data-confirm="Reject permanently — the execution will be terminated with no re-run.">Reject</button>
             </div>
         </div>
     </form>
+    <th:block th:if="${retryEnabled}">
+    <script>
+        (function() {
+            var comments = document.getElementById('comments');
+            var retryBtn = document.getElementById('reject-retry-btn');
+            if (comments && retryBtn) {
+                comments.addEventListener('input', function() {
+                    retryBtn.disabled = !this.value.trim();
+                });
+            }
+        })();
+    </script>
+    </th:block>
 
     <div class="card" th:if="${review.status.name() != 'PENDING'}">
         <div class="card-header">

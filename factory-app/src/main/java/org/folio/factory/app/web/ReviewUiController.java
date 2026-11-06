@@ -1,5 +1,7 @@
 package org.folio.factory.app.web;
 
+import org.folio.factory.agents.prompt.PromptCatalog;
+import org.folio.factory.app.hitl.HitlRetryService;
 import org.folio.factory.core.domain.HitlReview;
 import org.folio.factory.core.domain.HitlReviewStatus;
 import org.folio.factory.core.hitl.HitlDecision;
@@ -20,6 +22,7 @@ import org.springframework.web.servlet.mvc.support.RedirectAttributes;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -38,12 +41,17 @@ public class ReviewUiController {
 
     private final HitlReviewRepository reviews;
     private final HitlDecisionService decisionService;
+    private final HitlRetryService hitlRetryService;
+    private final PromptCatalog promptCatalog;
     private final JsonMapper jsonMapper;
 
     public ReviewUiController(HitlReviewRepository reviews, HitlDecisionService decisionService,
+                              HitlRetryService hitlRetryService, PromptCatalog promptCatalog,
                               JsonMapper jsonMapper) {
         this.reviews = reviews;
         this.decisionService = decisionService;
+        this.hitlRetryService = hitlRetryService;
+        this.promptCatalog = promptCatalog;
         this.jsonMapper = jsonMapper;
     }
 
@@ -91,9 +99,31 @@ public class ReviewUiController {
         HitlReview review = reviews.findById(id)
                 .orElseThrow(() -> new NoSuchElementException("No HITL review " + id));
         JsonNode reviewPackage = jsonMapper.readTree(review.getReviewPackage());
+        boolean isRetry = false;
+        for (JsonNode artifact : reviewPackage.path("artifacts")) {
+            if (HitlRetryService.FEEDBACK_ARTIFACT.equals(artifact.path("name").asString())) {
+                isRetry = true;
+                break;
+            }
+        }
         model.addAttribute("review", review);
         model.addAttribute("pkg", reviewPackage);
         model.addAttribute("error", error);
+        model.addAttribute("isRetry", isRetry);
+        model.addAttribute("instructionBlocks",
+                UiFormat.instructionBlocks(reviewPackage.path("instructions").asString("")));
+        // Each row carries the id (for the /prompts link) and the repo path of the template,
+        // so a reviewer who disagrees with an automated check knows where to change it.
+        List<Map<String, String>> referencePrompts = new ArrayList<>();
+        for (JsonNode promptId : reviewPackage.path("referencePrompts")) {
+            String promptRef = promptId.asString("");
+            if (promptRef.isBlank()) continue;
+            referencePrompts.add(Map.of(
+                    "id", promptRef,
+                    "sourcePath", promptCatalog.sourceDirectory(promptRef) + "/system.md"));
+        }
+        model.addAttribute("referencePrompts", referencePrompts);
+        model.addAttribute("retryEnabled", hitlRetryService.canRetry(review));
         return "review";
     }
 
@@ -109,6 +139,12 @@ public class ReviewUiController {
         // REST API's JSON exception handler. Unchanged-artifact filtering happens
         // in HitlDecisionService so REST callers get the same behavior.
         try {
+            if ("REJECT_AND_RETRY".equals(decision)) {
+                UUID retryId = hitlRetryService.rejectAndRetry(id, reviewer, comments);
+                redirect.addFlashAttribute("message",
+                        "Rejected and re-generation started — execution " + retryId);
+                return "redirect:/executions/" + retryId;
+            }
             HitlDecision hitlDecision = HitlDecision.valueOf(decision);
             Map<String, String> amendments = new LinkedHashMap<>();
             if (hitlDecision == HitlDecision.AMEND) {

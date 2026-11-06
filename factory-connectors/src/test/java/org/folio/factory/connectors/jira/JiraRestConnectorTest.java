@@ -4,6 +4,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.client.MockRestServiceServer;
 import org.springframework.web.client.RestClient;
@@ -17,6 +18,8 @@ import static org.springframework.test.web.client.match.MockRestRequestMatchers.
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
 import static org.springframework.http.HttpMethod.GET;
 import static org.springframework.http.HttpMethod.POST;
+import static org.springframework.test.web.client.match.MockRestRequestMatchers.headerDoesNotExist;
+import static org.springframework.test.web.client.response.MockRestResponseCreators.withStatus;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
 
 class JiraRestConnectorTest {
@@ -189,6 +192,69 @@ class JiraRestConnectorTest {
                 .andRespond(withSuccess());
 
         connector.addComment("ERM-42", "Test factory finished");
+        server.verify();
+    }
+
+    @Test
+    void downloadAttachmentFollowsThe303ToTheMediaHost() {
+        // Jira answers the attachment content endpoint with 303 and a pre-signed media URL. Spring
+        // RestClient does not follow redirects, so the single-hop version returned an empty body -
+        // which is how UIU-3562 reached the gate with both mockups marked "download failed".
+        server.expect(requestTo("https://jira.example.org/rest/api/2/attachment/content/122774"))
+                .andExpect(method(GET))
+                .andExpect(header("Authorization", org.hamcrest.Matchers.startsWith("Basic ")))
+                .andRespond(withStatus(HttpStatus.SEE_OTHER)
+                        .header("Location", "https://api.media.example/file/abc?token=signed"));
+        server.expect(requestTo("https://api.media.example/file/abc?token=signed"))
+                .andExpect(method(GET))
+                // The signed URL authorizes itself; forwarding Jira credentials to another host
+                // would leak them for nothing.
+                .andExpect(headerDoesNotExist("Authorization"))
+                .andRespond(withSuccess(new byte[] {(byte) 0x89, 'P', 'N', 'G'},
+                        MediaType.IMAGE_PNG));
+
+        byte[] bytes = connector.downloadAttachment(
+                "https://jira.example.org/rest/api/2/attachment/content/122774");
+
+        assertThat(bytes).containsExactly((byte) 0x89, 'P', 'N', 'G');
+        server.verify();
+    }
+
+    @Test
+    void downloadAttachmentReturnsBytesServedWithoutARedirect() {
+        server.expect(requestTo("https://jira.example.org/rest/api/2/attachment/content/1"))
+                .andRespond(withSuccess(new byte[] {1, 2, 3}, MediaType.IMAGE_PNG));
+
+        assertThat(connector.downloadAttachment(
+                "https://jira.example.org/rest/api/2/attachment/content/1")).containsExactly(1, 2, 3);
+    }
+
+    @Test
+    void downloadAttachmentGivesUpQuietlyWhenTheRedirectHasNoLocation() {
+        // Degrades to "no image" rather than failing a run - the caller is enriching a prompt.
+        server.expect(requestTo("https://jira.example.org/rest/api/2/attachment/content/2"))
+                .andRespond(withStatus(HttpStatus.SEE_OTHER));
+
+        assertThat(connector.downloadAttachment(
+                "https://jira.example.org/rest/api/2/attachment/content/2")).isNull();
+    }
+
+    @Test
+    void getIssueRequestsTheRenderedBodyOnlyWhenAskedTo() {
+        // The overload is opt-in so Test Factory keeps the exact request it always made.
+        server.expect(requestTo("https://jira.example.org/rest/api/2/issue/ERM-42"))
+                .andRespond(withSuccess("{\"key\":\"ERM-42\",\"fields\":{}}", MediaType.APPLICATION_JSON));
+        server.expect(requestTo(
+                        "https://jira.example.org/rest/api/2/issue/ERM-42?expand=renderedFields"))
+                .andRespond(withSuccess("{\"key\":\"ERM-42\",\"fields\":{},"
+                        + "\"renderedFields\":{\"description\":\"<p>hi</p>\"}}",
+                        MediaType.APPLICATION_JSON));
+
+        connector.getIssue("ERM-42");
+        JiraIssue rendered = connector.getIssue("ERM-42", true);
+
+        assertThat(rendered.raw().path("renderedFields").path("description").asString(""))
+                .isEqualTo("<p>hi</p>");
         server.verify();
     }
 }

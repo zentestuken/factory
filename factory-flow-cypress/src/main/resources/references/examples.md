@@ -1,14 +1,16 @@
 # Golden Examples
 
 > **Status: REAL cases, pulled from TestRail (project 14 "FOLIO Bug Fest", suite 21) on 2026-07-21.**
-> The three cases below are real, verbatim (HTML/inline-style noise stripped for readability), and were used to correct several rules that didn't match how the team actually writes cases:
+> `SKILL.md` step 2 requires reading this file as "golden cases from the team's TestRail" before generating anything. Until this file existed at all, every run of `write-testrail-cases` silently skipped this step. The three cases below are real, verbatim (HTML/inline-style noise stripped for readability), and were used to correct several rules in `SKILL.md` that didn't match how the team actually writes cases:
 >
-> 1. **No "User A / User B" naming.** No real case names an actor. Preconditions just say "User with following Capability Sets is logged in" or "Staff user with...". Default to a single unnamed user; named actors are reserved for cases that genuinely need two distinct roles.
+> 1. **No "User A / User B" naming.** No real case names an actor. Preconditions just say "User with following Capability Sets is logged in" or "Staff user with...". `SKILL.md` now defaults to a single unnamed user; named actors are reserved for cases that genuinely need two distinct roles.
 > 2. **Preconditions are compact, not one-fact-per-line.** Real preconditions pack 2-3 related facts into a single numbered item ("Two Fiscal years exist. One has assigned AU.").
 > 3. **`User Journey = Yes` for lifecycle/multi-outcome cases** (Example 3), tied to the journey shape — not left hardcoded to No.
 > 4. **Value convention is area-specific:** concrete amounts in Finance/Orders/Invoices (Example 2), symbolic placeholders `S`/`<barcode>` in circulation (Example 3). Don't invent concrete values where the team writes placeholders.
 > 5. **`refs` = whatever the case verifies** — often a Bug or Tech-Debt ticket, or several keys across projects; frequently no story at all.
 > 6. **Expected results are terse, observable states.** Prose by default (bullets only for a true item-inventory), and — critically — **no rationale, no ticket-scope reasoning, no multi-sentence NOTE essays, no hedging about unshipped work**. Every real expected result below reads as *what the executor sees* (`Actions menu does NOT contain "Fee/fine details"`), never *why* or *which ticket requires it*. See the "Anti-pattern" section below for the exact failure mode to avoid.
+>
+> Refresh this file periodically by pulling a few recent (last 1-2 releases), Manual, Critical Path/Extended cases from well-maintained sections — see "How to populate this file for real" at the bottom.
 
 ---
 
@@ -166,7 +168,7 @@ Steps:
     - Invoice without the AU assigned is returned in the search result
 ```
 
-**Why this is the bar:** 14 steps because the scenario genuinely spans 7 modules (Finance × 4, Organizations, Orders × 2, Receiving, Claiming, Invoices) — a real journey case, not padding. Preconditions group multiple related facts per line ("Two Fiscal years exist. One has the AU assigned.") instead of splitting counts and assignment into separate items. `refs` lists all 6 related Jira keys across 5 different projects — this case exists to verify a cross-module CQL index change, so every touched module's ticket is relevant, not just one "story key". Every step follows the same two-state pattern (with AU / without AU) so the reviewer can scan for the one that's missing.
+**Why this is the bar:** 14 steps because the scenario genuinely spans 7 modules (Finance × 4, Organizations, Orders × 2, Receiving, Claiming, Invoices) — a real journey case, not padding. Preconditions group multiple related facts per line ("Two Fiscal years exist. One has the AU assigned.") instead of splitting counts and assignment into separate items. `refs` lists all 6 related Jira keys across 5 different projects (deduplicated from the source, which had one repeated) — this case exists to verify a cross-module CQL index change, so every touched module's ticket is relevant, not just one "story key". Every step follows the same two-state pattern (with AU / without AU) so the reviewer can scan for the one that's missing.
 
 ---
 
@@ -238,13 +240,88 @@ Steps:
     Expected: Browser print dialog appears with hold slip preview
 ```
 
-**Why this is the bar (and what a naive generation gets wrong):** a terse title — "item with at least one open request" — hides a **journey**. The team does NOT write an atomic "check in at pickup SP → Awaiting pickup" case; they walk *both* outcomes (In transit at a non-pickup SP, then Awaiting pickup after switching to the pickup SP) plus slip reprints, in one case flagged `User Journey = Yes`. Note the conventions a first-pass AI case tends to violate: (a) **symbolic placeholders** `S` / `S1` / `<barcode>` / `<title>`, never invented values like `SP-A`/`12345`; (b) **prose expected results** — "Modal appears: ... Print slip is checked by default." is one sentence, not a 3-bullet list; (c) **`refs` = a Bug + a Tech-Debt ticket, no story**; (d) **Priority Critical** because check-in fulfillment is a core daily path.
+**Why this is the bar (and what a naive generation gets wrong):** a terse title — "item with at least one open request" — hides a **journey**. The team does NOT write an atomic "check in at pickup SP → Awaiting pickup" case; they walk *both* outcomes (In transit at a non-pickup SP, then Awaiting pickup after switching to the pickup SP) plus slip reprints, in one case flagged `User Journey = Yes`. Note the conventions a first-pass AI case tends to violate: (a) **symbolic placeholders** `S` / `S1` / `<barcode>` / `<title>`, never invented values like `SP-A`/`12345`; (b) **prose expected results** — "Modal appears: ... Print slip is checked by default." is one sentence, not a 3-bullet list; (c) **`refs` = a Bug + a Tech-Debt ticket, no story**; (d) **Priority Critical** because check-in fulfillment is a core daily path. (Real-world footnote: the raw case ends with a junk step "Saving this test - test step - ignore PDW" — dropped here. Always strip such noise when curating examples.)
+
+---
+
+## Example 4 — ECS cross-tenant enforcement, multi-destination verification (Data Import / MARC Authority)
+
+Source: [C407681](https://foliotest.testrail.io/index.php?/cases/view/407681) — "Update of Shared MARC authority record via Data import will have No action from Member tenant", section 27194 (Data Import), Manual, ECS Enabled, refs MODDATAIMP-901 and MODDATAIMP-926. The case verifies that a Member tenant cannot update a Shared MARC authority record that belongs to Central — the import completes with "No action" rather than applying the update.
+
+```
+Title: Update of Shared "MARC authority" record via "Data import" will have No action from Member tenant
+
+Type:               Functional
+Priority:           Medium
+User Journey:       No
+ECS Enabled:        Yes
+Execution Type:     Manual
+References:         MODDATAIMP-901, MODDATAIMP-926
+
+Preconditions:
+1. Central tenant and at least one Member tenant exist
+2. Central tenant has a Shared "MARC authority" record with a unique "010 $a" value (e.g. heading "Keyes, Daniel"); record was imported via "Default - Create SRS MARC Authority" job profile from Central
+3. Member tenant has a job profile "Update MARC authority records by matching 010 $a subfield value" with a Match profile (Field = 010, Ind1 = blank, Ind2 = blank, Subfield = a) and a linked Update action profile
+4. User has a ".mrc" file with updates targeting the existing Shared "MARC authority" record
+5. User has affiliations assigned in both Central and Member tenants; the following permissions are assigned in both tenants:
+   - Data import: Can upload files, import, and view logs
+   - MARC Authority: View MARC authority record
+6. User is logged in with affiliation switched to Member tenant; User is on the "MARC authority" app main page
+
+Steps:
+1. Action:   Fill in the search box with the heading of the Shared "MARC authority" record (e.g. "Keyes, Daniel")
+   Expected: "Search" button becomes active
+
+2. Action:   Click "Search"
+   Expected: "MARC authority" record is displayed in the result list
+
+3. Action:   Navigate to "Data import" app
+   Expected: "Data import" app main page is displayed
+
+4. Action:
+   - Click "or select files" button
+   - Select the ".mrc" file from Preconditions #4
+   - Click "Open"
+   Expected:
+   - File is loaded
+   - User is redirected to the "Job profiles" pane with the list of existing profiles
+
+5. Action:
+   - Click the job profile from Preconditions #3
+   - Click "Actions" in the third pane; select "Run"
+   - Click "Run" on the confirmation modal
+   Expected:
+   - User is redirected to the "Logs" pane in "Data import" app
+   - Import completes; a new row with "Completed" status appears. NOTE: May change to "Completed with errors" in a future release.
+
+6. Action:   Click the "File name" column value of the completed row
+   Expected: Logs pane shows:
+   - "Title" column: heading of the record (e.g. "Keyes, Daniel")
+   - "SRS MARC" column: "No action". NOTE: May change to an error "Shared MARC authority record cannot be updated from this tenant" in a future release.
+
+7. Action:   Navigate to "MARC authority" app
+   Expected: "MARC authority" app main page is displayed
+
+8. Action:   Fill in the search box with the same heading ("Keyes, Daniel") and click "Search"
+   Expected: "MARC authority" record is displayed in the result list
+
+9. Action:   Click the record heading to open the detail view
+   Expected: Record detail view opens; record was NOT updated — fields match the original imported version from Preconditions #2
+```
+
+**Why this is the bar:** This is the reference shape for ECS enforcement cases — verify a cross-tenant restriction by completing the action and checking the outcome at two destinations.
+
+1. **Preconditions name tenants explicitly.** Every data item states which tenant owns it ("Central tenant has…", "Member tenant has…"). The user precondition specifies affiliations in both tenants plus the active affiliation at test start — never left implicit.
+2. **Permissions listed as a pair.** ECS cases list the same permissions for both tenants, because the assertion depends on both being configured correctly.
+3. **Double-destination verification.** Step 6 checks the Data Import log (immediate enforcement result — "No action"); step 9 checks the MARC authority record directly (end state — not modified). Both are required: the log proves the restriction fired; the record confirms no side-effect slipped through.
+4. **"No action" IS the positive outcome.** This case verifies a restriction. The expected result at step 6 is terse and observable ("No action in the SRS MARC column"), with a single `NOTE` sentence for the planned future behavior change — one sentence, not an essay, and scoped because the tracking ticket is already in `refs`.
+5. **`User Journey = No` despite spanning two apps.** A journey case walks a lifecycle with multiple distinct outcomes. This case walks one enforcement rule through two UIs to one outcome ("No action") — it's Functional, not a journey.
 
 ---
 
 ## Anti-pattern — bloated expected results (what NOT to do)
 
-> These are **real AI-generated expected results** that a reviewer rejected. Study them as the failure mode to avoid — then copy the terse rewrites.
+> These are **real AI-generated expected results** (MARC Authority "Default - Delete" profile cases, section test_ai) that a reviewer rejected. Study them as the failure mode to avoid — then copy the terse rewrites.
 
 **❌ BAD — expected result padded with ticket rationale and hedging:**
 
@@ -273,14 +350,16 @@ Expected: Actions menu shows Edit and Duplicate (enabled); no Delete option
 ```
 
 **What went wrong, precisely:**
-- **Ticket-scope reasoning in the Expected field** — that belongs in the story/PR discussion, never in a test step. An executor needs *what to observe*, not *why*.
-- **Cross-step justification** — a reviewer reads the steps in order; don't narrate the comparison inside a result.
-- **Hedging about unshipped work** — don't build a case around behavior that isn't shipped, and don't turn the Expected field into a decision tree. If the behavior is unresolved, either omit that step or write a single terse `NOTE:` sentence.
-- **Multi-sentence `NOTE:` essays** — a NOTE is one short caveat sentence, max.
+- **Ticket-scope reasoning in the Expected field** ("UIDATIMP-1768 … is still Open … treat it as a known tracked gap") — that belongs in the story/PR discussion, never in a test step. An executor needs *what to observe*, not *why*.
+- **Cross-step justification** ("this contrasts explicitly with the Job profile … verified in step 4") — a reviewer reads the steps in order; don't narrate the comparison inside a result.
+- **Hedging about unshipped work** ("IF listed / IF NOT listed", "if Duplicate IS present, treat as…") — don't build a case around behavior that isn't shipped, and don't turn the Expected field into a decision tree. If the behavior is unresolved, either omit that step or write a single terse `NOTE:` sentence.
+- **Multi-sentence `NOTE:` essays** — a NOTE is one short caveat sentence, max. If it needs a paragraph, the assertion itself is wrong or speculative.
 
 Rule of thumb: if an expected result contains a Jira key, the word "gap"/"defect", "IF"/"unless", or more than ~2 sentences, it's over-written — cut it to the observable state.
 
 ### Second failure mode — the semicolon field-list run-on
+
+Same case family, a different reviewer rejection: a detail-view verification crammed into one line with semicolons.
 
 **❌ BAD:**
 
@@ -305,7 +384,7 @@ Expected: Action profile detail view shows:
 - Linked Field mapping profile = "Default - Delete MARC Authority records"
 ```
 
-Trigger to watch for: **named fields joined by semicolons.** 2+ `field = value` pairs — or even one whose value is a full sentence (like a Description) — is an inventory → bullets. A toast plus one resulting state may stay prose with a semicolon; the smell is a *list of named fields* crammed onto one line.
+Trigger to watch for: **named fields joined by semicolons.** 2+ `field = value` pairs — or even one whose value is a full sentence (like a Description) — is an inventory → bullets. A toast plus one resulting state may stay prose with a semicolon (see golden Example 1, which chains short observations readably); the smell is a *list of named fields* crammed onto one line, e.g. `Name = "…"; Description = "…"; Action = "Delete"`.
 
 ### Third failure mode — nested preconditions
 
@@ -326,3 +405,23 @@ Preconditions must be **flat**: each user, each data record, and the starting pa
 ```
 
 ---
+
+## How to populate this file for real
+
+Once TestRail credentials are available (see `SKILL.md` → Credentials), pull real cases from 2–3 of the team's best-maintained sections and refresh the examples above. Note: direct API calls to `foliotest.testrail.io` may be blocked by your network/sandbox egress rules — if so, open the case in a browser where you're already logged in and hit the same API path directly (e.g. `https://foliotest.testrail.io/index.php?/api/v2/get_case/{id}`); TestRail accepts the existing session cookie, no API key needed in that context.
+
+```
+GET {TESTRAIL_URL}/index.php?/api/v2/get_cases/14&suite_id=21&section_id={section_id}&limit=20
+GET {TESTRAIL_URL}/index.php?/api/v2/get_case/{case_id}
+```
+
+Pick sections/cases that:
+- have been updated within the last 1–2 releases (recent, not legacy style — old cases often use the single `custom_steps` field instead of `custom_steps_separated`, and read very differently),
+- are `custom_automation_type = 2` (Manual) — automated-style cases are terser and skip UI-verification detail,
+- come from an area with a healthy context file (10+ Key Business Rules, an `Exact UI Texts` section with `[confirmed]` strings — see `references/context/`).
+
+**Strip HTML aggressively before using real case content.** Real `custom_preconds`/`custom_steps_separated` fields are full of copy-paste noise from Confluence/Word — huge inline `style="..."` blobs, `data-pasted="true"` attributes, stray `&nbsp;`. Strip all tags and attributes down to plain text (keep `<strong>`/`<em>` emphasis as `**bold**`/`*italic*` if you want, or drop it) before reformatting into this file's template shape. This same stripping step is what `build-app-context`'s Phase 1.3 extraction needs to do more aggressively — several context files came up with zero extracted toast/modal strings, which is very likely this noise breaking the extraction regexes rather than a genuine absence of signal.
+
+For each case, add a one-line "Why this is the bar" note explaining what makes it a good example (step count, what's grouped vs. atomic, how absolute values are asserted, refs practice, etc.) — that note is what actually teaches the model verification depth, not just the raw case text.
+
+Aim for 4–6 examples covering: a bug-driven regression case, a capability-boundary case, a journey/lifecycle case spanning multiple apps, and an ECS cross-tenant case, since those are the shapes `write-testrail-cases` has to reproduce most often.

@@ -1,5 +1,6 @@
 package org.folio.factory.app.web;
 
+import org.folio.factory.agents.prompt.PromptCatalog;
 import org.folio.factory.core.domain.HitlReview;
 import org.folio.factory.core.domain.HitlReviewStatus;
 import org.folio.factory.core.hitl.HitlDecision;
@@ -54,15 +55,20 @@ class ReviewUiControllerTest {
     @Mock
     private HitlDecisionService decisionService;
 
+    @Mock
+    private org.folio.factory.app.hitl.HitlRetryService hitlRetryService;
+
     @Captor
     private ArgumentCaptor<Map<String, String>> amendmentsCaptor;
+
+    private final PromptCatalog promptCatalog = new PromptCatalog();
 
     private MockMvc mvc;
 
     @BeforeEach
     void setUp() {
         mvc = MockMvcBuilders
-                .standaloneSetup(new ReviewUiController(reviews, decisionService, json))
+                .standaloneSetup(new ReviewUiController(reviews, decisionService, hitlRetryService, promptCatalog, json))
                 .setViewResolvers(new InternalResourceViewResolver("/templates/", ".html"))
                 .build();
     }

@@ -19,9 +19,30 @@
       <groupId>org.folio.factory</groupId>
       <artifactId>factory-agents</artifactId>
     </dependency>
+    <!-- Provider-specific chat options (prompt caching). Deliberately declared here and not
+         in factory-agents, which stays neutral so FACTORY_LLM_PROVIDER can select OpenAI. -->
+    <dependency>
+      <groupId>org.springframework.ai</groupId>
+      <artifactId>spring-ai-anthropic</artifactId>
+    </dependency>
     <dependency>
       <groupId>org.folio.factory</groupId>
       <artifactId>factory-connectors</artifactId>
+    </dependency>
+    <!-- HTML-to-text extraction for public-page link enrichment (ContextPrefetch). Small,
+         self-contained, no transitive bloat - not brought in by anything else in the reactor. -->
+    <dependency>
+      <groupId>org.jsoup</groupId>
+      <artifactId>jsoup</artifactId>
+      <version>1.18.1</version>
+    </dependency>
+    <!-- Builds valid ISO 2709 MARC bytes (leader/directory arithmetic) from the LLM's
+         semantic field content for test-data fixture attachments. Self-contained, no
+         transitive bloat - not brought in by anything else in the reactor. -->
+    <dependency>
+      <groupId>org.marc4j</groupId>
+      <artifactId>marc4j</artifactId>
+      <version>2.9.6</version>
     </dependency>
 
     <dependency>

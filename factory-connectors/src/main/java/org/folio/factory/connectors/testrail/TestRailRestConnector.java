@@ -1,8 +1,11 @@
 package org.folio.factory.connectors.testrail;
 
 import org.folio.factory.connectors.ConnectorHealth;
+import org.springframework.core.io.ByteArrayResource;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.util.LinkedMultiValueMap;
+import org.springframework.util.MultiValueMap;
 import org.springframework.web.client.RestClient;
 import tools.jackson.databind.JsonNode;
 
@@ -111,12 +114,34 @@ public class TestRailRestConnector implements TestRailConnector, ConnectorHealth
                 all.add(new TestRailCase(
                         c.path("id").asLong(),
                         c.path("title").asString(""),
-                        c.path("custom_preconds").asString("")));
+                        c.path("custom_preconds").asString(""),
+                        readSteps(c)));
             }
             if (cases.size() < limit) break;
             offset += limit;
         }
         return all;
+    }
+
+    /**
+     * Reads a case's steps from whichever field its TestRail template populates:
+     * {@code custom_steps_separated} (structured, the common case) or {@code custom_steps}
+     * (a single text blob, used by the text template). Returns an empty list when neither is set.
+     */
+    private static List<TestRailStep> readSteps(JsonNode caseNode) {
+        JsonNode separated = caseNode.path("custom_steps_separated");
+        if (separated.isArray()) {
+            List<TestRailStep> steps = new ArrayList<>();
+            for (JsonNode step : separated) {
+                TestRailStep parsed = new TestRailStep(
+                        step.path("content").asString(""),
+                        step.path("expected").asString(""));
+                if (!parsed.isBlank()) steps.add(parsed);
+            }
+            return steps;
+        }
+        String blob = caseNode.path("custom_steps").asString("");
+        return blob.isBlank() ? List.of() : List.of(new TestRailStep(blob, ""));
     }
 
     @Override
@@ -174,7 +199,7 @@ public class TestRailRestConnector implements TestRailConnector, ConnectorHealth
             long id = s.path("id").asLong();
             byId.put(id, s);
             JsonNode parentNode = s.path("parent_id");
-            long parentKey = (parentNode.isNull() || parentNode.isMissingNode()) ? -1L : parentNode.asLong();
+            long parentKey = (parentNode.isNull() || parentNode.isMissingNode() || parentNode.asLong() == 0) ? -1L : parentNode.asLong();
             byParent.computeIfAbsent(parentKey, k -> new ArrayList<>()).add(s);
         }
 
@@ -279,6 +304,51 @@ public class TestRailRestConnector implements TestRailConnector, ConnectorHealth
             sb.append(parts.get(i));
         }
         return sb.toString();
+    }
+
+    @Override
+    public List<TestRailFieldOption> getCaseTypes() {
+        JsonNode resp = restClient.get()
+                .uri("/index.php?/api/v2/get_case_types")
+                .retrieve().body(JsonNode.class);
+        List<TestRailFieldOption> result = new ArrayList<>();
+        for (JsonNode n : resp) {
+            result.add(new TestRailFieldOption(n.path("id").asLong(), n.path("name").asString(""), null));
+        }
+        return result;
+    }
+
+    @Override
+    public List<TestRailFieldOption> getPriorities() {
+        JsonNode resp = restClient.get()
+                .uri("/index.php?/api/v2/get_priorities")
+                .retrieve().body(JsonNode.class);
+        List<TestRailFieldOption> result = new ArrayList<>();
+        for (JsonNode n : resp) {
+            result.add(new TestRailFieldOption(n.path("id").asLong(), n.path("name").asString(""),
+                    n.path("short_name").asString("")));
+        }
+        return result;
+    }
+
+    @Override
+    public long addAttachmentToCase(long caseId, byte[] content, String filename) {
+        MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
+        body.add("attachment", new ByteArrayResource(content) {
+            @Override
+            public String getFilename() {
+                return filename;
+            }
+        });
+        JsonNode response = restClient.post()
+                .uri("/index.php?/api/v2/add_attachment_to_case/{caseId}", caseId)
+                // Overrides the client-wide default JSON header set in the constructor -
+                // RestClient negotiates the multipart boundary itself from the body type.
+                .contentType(MediaType.MULTIPART_FORM_DATA)
+                .body(body)
+                .retrieve()
+                .body(JsonNode.class);
+        return response.path("attachment_id").asLong();
     }
 
     @Override

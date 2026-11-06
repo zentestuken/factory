@@ -16,7 +16,8 @@ import java.util.List;
  */
 public class StubChatModel implements ChatModel {
 
-    private record QueuedResponse(String text, int promptTokens, int completionTokens) {
+    private record QueuedResponse(String text, int promptTokens, int completionTokens,
+                                  Long cacheWriteTokens, Long cacheReadTokens) {
     }
 
     private final List<QueuedResponse> queuedResponses = new ArrayList<>();
@@ -28,7 +29,15 @@ public class StubChatModel implements ChatModel {
 
     /** Queues a response that reports token usage in its metadata. */
     public StubChatModel enqueue(String response, int promptTokens, int completionTokens) {
-        queuedResponses.add(new QueuedResponse(response, promptTokens, completionTokens));
+        queuedResponses.add(new QueuedResponse(response, promptTokens, completionTokens, null, null));
+        return this;
+    }
+
+    /** Queues a response that also reports prompt-cache token counts, as Anthropic does. */
+    public StubChatModel enqueueCached(String response, int promptTokens, int completionTokens,
+                                       long cacheWriteTokens, long cacheReadTokens) {
+        queuedResponses.add(new QueuedResponse(response, promptTokens, completionTokens,
+                cacheWriteTokens, cacheReadTokens));
         return this;
     }
 
@@ -45,7 +54,9 @@ public class StubChatModel implements ChatModel {
         QueuedResponse next = queuedResponses.removeFirst();
         return new ChatResponse(List.of(new Generation(new AssistantMessage(next.text()))),
                 ChatResponseMetadata.builder()
-                        .usage(new DefaultUsage(next.promptTokens(), next.completionTokens()))
+                        // (prompt, completion, total, nativeUsage, cacheRead, cacheWrite)
+                        .usage(new DefaultUsage(next.promptTokens(), next.completionTokens(), null,
+                                null, next.cacheReadTokens(), next.cacheWriteTokens()))
                         .build());
     }
 }

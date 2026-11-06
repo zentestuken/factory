@@ -1,6 +1,6 @@
 id: cypress-factory
 name: Cypress Factory
-version: 1.0.0
+version: 2.0.0
 triggers:
   - event_type: manual
 input_schema:
@@ -11,66 +11,11 @@ retry_policy:
   max_attempts: 3
   backoff_seconds: [30, 120, 300]
 agent_chain:
-  - step_id: triage
+  - step_id: testcase-gen
     type: AGENT
-    worker_id: triage-agent
+    worker_id: cypress-testcase-gen-agent
     inputs: ["$trigger"]
-    outputs: [scope_manifest.md]
-
-  - step_id: context-load
-    type: AGENT
-    worker_id: cypress-context-loader
-    inputs: [scope_manifest.md]
-    outputs: [context.md]
-
-  - step_id: fragment-scan
-    type: AGENT
-    worker_id: cypress-fragment-scanner
-    inputs: [context.md, scope_manifest.md]
-    outputs: [fragment_library.md]
-
-  - step_id: examples-load
-    type: AGENT
-    worker_id: cypress-examples-loader
-    inputs: []
-    outputs: [examples.md]
-
-  - step_id: coverage-load
-    type: AGENT
-    worker_id: cypress-coverage-loader
-    inputs: [context.md]
-    outputs: [existing_coverage.md]
-
-  - step_id: scenario-analysis
-    type: AGENT
-    worker_id: cypress-scenario-analysis
-    inputs: [scope_manifest.md, context.md, existing_coverage.md]
-    outputs: [scenario_list.md]
-
-  - step_id: gate-0-scenarios
-    type: HITL_GATE
-    gate:
-      gate_id: gate-0-scenarios
-      title: "QA: confirm test scenario coverage"
-      review_instructions: >
-        Review proposed scenarios. Add missing coverage, remove out-of-scope items,
-        adjust journey vs atomic shape. Amend scenario_list.md — test-spec will generate
-        cases for exactly the scenarios confirmed here.
-
-        The coverage matrix shows AC → scenario mapping and flags EXISTING cases.
-        Remove EXISTING rows unless the story changes that behaviour — new cases for
-        already-covered scenarios create duplicates in TestRail.
-
-        The frontmatter field `testrail_section` shows the suggested TestRail section for
-        these cases. Edit the path string if the suggestion is wrong. Accepted formats:
-        a path string using › | > → as separators, or a numeric section ID. Delete the
-        field to fall back to the configured default section.
-      reviewed_artifacts: [scenario_list.md, scope_manifest.md, context.md, existing_coverage.md]
-
-  - step_id: test-spec
-    type: AGENT
-    worker_id: cypress-e2e-spec-agent
-    inputs: [scope_manifest.md, context.md, fragment_library.md, examples.md, scenario_list.md, existing_coverage.md]
+    optional_inputs: [test_plan.md, hitl_feedback.md]
     outputs: [test_plan.md]
 
   - step_id: gate-1-review
@@ -78,20 +23,39 @@ agent_chain:
     gate:
       gate_id: gate-1-test-cases
       title: "QA review: test cases"
-      review_instructions: >
-        Review the generated test cases for coverage, correctness, and
-        automatability. Verify that the automatable flag is accurate and that
-        automation notes reference real helpers from the fragment library where
-        applicable. Edit the test plan inline (AMEND) if cases need changes.
+      review_instructions: |
+        Everything is in test_plan.md, in three sections. Read them in this order:
 
-        The `testrail_section` in scenario_list.md frontmatter controls which
-        TestRail folder receives the cases. Amend it here if the gate-0 suggestion
-        was wrong. Accepted formats: a path string using › | > → as separators,
-        or a numeric section ID. Delete the field to fall back to the configured default.
-      reviewed_artifacts: [test_plan.md, scenario_list.md, scope_manifest.md, context.md]
+        - "# Analysis" — the area that was detected and why, the context file that was
+          loaded, the Key Business Rules the story touches, and the AC to scenario coverage
+          matrix. Read this first: it tells you whether the SCOPE is right, which is the one
+          thing no automated check can judge.
+        - "# Test Cases" — exactly what will be posted to TestRail, nothing else.
+        - "# Review" — the automated reviewer's verdict, plus any issues it could not fix
+          within its retry budget.
+
+        Findings in "# Review" come from two places, merged into one list: the reviewer agent
+        applying the checklist in its prompt, and a handful of rules enforced by deterministic
+        code instead. The prompt linked below says which are which, and where to change them.
+
+        The YAML frontmatter carries the four fields TestRail sync reads. Correct them here
+        if they are wrong:
+
+        - testrail_section — the destination folder. Either a path string (separators › | > →)
+          or a numeric section ID. It was already checked against TestRail; if it could not be
+          resolved this falls back to the configured default.
+        - refs — the References field on every created case. The originating issue key is
+          always kept even if you remove it.
+        - team, ecs_story — dev team attribution and the story-level ECS classification.
+
+        Watch for a ⚠️ line at the top of "# Analysis": it means the run degraded somehow —
+        a context file was missing, the fragment library was unavailable, or the skill text
+        changed in a way the factory's prompt no longer matches.
+      reviewed_artifacts: [test_plan.md, hitl_feedback.md]
+      reference_prompts: [cypress-testcase-reviewer]
 
   - step_id: testrail-sync
     type: AGENT
     worker_id: cypress-testrail-sync
-    inputs: [test_plan.md, scope_manifest.md, scenario_list.md]
+    inputs: [test_plan.md]
     outputs: [test_plan.md]

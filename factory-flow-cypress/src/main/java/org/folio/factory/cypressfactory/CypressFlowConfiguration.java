@@ -4,37 +4,37 @@ import org.folio.factory.agents.artifact.FrontmatterCodec;
 import org.folio.factory.connectors.github.GitHubConnector;
 import org.folio.factory.connectors.jira.JiraConnector;
 import org.folio.factory.connectors.testrail.TestRailConnector;
-import org.folio.factory.cypressfactory.worker.ContextLoaderWorker;
-import org.folio.factory.cypressfactory.worker.CoverageLoaderWorker;
-import org.folio.factory.cypressfactory.worker.CypressExamplesLoaderWorker;
-import org.folio.factory.cypressfactory.worker.E2eSpecAgentWorker;
-import org.folio.factory.cypressfactory.worker.FragmentScannerWorker;
-import org.folio.factory.cypressfactory.worker.ScenarioAnalysisAgentWorker;
+import org.folio.factory.cypressfactory.plan.DevTeamCatalog;
+import org.folio.factory.cypressfactory.plan.TestPlanParser;
+import org.folio.factory.cypressfactory.prefetch.AreaDetector;
+import org.folio.factory.cypressfactory.prefetch.ContextPrefetch;
+import org.folio.factory.cypressfactory.prefetch.CoveragePrefetch;
+import org.folio.factory.cypressfactory.prefetch.ExamplesPrefetch;
+import org.folio.factory.cypressfactory.prefetch.FragmentPrefetch;
+import org.folio.factory.cypressfactory.worker.PromptDump;
+import org.folio.factory.cypressfactory.worker.SkillWorkspaceService;
 import org.folio.factory.cypressfactory.worker.TafSyncService;
+import org.folio.factory.cypressfactory.worker.TestCaseGenAgentWorker;
 import org.folio.factory.cypressfactory.worker.TestRailSyncAgentWorker;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import tools.jackson.databind.json.JsonMapper;
 
+import java.nio.file.Path;
 
 /**
  * Cypress Factory plugin wiring. The flow itself is data ({@code flows/cypress-factory.yaml});
- * this class only assembles the worker beans the descriptor references.
+ * this class assembles the two worker beans the descriptor references plus the deterministic
+ * prefetch services the generator uses internally.
  */
 @Configuration
 @EnableConfigurationProperties(CypressFlowProperties.class)
 public class CypressFlowConfiguration {
 
-    @Bean
-    public ContextLoaderWorker contextLoaderWorker(GitHubConnector gitHubConnector,
-                                                   JiraConnector jiraConnector,
-                                                   FrontmatterCodec frontmatterCodec,
-                                                   JsonMapper jsonMapper,
-                                                   CypressFlowProperties properties) {
-        return new ContextLoaderWorker(gitHubConnector, jiraConnector, frontmatterCodec, jsonMapper, properties);
-    }
+    // ── Workspaces (background clones; not flow steps) ────────────────────────
 
     @Bean
     public TafSyncService tafSyncService() {
@@ -42,42 +42,100 @@ public class CypressFlowConfiguration {
     }
 
     @Bean
-    public FragmentScannerWorker fragmentScannerWorker(TafSyncService tafSyncService,
-                                                        GitHubConnector gitHubConnector,
-                                                        FrontmatterCodec frontmatterCodec) {
-        return new FragmentScannerWorker(tafSyncService, gitHubConnector, frontmatterCodec);
+    public SkillWorkspaceService skillWorkspaceService(GitHubConnector gitHubConnector,
+                                                       CypressFlowProperties properties) {
+        return new SkillWorkspaceService(gitHubConnector, properties);
+    }
+
+    // ── Prefetch services (deterministic; run before the generation call) ─────
+
+    @Bean
+    public DevTeamCatalog devTeamCatalog() {
+        return new DevTeamCatalog();
     }
 
     @Bean
-    public CypressExamplesLoaderWorker cypressExamplesLoaderWorker(GitHubConnector gitHubConnector,
-                                                                    CypressFlowProperties properties) {
-        return new CypressExamplesLoaderWorker(gitHubConnector, properties);
+    public AreaDetector areaDetector() {
+        return new AreaDetector();
     }
 
     @Bean
-    public CoverageLoaderWorker coverageLoaderWorker(TestRailConnector testRailConnector,
-                                                      FrontmatterCodec frontmatterCodec,
-                                                      CypressFlowProperties properties) {
-        return new CoverageLoaderWorker(testRailConnector, frontmatterCodec, properties);
+    public ContextPrefetch contextPrefetch(SkillWorkspaceService skillWorkspaceService,
+                                            GitHubConnector gitHubConnector,
+                                            JiraConnector jiraConnector,
+                                            JsonMapper jsonMapper,
+                                            CypressFlowProperties properties,
+                                            @Value("${factory.connectors.jira.base-url:}")
+                                            String jiraBaseUrl) {
+        return new ContextPrefetch(skillWorkspaceService, gitHubConnector, jiraConnector,
+                jsonMapper, properties, jiraBaseUrl);
     }
 
     @Bean
-    public ScenarioAnalysisAgentWorker scenarioAnalysisAgentWorker(ChatClient.Builder chatClientBuilder,
-                                                                    TestRailConnector testRailConnector) {
-        return new ScenarioAnalysisAgentWorker(chatClientBuilder.build(), testRailConnector);
+    public FragmentPrefetch fragmentPrefetch(TafSyncService tafSyncService,
+                                              GitHubConnector gitHubConnector) {
+        return new FragmentPrefetch(tafSyncService, gitHubConnector);
     }
 
     @Bean
-    public E2eSpecAgentWorker e2eSpecAgentWorker(ChatClient.Builder chatClientBuilder,
-                                                  FrontmatterCodec frontmatterCodec) {
-        return new E2eSpecAgentWorker(chatClientBuilder.build(), frontmatterCodec);
+    public CoveragePrefetch coveragePrefetch(TestRailConnector testRailConnector,
+                                              CypressFlowProperties properties) {
+        return new CoveragePrefetch(testRailConnector, properties);
+    }
+
+    @Bean
+    public ExamplesPrefetch examplesPrefetch(SkillWorkspaceService skillWorkspaceService) {
+        return new ExamplesPrefetch(skillWorkspaceService);
+    }
+
+    @Bean
+    public TestPlanParser testPlanParser() {
+        return new TestPlanParser();
+    }
+
+    /**
+     * Reuses the existing {@code FACTORY_DEBUG_ENABLED} switch rather than introducing a
+     * cypress-specific one. Off means nothing is rendered and nothing is written.
+     */
+    @Bean
+    public PromptDump promptDump(@Value("${factory.debug.enabled:false}") boolean debugEnabled) {
+        return new PromptDump(debugEnabled, Path.of(System.getProperty("user.dir"), "debugPrompts"));
+    }
+
+    // ── Workers ──────────────────────────────────────────────────────────────
+
+    @Bean
+    public TestCaseGenAgentWorker testCaseGenAgentWorker(ChatClient.Builder chatClientBuilder,
+                                                          JiraConnector jiraConnector,
+                                                          TestRailConnector testRailConnector,
+                                                          SkillWorkspaceService skillWorkspaceService,
+                                                          AreaDetector areaDetector,
+                                                          ContextPrefetch contextPrefetch,
+                                                          FragmentPrefetch fragmentPrefetch,
+                                                          CoveragePrefetch coveragePrefetch,
+                                                          ExamplesPrefetch examplesPrefetch,
+                                                          FrontmatterCodec frontmatterCodec,
+                                                          TestPlanParser testPlanParser,
+                                                          DevTeamCatalog devTeamCatalog,
+                                                          PromptDump promptDump,
+                                                          CypressFlowProperties properties,
+                                                          @Value("${spring.ai.anthropic.chat.options.model:}")
+                                                          String anthropicModel,
+                                                          @Value("${factory.connectors.jira.base-url:}")
+                                                          String jiraBaseUrl) {
+        return new TestCaseGenAgentWorker(chatClientBuilder.build(), jiraConnector, testRailConnector,
+                skillWorkspaceService, areaDetector, contextPrefetch, fragmentPrefetch,
+                coveragePrefetch, examplesPrefetch, frontmatterCodec, testPlanParser, devTeamCatalog,
+                promptDump, properties, anthropicModel, jiraBaseUrl);
     }
 
     @Bean
     public TestRailSyncAgentWorker testRailSyncAgentWorker(TestRailConnector testRailConnector,
                                                             FrontmatterCodec frontmatterCodec,
                                                             CypressFlowProperties properties,
-                                                            JsonMapper jsonMapper) {
-        return new TestRailSyncAgentWorker(testRailConnector, frontmatterCodec, properties, jsonMapper);
+                                                            TestPlanParser testPlanParser,
+                                                            DevTeamCatalog devTeamCatalog) {
+        return new TestRailSyncAgentWorker(testRailConnector, frontmatterCodec, properties,
+                testPlanParser, devTeamCatalog);
     }
 }

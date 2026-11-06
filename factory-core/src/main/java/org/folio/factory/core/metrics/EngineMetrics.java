@@ -116,6 +116,10 @@ public class EngineMetrics {
     public void recordLlmTokens(String workerId, Map<String, Object> metrics) {
         recordTokenCount(workerId, "prompt", metrics.get("promptTokens"));
         recordTokenCount(workerId, "completion", metrics.get("completionTokens"));
+        // Present only for workers that enable prompt caching on a provider that reports it;
+        // absent keys record nothing, so this is inert for every other flow.
+        recordTokenCount(workerId, "cache_write", metrics.get("cacheWriteTokens"));
+        recordTokenCount(workerId, "cache_read", metrics.get("cacheReadTokens"));
     }
 
     private void recordTokenCount(String workerId, String type, Object count) {

@@ -24,6 +24,19 @@ class EngineMetricsTest {
     }
 
     @Test
+    void recordsPromptCacheTokensSeparatelyFromPlainInput() {
+        metrics.recordLlmTokens("cypress-testcase-gen-agent",
+                Map.of("promptTokens", 300L, "completionTokens", 40L, "cacheWriteTokens", 18000L));
+        metrics.recordLlmTokens("cypress-testcase-gen-agent",
+                Map.of("promptTokens", 300L, "completionTokens", 40L, "cacheReadTokens", 18000L));
+
+        assertThat(registry.counter("factory.llm.tokens",
+                "worker", "cypress-testcase-gen-agent", "type", "cache_write").count()).isEqualTo(18000);
+        assertThat(registry.counter("factory.llm.tokens",
+                "worker", "cypress-testcase-gen-agent", "type", "cache_read").count()).isEqualTo(18000);
+    }
+
+    @Test
     void ignoresMetricsWithoutTokenKeys() {
         metrics.recordLlmTokens("echo-worker", Map.of("fake", true));
         metrics.recordLlmTokens("echo-worker", Map.of());

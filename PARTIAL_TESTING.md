@@ -6,7 +6,7 @@ How to run the cypress-factory flow starting from a specific step, without re-ru
 
 ## Problem
 
-The cypress-factory flow currently has 9 steps (Phase 1). Phases 2 and 3 will add Cypress spec generation, test execution, and GitHub/Jira finalizer — growing the full chain to ~13 steps with 5+ LLM calls. Steps 0–4 take 15–30 seconds each. Running the full flow to test a change at step 9 (`cypress-automation`) or later wastes 5–10 minutes every iteration. This guide describes how to skip early steps by providing pre-baked artifacts and starting execution at the desired step.
+The cypress-factory flow currently has 3 steps (Phase 1): `testcase-gen` → `gate-1` → `testrail-sync`. Phases 2 and 3 will add Cypress spec generation, test execution, and GitHub/Jira finalizer — growing the full chain to ~9 steps with multiple LLM calls. Running the full flow to test a change at step 3 (`cypress-automation`) or later wastes time every iteration. This guide describes how to skip early steps by providing pre-baked artifacts and starting execution at the desired step.
 
 This problem grows with each phase: **Phase 2 and 3 steps are the most important targets for partial testing**, because they are furthest from the trigger and will be iterated on most heavily once implemented.
 
@@ -18,50 +18,44 @@ This problem grows with each phase: **Phase 2 and 3 steps are the most important
 
 | # | step_id | type | inputs | outputs |
 |---|---------|------|--------|---------|
-| 0 | `triage` | AGENT | `$trigger` | `scope_manifest.md` |
-| 1 | `context-load` | AGENT | `scope_manifest.md` | `context.md` |
-| 2 | `fragment-scan` | AGENT | `context.md`, `scope_manifest.md` | `fragment_library.md` |
-| 3 | `examples-load` | AGENT | _(none)_ | `examples.md` |
-| 4 | `scenario-analysis` | AGENT | `scope_manifest.md`, `context.md` | `scenario_list.md` |
-| 5 | `gate-0-scenarios` | HITL_GATE | — | — |
-| 6 | `test-spec` | AGENT | `scope_manifest.md`, `context.md`, `fragment_library.md`, `examples.md`, `scenario_list.md` | `test_plan.md` |
-| 7 | `gate-1-review` | HITL_GATE | — | — |
-| 8 | `testrail-sync` | AGENT | `test_plan.md`, `scope_manifest.md`, `scenario_list.md` | `test_plan.md` _(with real C###### IDs)_ |
+| 0 | `testcase-gen` | AGENT | `$trigger` (optional: `test_plan.md`, `hitl_feedback.md`) | `test_plan.md` |
+| 1 | `gate-1-review` | HITL_GATE | — | — |
+| 2 | `testrail-sync` | AGENT | `test_plan.md` | `test_plan.md` _(with real C###### IDs)_ |
 
 ### Phase 2 — Cypress Spec Generation (planned)
 
 | # | step_id | type | inputs | outputs |
 |---|---------|------|--------|---------|
-| 9 | `cypress-automation` | AGENT | `test_plan.md` _(C###### IDs required)_, `fragment_library.md` | `test_scripts.md` |
-| 10 | `gate-2` | HITL_GATE | — | — |
+| 3 | `cypress-automation` | AGENT | `test_plan.md` _(C###### IDs required)_, `fragment_library.md` | `test_scripts.md` |
+| 4 | `gate-2` | HITL_GATE | — | — |
 
 ### Phase 3 — Execution & Finalization (planned)
 
 | # | step_id | type | inputs | outputs |
 |---|---------|------|--------|---------|
-| 11 | `cypress-execution` | AGENT | `test_scripts.md`, `test_plan.md` | `test_results.md` |
-| 12 | `cypress-finalize` | AGENT | `test_scripts.md`, `test_results.md`, `scope_manifest.md` | `sync_report.md` |
+| 5 | `cypress-execution` | AGENT | `test_scripts.md`, `test_plan.md` | `test_results.md` |
+| 6 | `cypress-finalize` | AGENT | `test_scripts.md`, `test_results.md`, `scope_manifest.md` | `sync_report.md` |
 
 ### Phase 4 — Failure Analysis Loop (optional, planned)
 
 | # | step_id | type | inputs | outputs |
 |---|---------|------|--------|---------|
-| 13 | `failure-analyzer` | AGENT | `test_results.md`, `test_scripts.md` | `failure_report.md` |
-| 14 | `spec-fix-agent` | AGENT | `failure_report.md`, `test_scripts.md` | `test_scripts.md` |
+| 7 | `failure-analyzer` | AGENT | `test_results.md`, `test_scripts.md` | `failure_report.md` |
+| 8 | `spec-fix-agent` | AGENT | `failure_report.md`, `test_scripts.md` | `test_scripts.md` |
 
-> Step indices 9–14 are indicative — final numbers depend on whether Phase 4 is inserted between Phase 2 and 3 or appended. Update seed examples when the YAML is finalized.
+> Step indices 3–8 are indicative — final numbers depend on whether Phase 4 is inserted between Phase 2 and 3 or appended. Update seed examples when the YAML is finalized.
 
 **Most common starting points (all phases):**
 
 | Starting step | What you're testing | Seed artifacts needed |
 |---|---|---|
-| **6** (`test-spec`) | Prompt changes, scenario coverage | `scope_manifest.md`, `context.md`, `fragment_library.md`, `examples.md`, `scenario_list.md` |
-| **8** (`testrail-sync`) | TestRail section/label/team wiring | `test_plan.md`, `scope_manifest.md`, `scenario_list.md` |
-| **9** (`cypress-automation`) ⭐ | Cypress spec generation — most-iterated Phase 2 step | `test_plan.md` _(with real C###### IDs)_, `fragment_library.md` |
-| **11** (`cypress-execution`) | Execution runner, result parsing | `test_scripts.md`, `test_plan.md` |
-| **12** (`cypress-finalize`) | GitHub commit/PR, Jira sync | `test_scripts.md`, `test_results.md`, `scope_manifest.md` |
+| **1** (`gate-1-review`) | Gate amendment flow, gate → testrail-sync path | `test_plan.md` |
+| **2** (`testrail-sync`) | TestRail section/label/team wiring | `test_plan.md` |
+| **3** (`cypress-automation`) ⭐ | Cypress spec generation — most-iterated Phase 2 step | `test_plan.md` _(with real C###### IDs)_, `fragment_library.md` |
+| **5** (`cypress-execution`) | Execution runner, result parsing | `test_scripts.md`, `test_plan.md` |
+| **6** (`cypress-finalize`) | GitHub commit/PR, Jira sync | `test_scripts.md`, `test_results.md`, `scope_manifest.md` |
 
-> ⭐ Step 9 (`cypress-automation`) will be the most important partial testing target: it is the heaviest LLM call in Phase 2 and the one most frequently iterated during spec generation development.
+> ⭐ Step 3 (`cypress-automation`) will be the most important partial testing target: it is the heaviest LLM call in Phase 2 and the one most frequently iterated during spec generation development.
 
 ---
 
@@ -194,35 +188,31 @@ No factory-core changes needed. `StateManager`, `ArtifactStore`, `FlowRegistry`,
      -H "Content-Type: application/json" \
      -d '{
        "flowId": "cypress-factory",
-       "startStepIndex": 6,
+       "startStepIndex": 2,
        "triggerPayload": {"issueKey": "ERM-1234"},
        "artifacts": {
-         "scope_manifest.md": "---\nissue_key: ERM-1234\n...",
-         "context.md": "# Context ...",
-         "fragment_library.md": "# Fragments ...",
-         "examples.md": "# Examples ...",
-         "scenario_list.md": "---\ntestrail_section: 200\n---\n..."
+         "test_plan.md": "---\nissue_key: ERM-1234\nteam: spitfire\necs_story: \"non-ecs\"\ntestrail_section: 114774\ncase_count: 1\n---\n\n## TC-1: Create purchase order\n\n..."
        }
      }'
    ```
-   Response: `{"executionId":"<uuid>","flowId":"cypress-factory","startStepIndex":6,"seededArtifacts":[...]}`
+   Response: `{"executionId":"<uuid>","flowId":"cypress-factory","startStepIndex":2,"seededArtifacts":[...]}`
 
-3. Within 2 seconds, `test-spec` begins running. Monitor at `http://localhost:8080/executions`.
+3. Within 2 seconds, `testrail-sync` begins running. Monitor at `http://localhost:8080/executions`.
 
 4. For the next test iteration — no rebuild, no restart. Just call the endpoint again with updated artifact content (or same content if only the worker/prompt code changed).
 
-**Workflow for iterating on test-spec prompt changes:**
+**Workflow for iterating on testcase-gen prompt changes:**
 ```
-edit system.md
+edit system.md / user.md under prompts/cypress-testcase-gen/
   → mvn install -DskipTests
   → (app still running — hot reload not needed, jars updated in ~/.m2)
   → restart app
-  → POST /api/debug/partial-run (same fixture content, same curl)
+  → POST /api/triggers/manual OR /api/debug/partial-run (startStepIndex: 0)
   → review gate-1 output
   → repeat
 ```
 
-**To start from step 8 (testrail-sync only):**
+**To start from step 2 (testrail-sync only):**
 
 Replace `114774` with your real TestRail section ID, then copy and paste as-is:
 
@@ -232,18 +222,16 @@ curl -s -X POST http://localhost:8080/api/debug/partial-run \
   --data-binary @- <<'EOF'
 {
   "flowId": "cypress-factory",
-  "startStepIndex": 8,
+  "startStepIndex": 2,
   "triggerPayload": {"issueKey": "ERM-1234"},
   "artifacts": {
-    "test_plan.md": "---\nissue_key: ERM-1234\nteam: spitfire\necs_enabled: false\ncase_count: 1\n---\n\n## TC-1: Create purchase order\n\n- **Tier:** criticalPath\n- **Automatable:** Yes\n- **ECS:** No\n\n**Preconditions**\n- User with Acquisitions module access is logged in\n- At least one active vendor record exists in the system\n\n**Steps**\n1. **Action:** Navigate to the Orders module and open Purchase orders\n   **Expected:** Purchase orders list is displayed with New button visible\n2. **Action:** Click New to open the order creation form\n   **Expected:** Order creation form opens with all required fields empty\n3. **Action:** Fill in Vendor and Order type then click Save and close\n   **Expected:** Order is saved with status Pending and appears in the list\n",
-    "scope_manifest.md": "---\nissue_key: ERM-1234\necs_enabled: false\nteam: spitfire\n---\n\n## Analysis\n",
-    "scenario_list.md": "---\ntestrail_section: 114774\n---\n\n# Scenarios\n"
+    "test_plan.md": "---\nissue_key: ERM-1234\nteam: spitfire\necs_story: \"non-ecs\"\ntestrail_section: 114774\ncase_count: 1\n---\n\n## TC-1: Create purchase order\n\n- **Tier:** criticalPath\n- **Automatable:** Yes\n- **ECS:** No\n\n**Preconditions**\n- User with Acquisitions module access is logged in\n- At least one active vendor record exists in the system\n\n**Steps**\n1. **Action:** Navigate to the Orders module and open Purchase orders\n   **Expected:** Purchase orders list is displayed with New button visible\n2. **Action:** Click New to open the order creation form\n   **Expected:** Order creation form opens with all required fields empty\n3. **Action:** Fill in Vendor and Order type then click Save and close\n   **Expected:** Order is saved with status Pending and appears in the list\n"
   }
 }
 EOF
 ```
 
-**To test gate-1 amendment → testrail-sync (start from step 7):**
+**To test gate-1 amendment → testrail-sync (start from step 1):**
 
 Same section ID substitution. Gate-1 opens immediately — go to `/reviews`, edit the `## TC-1:` heading in the textarea to a different title (e.g. `## TC-1: Create purchase order — revised`), click **Amend**. Testrail-sync runs automatically after approval and the TestRail case should carry the amended heading title.
 
@@ -253,53 +241,50 @@ curl -s -X POST http://localhost:8080/api/debug/partial-run \
   --data-binary @- <<'EOF'
 {
   "flowId": "cypress-factory",
-  "startStepIndex": 7,
+  "startStepIndex": 1,
   "triggerPayload": {"issueKey": "ERM-1234"},
   "artifacts": {
-    "test_plan.md": "---\nissue_key: ERM-1234\nteam: spitfire\necs_enabled: false\ncase_count: 1\n---\n\n## TC-1: Create purchase order\n\n- **Tier:** criticalPath\n- **Automatable:** Yes\n- **ECS:** No\n\n**Preconditions**\n- User with Acquisitions module access is logged in\n- At least one active vendor record exists in the system\n\n**Steps**\n1. **Action:** Navigate to the Orders module and open Purchase orders\n   **Expected:** Purchase orders list is displayed with New button visible\n2. **Action:** Click New to open the order creation form\n   **Expected:** Order creation form opens with all required fields empty\n3. **Action:** Fill in Vendor and Order type then click Save and close\n   **Expected:** Order is saved with status Pending and appears in the list\n",
-    "scope_manifest.md": "---\nissue_key: ERM-1234\necs_enabled: false\nteam: spitfire\n---\n\n## Analysis\n",
-    "scenario_list.md": "---\ntestrail_section: 114774\n---\n\n# Scenarios\n",
-    "context.md": "---\nareas:\n  - orders\n---\n\n# Cypress Context: orders\n\n_No area-specific context available. Refer to the scope manifest for guidance._\n"
+    "test_plan.md": "---\nissue_key: ERM-1234\nteam: spitfire\necs_story: \"non-ecs\"\ntestrail_section: 114774\ncase_count: 1\n---\n\n## TC-1: Create purchase order\n\n- **Tier:** criticalPath\n- **Automatable:** Yes\n- **ECS:** No\n\n**Preconditions**\n- User with Acquisitions module access is logged in\n- At least one active vendor record exists in the system\n\n**Steps**\n1. **Action:** Navigate to the Orders module and open Purchase orders\n   **Expected:** Purchase orders list is displayed with New button visible\n2. **Action:** Click New to open the order creation form\n   **Expected:** Order creation form opens with all required fields empty\n3. **Action:** Fill in Vendor and Order type then click Save and close\n   **Expected:** Order is saved with status Pending and appears in the list\n"
   }
 }
 EOF
 ```
 
-**To start from step 9 (cypress-automation — Phase 2):**
+**To start from step 3 (cypress-automation — Phase 2):**
 ```bash
-# test_plan.md MUST contain real C###### IDs (produced by testrail-sync at step 8)
-# fragment_library.md is the TAF fragment index from step 2
+# test_plan.md MUST contain real C###### IDs (produced by testrail-sync at step 2)
+# fragment_library.md is the TAF fragment index
 -d '{
   "flowId": "cypress-factory",
-  "startStepIndex": 9,
+  "startStepIndex": 3,
   "triggerPayload": {"issueKey": "ERM-1234"},
   "artifacts": {
-    "test_plan.md": "---\nissue_key: ERM-1234\nteam: spitfire\necs_enabled: false\ncase_count: 1\n---\n\n## C1234567: Create purchase order\n\n- **Tier:** criticalPath\n- **Automatable:** Yes\n- **ECS:** No\n\n**Steps**\n1. **Action:** ...\n   **Expected:** ...\n",
+    "test_plan.md": "---\nissue_key: ERM-1234\nteam: spitfire\necs_story: \"non-ecs\"\ncase_count: 1\n---\n\n## C1234567: Create purchase order\n\n- **Tier:** criticalPath\n- **Automatable:** Yes\n- **ECS:** No\n\n**Steps**\n1. **Action:** ...\n   **Expected:** ...\n",
     "fragment_library.md": "# TAF Fragments\n..."
   }
 }'
 ```
 
-> `test_plan.md` here must come from a completed step 8 output — it needs real C###### IDs, not TC-## placeholders. Extract from a prior full run via the UI or `GET /api/executions/{id}`.
+> `test_plan.md` here must come from a completed step 2 output — it needs real C###### IDs, not TC-## placeholders. Extract from a prior full run via the UI or `GET /api/executions/{id}`.
 
-**To start from step 11 (cypress-execution — Phase 3):**
+**To start from step 5 (cypress-execution — Phase 3):**
 ```bash
 -d '{
   "flowId": "cypress-factory",
-  "startStepIndex": 11,
+  "startStepIndex": 5,
   "triggerPayload": {"issueKey": "ERM-1234"},
   "artifacts": {
     "test_scripts.md": "# Cypress Specs\n...",
-    "test_plan.md": "---\nissue_key: ERM-1234\nteam: spitfire\necs_enabled: false\ncase_count: 1\n---\n\n## C1234567: Create purchase order\n\n..."
+    "test_plan.md": "---\nissue_key: ERM-1234\nteam: spitfire\necs_story: \"non-ecs\"\ncase_count: 1\n---\n\n## C1234567: Create purchase order\n\n..."
   }
 }'
 ```
 
-**To start from step 12 (cypress-finalize — Phase 3):**
+**To start from step 6 (cypress-finalize — Phase 3):**
 ```bash
 -d '{
   "flowId": "cypress-factory",
-  "startStepIndex": 12,
+  "startStepIndex": 6,
   "triggerPayload": {"issueKey": "ERM-1234"},
   "artifacts": {
     "test_scripts.md": "# Cypress Specs\n...",

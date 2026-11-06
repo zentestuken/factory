@@ -39,7 +39,7 @@ public class TafSyncService {
 
     private void sync() {
         if (!gitAvailable()) {
-            log.warn("[TAF] git not found on PATH — fragment search will use GitHub API fallback");
+            log.warn("[TAF] git not found on PATH - fragment search will use GitHub API fallback");
             return;
         }
         try {
@@ -51,7 +51,7 @@ public class TafSyncService {
             ready.set(true);
             log.info("[TAF] Ready at {}", tafRoot);
         } catch (Exception e) {
-            log.warn("[TAF] Sync failed: {} — fragment search will use GitHub API fallback", e.getMessage());
+            log.warn("[TAF] Sync failed: {} - fragment search will use GitHub API fallback", e.getMessage());
         }
     }
 

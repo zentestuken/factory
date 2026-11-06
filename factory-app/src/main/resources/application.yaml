@@ -42,6 +42,10 @@ spring:
       chat: ${FACTORY_LLM_PROVIDER:anthropic}
     anthropic:
       api-key: ${ANTHROPIC_API_KEY:}
+      # Deliberately low: fail-fast is right for a small call, and most flows make small calls.
+      # A flow whose calls are large overrides it per request instead of raising this - see
+      # TestCaseGenAgentWorker.chatOptions(), which sets its own 15-minute timeout. Raising this
+      # globally would also change the failure mode of every other flow.
       timeout: ${FACTORY_LLM_TIMEOUT:300s}
       chat:
         options:
@@ -140,12 +144,25 @@ factory:
     folio-ai-repo: ${FACTORY_CYPRESS_FOLIO_AI_REPO:}
     # TestRail section id for Cypress flow test cases (long integer).
     testrail-section-id: ${FACTORY_CYPRESS_TESTRAIL_SECTION_ID:}
-    # TestRail case type id (e.g. 1=Functional). Optional; omit to leave type unset.
-    testrail-case-type-id: ${FACTORY_CYPRESS_TESTRAIL_CASE_TYPE_ID:}
-    # TestRail priority id. Default 3 (Medium).
-    testrail-priority-id: ${FACTORY_CYPRESS_TESTRAIL_PRIORITY_ID:}
+    # TestRail case type name, resolved against TestRail's own get_case_types at sync time
+    # (not a hardcoded id - those drift when TestRail is re-templated). Default "Functional".
+    testrail-case-type-name: ${FACTORY_CYPRESS_TESTRAIL_CASE_TYPE_NAME:}
+    # TestRail priority name, resolved the same way. Default "Medium".
+    testrail-priority-name: ${FACTORY_CYPRESS_TESTRAIL_PRIORITY_NAME:}
     # TestRail label applied to every generated case. Default "cypressFlow-delete".
     testrail-label: ${FACTORY_CYPRESS_TESTRAIL_LABEL:}
+    # Max agent review iterations per test-spec run. Default 3. Set to 0 to skip agent review.
+    max-review-iterations: ${FACTORY_CYPRESS_MAX_REVIEW_ITERATIONS:}
+    # Send images embedded inline in the story description to the model. Default true.
+    # Set false when FACTORY_LLM_MODEL points at a model without image support - such a model
+    # rejects a call carrying images outright rather than ignoring them.
+    # Per-request LLM call timeout for this flow (default 15m). Overrides FACTORY_LLM_TIMEOUT
+    # rather than competing with it: it is applied through AnthropicChatOptions.timeout, which
+    # Spring AI uses to build its own client for the call.
+    llm-timeout: ${FACTORY_CYPRESS_LLM_TIMEOUT:}
+    send-images: ${FACTORY_CYPRESS_SEND_IMAGES:}
+    # Jira projects never added to TestRail refs. Comma-separated. Default FAT.
+    refs-excluded-projects: ${FACTORY_CYPRESS_REFS_EXCLUDED_PROJECTS:}
 
 logging:
   # OBS-1: JSON logging is opt-in via env so local `mvn spring-boot:run` stays

@@ -20,7 +20,7 @@ class SecretScanPostProcessorTest {
     private final SecretScanPostProcessor processor = new SecretScanPostProcessor();
 
     private final StepDescriptor step = new StepDescriptor(
-            "test-step", StepType.AGENT, "worker", null, null, null, null, null);
+            "test-step", StepType.AGENT, "worker", null, null, null, null, null, null);
 
     // Fixture values are split so secret scanners don't flag the source file;
     // the runtime strings still match the production patterns.

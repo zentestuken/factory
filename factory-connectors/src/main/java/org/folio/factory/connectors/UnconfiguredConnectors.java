@@ -38,6 +38,11 @@ public final class UnconfiguredConnectors {
         }
 
         @Override
+        public byte[] downloadAttachment(String contentUrl) {
+            return null;   // advisory mode: no credentials, so no bytes - not an error
+        }
+
+        @Override
         public void addComment(String issueKey, String body) {
             throw notConfigured();
         }

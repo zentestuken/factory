@@ -97,4 +97,30 @@ public interface TestRailConnector {
     default List<String> listSectionPaths() {
         throw new UnsupportedOperationException("listSectionPaths not supported by this TestRail connector");
     }
+
+    /**
+     * Returns every case type option (id + name) configured on this TestRail account. Global,
+     * not project-scoped. IDs drift when TestRail's admin re-templates the field, so callers
+     * should resolve by name rather than caching an id across app restarts.
+     */
+    default List<TestRailFieldOption> getCaseTypes() {
+        throw new UnsupportedOperationException("getCaseTypes not supported by this TestRail connector");
+    }
+
+    /**
+     * Returns every priority option (id + name + short name) configured on this TestRail
+     * account. Global, not project-scoped. Same id-drift caveat as {@link #getCaseTypes()}.
+     */
+    default List<TestRailFieldOption> getPriorities() {
+        throw new UnsupportedOperationException("getPriorities not supported by this TestRail connector");
+    }
+
+    /**
+     * Uploads a file as an attachment on an existing case.
+     *
+     * @return the created attachment id
+     */
+    default long addAttachmentToCase(long caseId, byte[] content, String filename) {
+        throw new UnsupportedOperationException("addAttachmentToCase not supported by this TestRail connector");
+    }
 }
