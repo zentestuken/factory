@@ -29,6 +29,7 @@ import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.MessageType;
 import org.springframework.ai.chat.prompt.Prompt;
+import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 import java.nio.file.Files;
@@ -641,6 +642,11 @@ class TestCaseGenAgentWorkerTest {
                         List.of(new TestRailStep("Click Actions \u2192 Edit", "Edit form opens"),
                                 new TestRailStep("Click Save", "Record is updated"))));
             }
+
+            @Override
+            public JsonNode getTestCaseDetails(String testCaseId) {
+                return null;
+            }
         };
     }
 
@@ -653,6 +659,11 @@ class TestCaseGenAgentWorkerTest {
                 return List.of("MARC Authority › Browse");
             }
             @Override public long resolveSectionByPath(String path) { return 42L; }
+
+            @Override
+            public JsonNode getTestCaseDetails(String testCaseId) {
+                return null;
+            }
         };
     }
 
