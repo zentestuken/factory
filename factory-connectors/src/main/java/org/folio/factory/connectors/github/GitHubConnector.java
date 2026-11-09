@@ -33,4 +33,9 @@ public interface GitHubConnector {
      * or an empty list if the path does not exist or is not a directory.
      */
     List<String> listDirectory(String repo, String branch, String path);
+
+    /** Find an open PR inside the destination repository before creating another. */
+    default java.util.Optional<String> findOpenPullRequest(String repo, String headBranch, String baseBranch) {
+        throw new UnsupportedOperationException("GitHub pull request lookup is not configured");
+    }
 }

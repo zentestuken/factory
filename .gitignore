@@ -24,3 +24,8 @@ target/
 cypressTafClone/
 skillsClone/
 debugPrompts/
+
+/.tasks/
+
+# Windows: Git Bash creates a real file named NUL when a command redirects to the NUL device
+NUL

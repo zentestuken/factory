@@ -53,6 +53,11 @@ public final class UnconfiguredConnectors {
         }
 
         @Override
+        public byte[] downloadAttachment(String attachmentId, long maxBytes) {
+            throw notConfigured();
+        }
+
+        @Override
         public String connectorName() {
             return "jira";
         }
