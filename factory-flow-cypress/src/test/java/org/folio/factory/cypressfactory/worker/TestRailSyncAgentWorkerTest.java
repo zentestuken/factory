@@ -703,6 +703,7 @@ class TestRailSyncAgentWorkerTest {
             return null;
         }
 
+        @Override
         public List<org.folio.factory.connectors.testrail.TestRailFieldOption> getCaseTypes() {
             return List.of(
                     new org.folio.factory.connectors.testrail.TestRailFieldOption(1, "Automated", null),

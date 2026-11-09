@@ -260,6 +260,7 @@ class JiraRestConnectorTest {
         server.verify();
     }
 
+    @Test
     void baseUrlOnlyReadsAnonymouslyAndRefusesWrites() {
         RestClient.Builder builder = RestClient.builder();
         MockRestServiceServer anonymousServer = MockRestServiceServer.bindTo(builder).build();

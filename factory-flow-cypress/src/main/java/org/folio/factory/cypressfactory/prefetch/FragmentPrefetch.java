@@ -58,19 +58,32 @@ public class FragmentPrefetch {
             "this", "which", "add", "new", "edit", "update", "display", "show", "create",
             "delete", "remove", "save", "view", "use", "set", "get", "has", "have"));
 
-    /** Factory area names → stripes-testing fragment directory names, where they differ. */
-    private static final Map<String, String> AREA_TO_DIR = Map.ofEntries(
-            Map.entry("check-in", "checkin"),
-            Map.entry("check-out", "checkout"),
-            Map.entry("circulation-settings", "circulation"),
-            Map.entry("course-reserves", "courses"),
-            Map.entry("data-import", "data_import"),
-            Map.entry("fees-fines", "users"),
-            Map.entry("marc-authority", "marcAuthority"),
-            Map.entry("marc-bib-quickmarc", "inventory"),
-            Map.entry("mediated-requests", "requests"),
-            Map.entry("patron-notices", "circulation")
+    /**
+     * Factory area names → stripes-testing fragment directories or single {@code .js} files (relative
+     * to {@code cypress/support/fragments}), where they differ from the area name. An area whose page
+     * objects are spread out lists them all; the files are scored and capped as one pool. Eureka has
+     * no {@code fragments/eureka} - its specs live under {@code e2e/eureka} and import their page
+     * objects from the two settings directories, plus the two {@code users/} files that carry role
+     * and capability assignment (the rest of {@code users/} is patron-side and would only crowd them).
+     */
+    private static final Map<String, List<String>> AREA_TO_DIRS = Map.ofEntries(
+            Map.entry("check-in", List.of("checkin")),
+            Map.entry("check-out", List.of("checkout")),
+            Map.entry("circulation-settings", List.of("circulation")),
+            Map.entry("course-reserves", List.of("courses")),
+            Map.entry("data-import", List.of("data_import")),
+            Map.entry("eureka", List.of("settings/authorization-roles", "settings/authorization-policies",
+                    "users/userEdit.js", "users/usersCard.js")),
+            Map.entry("fees-fines", List.of("users")),
+            Map.entry("marc-authority", List.of("marcAuthority")),
+            Map.entry("marc-bib-quickmarc", List.of("inventory")),
+            Map.entry("mediated-requests", List.of("requests")),
+            Map.entry("patron-notices", List.of("circulation"))
     );
+
+    static List<String> dirsFor(String area) {
+        return AREA_TO_DIRS.getOrDefault(area, List.of(area));
+    }
 
     /** Factory area names → gui value prefixes in the flat permissions.js. */
     private static final Map<String, List<String>> AREA_GUI_PREFIXES = Map.ofEntries(
@@ -173,28 +186,36 @@ public class FragmentPrefetch {
     private void appendAreaSectionLocal(StringBuilder md, String area, List<String> keywords) {
         md.append("## Area: ").append(area).append("\n\n");
 
-        String dir = AREA_TO_DIR.getOrDefault(area, area);
-        Path fragmentsDir = tafSync.tafRoot().resolve(FRAGMENTS_BASE).resolve(dir);
+        List<Path> fragmentDirs = dirsFor(area).stream()
+                .map(dir -> tafSync.tafRoot().resolve(FRAGMENTS_BASE).resolve(dir))
+                .filter(path -> Files.isDirectory(path) || Files.isRegularFile(path))
+                .toList();
 
-        if (Files.isDirectory(fragmentsDir)) {
-            appendFragmentsLocal(md, fragmentsDir, keywords);
+        if (!fragmentDirs.isEmpty()) {
+            appendFragmentsLocal(md, fragmentDirs, keywords);
         } else {
-            md.append("_No fragment directory found at `").append(
-                    tafSync.tafRoot().relativize(fragmentsDir)).append("`._\n\n");
+            md.append("_No fragment directory found at ").append(dirsFor(area).stream()
+                    .map(dir -> "`" + FRAGMENTS_BASE + "/" + dir + "`").collect(Collectors.joining(", ")))
+                    .append("._\n\n");
         }
 
         appendPermissionsLocal(md, area);
     }
 
-    private void appendFragmentsLocal(StringBuilder md, Path fragmentsDir, List<String> keywords) {
-        List<Path> jsFiles;
-        try (Stream<Path> stream = Files.list(fragmentsDir)) {
-            jsFiles = stream
-                    .filter(p -> p.toString().endsWith(".js") && Files.isRegularFile(p))
-                    .collect(Collectors.toList());
-        } catch (IOException e) {
-            md.append("_Could not list fragments: ").append(e.getMessage()).append("_\n\n");
-            return;
+    private void appendFragmentsLocal(StringBuilder md, List<Path> fragmentDirs, List<String> keywords) {
+        List<Path> jsFiles = new ArrayList<>();
+        for (Path fragmentsDir : fragmentDirs) {
+            if (Files.isRegularFile(fragmentsDir)) {
+                jsFiles.add(fragmentsDir);
+                continue;
+            }
+            try (Stream<Path> stream = Files.list(fragmentsDir)) {
+                stream.filter(p -> p.toString().endsWith(".js") && Files.isRegularFile(p))
+                        .forEach(jsFiles::add);
+            } catch (IOException e) {
+                md.append("_Could not list fragments: ").append(e.getMessage()).append("_\n\n");
+                return;
+            }
         }
         if (jsFiles.isEmpty()) {
             md.append("_No .js fragment files found._\n\n");
@@ -285,35 +306,44 @@ public class FragmentPrefetch {
     // ── GitHub API fallback ────────────────────────────────────────────────────
 
     private void appendAreaSectionRemote(StringBuilder md, String area, List<String> keywords) {
-        String dir = AREA_TO_DIR.getOrDefault(area, area);
-        String dirPath = FRAGMENTS_BASE + "/" + dir;
-        List<String> files = gitHub.listDirectory(TAF_REPO, TAF_BRANCH, dirPath);
-        List<String> jsFiles = files.stream().filter(f -> f.endsWith(".js")).toList();
+        List<String> dirPaths = dirsFor(area).stream().map(dir -> FRAGMENTS_BASE + "/" + dir).toList();
+        List<String> jsPaths = new ArrayList<>();
+        for (String dirPath : dirPaths) {
+            if (dirPath.endsWith(".js")) {
+                jsPaths.add(dirPath);
+                continue;
+            }
+            gitHub.listDirectory(TAF_REPO, TAF_BRANCH, dirPath).stream()
+                    .filter(f -> f.endsWith(".js"))
+                    .forEach(f -> jsPaths.add(dirPath + "/" + f));
+        }
 
         md.append("## Area: ").append(area).append("\n\n");
 
-        if (jsFiles.isEmpty()) {
-            md.append("_No fragment files found in `").append(dirPath).append("`._\n\n");
+        if (jsPaths.isEmpty()) {
+            md.append("_No fragment files found in ").append(dirPaths.stream()
+                    .map(d -> "`" + d + "`").collect(Collectors.joining(", "))).append("._\n\n");
             return;
         }
 
-        List<String> ranked = jsFiles.stream()
-                .sorted(Comparator.comparingInt((String f) -> scoreRemote(f, keywords)).reversed())
+        List<String> ranked = jsPaths.stream()
+                .sorted(Comparator.comparingInt((String f) ->
+                        scoreRemote(f.substring(f.lastIndexOf('/') + 1), keywords)).reversed())
                 .toList();
         int cut = Math.min(MAX_FETCHED_FILES, ranked.size());
         List<String> toFetch = ranked.subList(0, cut);
         List<String> others = ranked.subList(cut, ranked.size());
 
-        for (String filename : toFetch) {
-            String content = gitHub.getFileContent(TAF_REPO, TAF_BRANCH, dirPath + "/" + filename);
+        for (String path : toFetch) {
+            String content = gitHub.getFileContent(TAF_REPO, TAF_BRANCH, path);
             if (content != null && !content.isBlank()) {
-                md.append("### ").append(dirPath).append("/").append(filename).append("\n\n");
+                md.append("### ").append(path).append("\n\n");
                 md.append("```js\n").append(content).append("\n```\n\n");
             }
         }
         if (!others.isEmpty()) {
-            md.append("**Other fragments in `").append(dirPath).append("`:**\n");
-            others.forEach(f -> md.append("- `").append(f).append("`\n"));
+            md.append("**Other fragments in this area:**\n");
+            others.forEach(f -> md.append("- `").append(f.substring(f.lastIndexOf('/') + 1)).append("`\n"));
             md.append("\n");
         }
     }

@@ -325,7 +325,7 @@ currently **18,577 bytes** against **27,467** live — already ~33% behind, sile
 | `TafSyncService` | No | git clone/pull of `stripes-testing` → local disk. Not a flow step. |
 | `AreaDetector` | No | **Validator + fallback** for the router call: resolves returned area names against the 30 real context files; keyword-scores story text + Jira prefix when the router fails or returns something unknown. |
 | `ContextPrefetch` | No | Reads area context file(s) from the skill clone; runs the 5 thin-context triggers; enriches from GitHub/Jira when triggered. |
-| `FragmentPrefetch` | No | Lists + keyword-scores TAF fragments for the detected area. |
+| `FragmentPrefetch` | No | Lists + keyword-scores TAF fragments for the detected area. An area maps to one or more directories or single files under `cypress/support/fragments` (`AREA_TO_DIRS`, default: the area name); they are scored as one pool, top 2 inlined, the rest listed. |
 | `CoveragePrefetch` | No | Area-matched TestRail sections → existing cases; dedup by case id, cap 150. Renders a title + precondition index, and full bodies for triage-nominated candidates. |
 | `ExamplesPrefetch` | No | Reads `references/examples.md` from the skill clone; GitHub then classpath fallback. |
 | `DevTeamCatalog` | No | The 27 FOLIO teams, parsed from `references/dev-teams.md`. Used by **both** workers, like `TestPlanParser`: the generator canonicalises the team it read off the ticket, sync turns that name into TestRail's `custom_dev_team` option id. Data lives in a resource so filling in a new team is an edit, not a release. |
@@ -711,6 +711,15 @@ Notes:
   that is not in `KNOWN_AREAS` (`unroutable:<stem>`) and any known area with no file
   (`missing-file:<stem>`). When MQA adds a context file, also add its Jira prefixes and keywords to
   `PROJECT_KEY_AREAS` / `AREA_KEYWORDS`.
+- A routable area also needs page objects, or `FragmentPrefetch` finds none and the plan's
+  automation notes say a new page object would be needed. Areas whose TAF directory is not named
+  after the area go in `FragmentPrefetch.AREA_TO_DIRS`. `eureka` has no `fragments/eureka` (its
+  specs live under `e2e/eureka`), so it maps to `settings/authorization-roles`,
+  `settings/authorization-policies`, `users/userEdit.js` and `users/usersCard.js` - the page objects
+  those specs import. Measured on UIROLES-202 (0575e47f vs f2634b2c): 0 -> 2 fragments inlined,
+  automation notes cite 12 real `authorizationRoles.*` helpers, labels match the page object; cost
+  ~+33k uncached prompt tokens per attempt (`userEdit.js` is 78 KB and only loosely relevant to
+  roles stories - drop it from the mapping if cost matters more than user-pane coverage).
 
 ### The generation worker
 

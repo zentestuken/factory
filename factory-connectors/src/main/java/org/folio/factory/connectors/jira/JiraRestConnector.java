@@ -65,7 +65,7 @@ public class JiraRestConnector implements JiraConnector, ConnectorHealth {
     });
     private static final Pattern ATTACHMENT_ID = Pattern.compile("[0-9]{1,18}");
 
-    private RestClient restClient;
+    private final RestClient restClient;
     private final boolean authenticated;
     private final String baseUrl;
     private final String authorization;
@@ -80,20 +80,14 @@ public class JiraRestConnector implements JiraConnector, ConnectorHealth {
      * added, because the attachment redirect target is a different host that needs no Jira
      * credentials - and must not be sent them.
      */
-    private RestClient mediaClient;
+    private final RestClient mediaClient;
 
     public JiraRestConnector(JiraProperties properties, RestClient.Builder builder) {
         this(properties, builder, DOWNLOAD_TIMEOUT);
-        this.mediaClient = builder.clone().build();
-        this.restClient = builder
-                .baseUrl(properties.baseUrl())
-                .defaultHeader(HttpHeaders.AUTHORIZATION, "Basic " + HttpHeaders.encodeBasicAuth(
-                        properties.email(), properties.apiToken(), StandardCharsets.UTF_8))
-                .defaultHeader(HttpHeaders.ACCEPT, MediaType.APPLICATION_JSON_VALUE)
-                .build();
     }
 
     JiraRestConnector(JiraProperties properties, RestClient.Builder builder, Duration downloadTimeout) {
+        this.mediaClient = builder.clone().build();
         this.downloadTimeout = downloadTimeout;
         this.authenticated = properties.isConfigured();
         this.baseUrl = properties.baseUrl().replaceAll("/+$", "");

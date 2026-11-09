@@ -18,8 +18,12 @@ A complete local run using the built-in sample story. No Jira, TestRail, or GitH
 ## Step 1 — Start the database
 
 ```bash
-docker compose up -d
+docker compose up -d postgres
 ```
+
+Name the service: plain `docker compose up -d` now also builds and starts a `factory` app container
+(and a coding-runtime image for the Developer Flow), which takes port 8080 and polls the same
+database as the app you start in Step 4.
 
 Verify it's healthy:
 ```bash
