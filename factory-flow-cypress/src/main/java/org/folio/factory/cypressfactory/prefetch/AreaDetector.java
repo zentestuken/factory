@@ -26,14 +26,15 @@ public class AreaDetector {
     /** SKILL.md: "A story can span two areas — read both context files." */
     public static final int MAX_AREAS = 2;
 
-    /** The 30 context-file stems under {@code references/context/}. */
+    /** The 38 context-file stems under {@code references/context/}. */
     public static final List<String> KNOWN_AREAS = List.of(
             "agreements", "bulk-edit", "check-in", "check-out", "circulation-log",
-            "circulation-settings", "consortium-manager", "course-reserves", "data-export",
-            "data-import", "dcb", "eholdings", "eureka", "fees-fines", "finance", "inventory",
-            "invoices", "licenses", "lists", "loans", "marc-authority",
-            "marc-bib-quickmarc", "mediated-requests", "oai-pmh", "orders", "organizations",
-            "patron-notices", "receiving", "requests", "users");
+            "circulation-settings", "claiming", "consortium-manager", "course-reserves", "data-export",
+            "data-import", "dcb", "eholdings", "eureka", "export-manager", "fees-fines", "finance",
+            "inn-reach", "inventory", "inventory-browse", "invoices", "licenses", "linked-data", "lists",
+            "loans", "marc-authority", "marc-bib-quickmarc", "marc-holdings", "mediated-requests",
+            "oai-pmh", "open-access", "orders", "organizations", "patron-notices", "receiving",
+            "requests", "serials-management", "users");
 
     // Fallback only. Jira project key prefix → area(s).
     private static final Map<String, List<String>> PROJECT_KEY_AREAS = Map.ofEntries(
@@ -78,8 +79,19 @@ public class AreaDetector {
             Map.entry("MODCXINV", List.of("inventory")),
             Map.entry("MODDATAIMP", List.of("data-import")),
             Map.entry("MODDICORE", List.of("data-import")),
-            Map.entry("MODEXPS", List.of("data-export")),
-            Map.entry("MODEXPW", List.of("data-export")),
+            Map.entry("MODEXPS", List.of("export-manager", "data-export")),
+            Map.entry("MODEXPW", List.of("export-manager", "data-export")),
+            Map.entry("MODINREACH", List.of("inn-reach")),
+            Map.entry("MODLD", List.of("linked-data")),
+            Map.entry("MODOA", List.of("open-access")),
+            Map.entry("MODSER", List.of("serials-management")),
+            Map.entry("MSEARCH", List.of("inventory-browse")),
+            Map.entry("UICLAIM", List.of("claiming")),
+            Map.entry("UIEXPMGR", List.of("export-manager")),
+            Map.entry("UIINREACH", List.of("inn-reach")),
+            Map.entry("UILD", List.of("linked-data")),
+            Map.entry("UIOA", List.of("open-access")),
+            Map.entry("UISER", List.of("serials-management")),
             Map.entry("MODFEE", List.of("fees-fines")),
             Map.entry("MODFIN", List.of("finance")),
             Map.entry("MODFISTO", List.of("finance")),
@@ -147,6 +159,28 @@ public class AreaDetector {
 
     // Ordered: first match wins. Mirrors the Area Detection table in SKILL.md.
     private static final List<Map.Entry<String, String>> AREA_KEYWORDS = List.of(
+            // Skill v2 areas (area-map.md). Specific phrases, so they go first.
+            Map.entry("inn-reach", "inn-reach"),
+            Map.entry("central server", "inn-reach"),
+            Map.entry("d2ir", "inn-reach"),
+            Map.entry("open access", "open-access"),
+            Map.entry("publication request", "open-access"),
+            Map.entry("publication pattern", "serials-management"),
+            Map.entry("predicted piece", "serials-management"),
+            Map.entry("serials", "serials-management"),
+            Map.entry("send claim", "claiming"),
+            Map.entry("delay claim", "claiming"),
+            Map.entry("claiming", "claiming"),
+            Map.entry("export manager", "export-manager"),
+            Map.entry("edifact", "export-manager"),
+            Map.entry("marigold", "linked-data"),
+            Map.entry("linked data", "linked-data"),
+            Map.entry("bibframe", "linked-data"),
+            Map.entry("marc holdings", "marc-holdings"),
+            Map.entry("call number browse", "inventory-browse"),
+            Map.entry("subject browse", "inventory-browse"),
+            Map.entry("contributor browse", "inventory-browse"),
+            Map.entry("classification browse", "inventory-browse"),
             Map.entry("bulk edit", "bulk-edit"),
             Map.entry("bulk-edit", "bulk-edit"),
             Map.entry("data import", "data-import"),

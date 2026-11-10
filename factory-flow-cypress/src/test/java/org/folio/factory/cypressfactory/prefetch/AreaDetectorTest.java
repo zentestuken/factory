@@ -141,4 +141,16 @@ class AreaDetectorTest {
                 .containsExactly("eureka");
         assertThat(detector.areaTable()).contains("`eureka` | ").contains("UIROLES");
     }
+
+    @Test
+    void skillV2AreasAreRoutableAndOwnTheirPrefixesAndPhrases() {
+        assertThat(AreaDetector.KNOWN_AREAS).hasSize(38).contains("inn-reach", "open-access",
+                "serials-management", "claiming", "export-manager", "linked-data", "marc-holdings",
+                "inventory-browse");
+        assertThat(detector.detectByKeywords(issue("UIEXPMGR-1", "", ""))).containsExactly("export-manager");
+        assertThat(detector.detectByKeywords(issue("ZZZZ-1", "Add MARC holdings record field", "")))
+                .startsWith("marc-holdings");
+        assertThat(detector.detectByKeywords(issue("ZZZZ-1", "Call number browse sorting", "")))
+                .startsWith("inventory-browse");
+    }
 }

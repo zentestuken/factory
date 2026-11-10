@@ -13,9 +13,12 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.TreeSet;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -40,6 +43,19 @@ public class SkillWorkspaceService {
     public static final String SKILL_MD = "SKILL.md";
     public static final String EXAMPLES_MD = "references/examples.md";
 
+    /**
+     * The skill's rule files, pasted into the generation system prompt after SKILL.md. Since the
+     * v2 skill (folio-eureka-ai-dev#50) SKILL.md is only the workflow - how a case is written lives
+     * here. Deliberately not here: {@code area-map.md} (the factory routes areas itself) and
+     * {@code testrail-api.md} (posting is the factory's job, delta 3).
+     */
+    public static final List<String> RULE_FILES = List.of(
+            "references/writing-rules.md", "references/step-patterns.md", "references/house-style.md");
+
+    /** The rule files' text, ready for the prompt, plus which ones could not be read. */
+    public record SkillReferences(String text, List<String> missing, String sourceNote) {
+    }
+
     public enum Source { CLONE, GITHUB, CLASSPATH }
 
     public record Asset(String content, Source source, String detail) {}
@@ -55,7 +71,7 @@ public class SkillWorkspaceService {
      */
     private static final Map<String, String> DELTA_ANCHORS = Map.of(
             "delta 1 - gathering already performed", "read the matching context file",
-            "delta 2 - never pause for confirmation", "Wait for confirmation",
+            "delta 2 - never pause for confirmation", "wait for confirmation",
             "delta 3 - never touch TestRail", "Ask for the TestRail Section ID");
 
     private final GitHubConnector gitHub;
@@ -207,8 +223,38 @@ public class SkillWorkspaceService {
         }
     }
 
+    /**
+     * Soft by design: a missing rule file degrades case quality but must not stop the run. Each
+     * file is headed with its skill-relative path, which is how SKILL.md refers to it.
+     */
+    public SkillReferences ruleFiles() {
+        StringBuilder text = new StringBuilder();
+        List<String> missing = new ArrayList<>();
+        Set<String> sources = new LinkedHashSet<>();
+        for (String path : RULE_FILES) {
+            Optional<Asset> asset = read(path);
+            if (asset.isEmpty()) {
+                missing.add(path);
+                log.warn("[SKILL] Rule file {} unavailable from clone, GitHub and classpath", path);
+                continue;
+            }
+            sources.add(asset.get().detail());
+            text.append("## `").append(path).append("`\n\n").append(asset.get().content().strip())
+                    .append("\n\n");
+        }
+        String note = (RULE_FILES.size() - missing.size()) + " of " + RULE_FILES.size() + " rule files ("
+                + String.join("; ", sources) + ")"
+                + (missing.isEmpty() ? "" : " - MISSING: " + String.join(", ", missing));
+        return new SkillReferences(text.toString(), List.copyOf(missing), note);
+    }
+
+    /**
+     * Path-preserving: {@code SKILL.md} maps to {@code references/SKILL.md} and a
+     * {@code references/...} path maps to itself, so {@code references/examples/orders.md} and a
+     * context file of the same name can never collide in the bundle.
+     */
     private Optional<Asset> readFromClasspath(String relativePath) {
-        String resource = "references/" + fileName(relativePath);
+        String resource = relativePath.startsWith("references/") ? relativePath : "references/" + relativePath;
         try (InputStream in = getClass().getClassLoader().getResourceAsStream(resource)) {
             if (in == null) return Optional.empty();
             String content = new String(in.readAllBytes(), StandardCharsets.UTF_8);
@@ -231,10 +277,6 @@ public class SkillWorkspaceService {
         }
     }
 
-    private static String fileName(String relativePath) {
-        int slash = relativePath.lastIndexOf('/');
-        return slash < 0 ? relativePath : relativePath.substring(slash + 1);
-    }
 
     /**
      * Names the factory deltas whose anchor phrase is no longer present in the given skill text.

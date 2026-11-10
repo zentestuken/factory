@@ -157,6 +157,11 @@ public final class UnconfiguredConnectors {
         }
 
         @Override
+        public List<org.folio.factory.connectors.testrail.TestRailCase> getCasesByRefs(String ref) {
+            return List.of();
+        }
+
+        @Override
         public JsonNode getTestCaseDetails(String testCaseId) {
             throw notConfigured();
         }

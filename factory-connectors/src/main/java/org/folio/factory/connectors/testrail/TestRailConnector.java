@@ -74,6 +74,14 @@ public interface TestRailConnector {
     }
 
     /**
+     * All cases in the configured project (and suite) whose References field contains
+     * {@code ref}, e.g. a Jira key. Empty list when connector is not configured.
+     */
+    default List<TestRailCase> getCasesByRefs(String ref) {
+        throw new UnsupportedOperationException("getCasesByRefs not supported by this TestRail connector");
+    }
+
+    /**
      * Returns details of a single test case
      */
     JsonNode getTestCaseDetails(String testCaseId);

@@ -60,4 +60,13 @@ class FragmentPrefetchTest {
 
         assertThat(text).contains("No fragment directory found at `cypress/support/fragments/settings/authorization-roles`");
     }
+
+    @Test
+    void marcHoldingsMapsToTheRootQuickMarcEditorFile() throws Exception {
+        fragment("quickMarcEditor.js", "MARC holdings 852");
+
+        String text = prefetch().scan(List.of("marc-holdings"), "Add MARC holdings record").text();
+
+        assertThat(text).contains("### cypress/support/fragments/quickMarcEditor.js");
+    }
 }

@@ -221,4 +221,18 @@ class TestRailRestConnectorTest {
 
         assertThat(id).isEqualTo(42);
     }
+
+    @Test
+    void getCasesByRefsFiltersTheProjectByReference() {
+        server.expect(requestTo(
+                        "https://testrail.example.org/index.php?/api/v2/get_cases/12&refs=UIROLES-202&limit=250&offset=0"))
+                .andExpect(method(GET))
+                .andRespond(withSuccess("""
+                        {"cases": [{"id": 1579148, "title": "Show hidden capabilities", "custom_preconds": "p"}]}
+                        """, MediaType.APPLICATION_JSON));
+
+        assertThat(connector.getCasesByRefs("UIROLES-202"))
+                .singleElement().satisfies(c -> assertThat(c.id()).isEqualTo(1579148L));
+        server.verify();
+    }
 }

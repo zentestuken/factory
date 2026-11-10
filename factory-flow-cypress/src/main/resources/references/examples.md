@@ -34,7 +34,7 @@ ECS Unsupported:    No
 Capabilities Ready: Yes
 Execution Type:     Manual
 Dev Team:           Vega
-Labels:             AI
+Labels:             ai
 References:         UICHKIN-485
 
 Preconditions:
@@ -83,7 +83,7 @@ ECS Unsupported:    No
 Capabilities Ready: Yes
 Execution Type:     Manual
 Dev Team:           Thunderjet
-Labels:             AI
+Labels:             ai
 References:         UIOR-1519, UISACQCOMP-300, UIREC-504, MODORDSTOR-407, UICLAIM-31, MODORDERS-1464
 
 Preconditions:
@@ -192,7 +192,7 @@ ECS Unsupported:    No
 Capabilities Ready: Yes
 Execution Type:     Manual
 Dev Team:           Vega
-Labels:             AI
+Labels:             ai
 References:         CIRC-1719, FAT-1218
 
 Preconditions:
@@ -241,81 +241,6 @@ Steps:
 ```
 
 **Why this is the bar (and what a naive generation gets wrong):** a terse title — "item with at least one open request" — hides a **journey**. The team does NOT write an atomic "check in at pickup SP → Awaiting pickup" case; they walk *both* outcomes (In transit at a non-pickup SP, then Awaiting pickup after switching to the pickup SP) plus slip reprints, in one case flagged `User Journey = Yes`. Note the conventions a first-pass AI case tends to violate: (a) **symbolic placeholders** `S` / `S1` / `<barcode>` / `<title>`, never invented values like `SP-A`/`12345`; (b) **prose expected results** — "Modal appears: ... Print slip is checked by default." is one sentence, not a 3-bullet list; (c) **`refs` = a Bug + a Tech-Debt ticket, no story**; (d) **Priority Critical** because check-in fulfillment is a core daily path. (Real-world footnote: the raw case ends with a junk step "Saving this test - test step - ignore PDW" — dropped here. Always strip such noise when curating examples.)
-
----
-
-## Example 4 — ECS cross-tenant enforcement, multi-destination verification (Data Import / MARC Authority)
-
-Source: [C407681](https://foliotest.testrail.io/index.php?/cases/view/407681) — "Update of Shared MARC authority record via Data import will have No action from Member tenant", section 27194 (Data Import), Manual, ECS Enabled, refs MODDATAIMP-901 and MODDATAIMP-926. The case verifies that a Member tenant cannot update a Shared MARC authority record that belongs to Central — the import completes with "No action" rather than applying the update.
-
-```
-Title: Update of Shared "MARC authority" record via "Data import" will have No action from Member tenant
-
-Type:               Functional
-Priority:           Medium
-User Journey:       No
-ECS Enabled:        Yes
-Execution Type:     Manual
-References:         MODDATAIMP-901, MODDATAIMP-926
-
-Preconditions:
-1. Central tenant and at least one Member tenant exist
-2. Central tenant has a Shared "MARC authority" record with a unique "010 $a" value (e.g. heading "Keyes, Daniel"); record was imported via "Default - Create SRS MARC Authority" job profile from Central
-3. Member tenant has a job profile "Update MARC authority records by matching 010 $a subfield value" with a Match profile (Field = 010, Ind1 = blank, Ind2 = blank, Subfield = a) and a linked Update action profile
-4. User has a ".mrc" file with updates targeting the existing Shared "MARC authority" record
-5. User has affiliations assigned in both Central and Member tenants; the following permissions are assigned in both tenants:
-   - Data import: Can upload files, import, and view logs
-   - MARC Authority: View MARC authority record
-6. User is logged in with affiliation switched to Member tenant; User is on the "MARC authority" app main page
-
-Steps:
-1. Action:   Fill in the search box with the heading of the Shared "MARC authority" record (e.g. "Keyes, Daniel")
-   Expected: "Search" button becomes active
-
-2. Action:   Click "Search"
-   Expected: "MARC authority" record is displayed in the result list
-
-3. Action:   Navigate to "Data import" app
-   Expected: "Data import" app main page is displayed
-
-4. Action:
-   - Click "or select files" button
-   - Select the ".mrc" file from Preconditions #4
-   - Click "Open"
-   Expected:
-   - File is loaded
-   - User is redirected to the "Job profiles" pane with the list of existing profiles
-
-5. Action:
-   - Click the job profile from Preconditions #3
-   - Click "Actions" in the third pane; select "Run"
-   - Click "Run" on the confirmation modal
-   Expected:
-   - User is redirected to the "Logs" pane in "Data import" app
-   - Import completes; a new row with "Completed" status appears. NOTE: May change to "Completed with errors" in a future release.
-
-6. Action:   Click the "File name" column value of the completed row
-   Expected: Logs pane shows:
-   - "Title" column: heading of the record (e.g. "Keyes, Daniel")
-   - "SRS MARC" column: "No action". NOTE: May change to an error "Shared MARC authority record cannot be updated from this tenant" in a future release.
-
-7. Action:   Navigate to "MARC authority" app
-   Expected: "MARC authority" app main page is displayed
-
-8. Action:   Fill in the search box with the same heading ("Keyes, Daniel") and click "Search"
-   Expected: "MARC authority" record is displayed in the result list
-
-9. Action:   Click the record heading to open the detail view
-   Expected: Record detail view opens; record was NOT updated — fields match the original imported version from Preconditions #2
-```
-
-**Why this is the bar:** This is the reference shape for ECS enforcement cases — verify a cross-tenant restriction by completing the action and checking the outcome at two destinations.
-
-1. **Preconditions name tenants explicitly.** Every data item states which tenant owns it ("Central tenant has…", "Member tenant has…"). The user precondition specifies affiliations in both tenants plus the active affiliation at test start — never left implicit.
-2. **Permissions listed as a pair.** ECS cases list the same permissions for both tenants, because the assertion depends on both being configured correctly.
-3. **Double-destination verification.** Step 6 checks the Data Import log (immediate enforcement result — "No action"); step 9 checks the MARC authority record directly (end state — not modified). Both are required: the log proves the restriction fired; the record confirms no side-effect slipped through.
-4. **"No action" IS the positive outcome.** This case verifies a restriction. The expected result at step 6 is terse and observable ("No action in the SRS MARC column"), with a single `NOTE` sentence for the planned future behavior change — one sentence, not an essay, and scoped because the tracking ticket is already in `refs`.
-5. **`User Journey = No` despite spanning two apps.** A journey case walks a lifecycle with multiple distinct outcomes. This case walks one enforcement rule through two UIs to one outcome ("No action") — it's Functional, not a journey.
 
 ---
 
@@ -408,7 +333,7 @@ Preconditions must be **flat**: each user, each data record, and the starting pa
 
 ## How to populate this file for real
 
-Once TestRail credentials are available (see `SKILL.md` → Credentials), pull real cases from 2–3 of the team's best-maintained sections and refresh the examples above. Note: direct API calls to `foliotest.testrail.io` may be blocked by your network/sandbox egress rules — if so, open the case in a browser where you're already logged in and hit the same API path directly (e.g. `https://foliotest.testrail.io/index.php?/api/v2/get_case/{id}`); TestRail accepts the existing session cookie, no API key needed in that context.
+Once TestRail credentials are available (see `references/testrail-api.md` → Credentials), pull real cases from 2–3 of the team's best-maintained sections and refresh the examples above. Note: direct API calls to `foliotest.testrail.io` may be blocked by your network/sandbox egress rules — if so, open the case in a browser where you're already logged in and hit the same API path directly (e.g. `https://foliotest.testrail.io/index.php?/api/v2/get_case/{id}`); TestRail accepts the existing session cookie, no API key needed in that context.
 
 ```
 GET {TESTRAIL_URL}/index.php?/api/v2/get_cases/14&suite_id=21&section_id={section_id}&limit=20

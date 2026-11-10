@@ -166,4 +166,24 @@ class SkillWorkspaceServiceTest {
     void areaDriftIsSilentWhenThereIsNoCloneToInspect(@org.junit.jupiter.api.io.TempDir java.nio.file.Path dir) {
         assertThat(SkillWorkspaceService.areaDrift(dir.resolve("absent"))).isEmpty();
     }
+
+    @Test
+    void ruleFilesResolveFromTheBundleWhenCloneAndGitHubAreUnavailable() {
+        SkillWorkspaceService.SkillReferences rules =
+                service(new UnconfiguredConnectors.GitHub(), "").ruleFiles();
+
+        assertThat(rules.missing()).isEmpty();
+        for (String path : SkillWorkspaceService.RULE_FILES) {
+            assertThat(rules.text()).contains("## `" + path + "`");
+        }
+        assertThat(rules.sourceNote()).startsWith("3 of 3 rule files");
+    }
+
+    @Test
+    void areaGoldenCasesResolveWithTheirPathPreserved() {
+        SkillWorkspaceService svc = service(new UnconfiguredConnectors.GitHub(), "");
+
+        assertThat(svc.read("references/examples/orders.md")).isPresent();
+        assertThat(svc.read("references/orders.md")).isEmpty();
+    }
 }

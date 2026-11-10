@@ -1859,4 +1859,18 @@ class TestCaseGenAgentWorkerTest {
 
         assertThat(model.receivedPrompts()).allSatisfy(p -> assertThat(mediaCount(p)).isZero());
     }
+
+    @Test
+    void generationPromptCarriesTheSkillRuleFilesAndNoUnrenderedPlaceholders() {
+        StubChatModel model = new StubChatModel().enqueue(ROUTER_OK).enqueue(PLAN).enqueue(REVIEW_PASS);
+
+        worker(model).execute(freshContext());
+
+        String system = model.receivedPrompts().get(1).getSystemMessage().getText();
+        String user = model.receivedPrompts().get(1).getUserMessage().getText();
+        assertThat(system).contains("## `references/writing-rules.md`")
+                .contains("## `references/step-patterns.md`").contains("## `references/house-style.md`")
+                .doesNotContain("{{");
+        assertThat(user).contains("## Area golden case").doesNotContain("{{");
+    }
 }

@@ -6,6 +6,10 @@ Generate the test plan for the story below.
 
 {{context_files}}
 
+## Area golden case (the skill's `references/examples/<area>.md`)
+
+{{area_examples}}
+
 ## Story (raw ticket — this is the source of truth)
 
 {{issue}}
@@ -18,7 +22,7 @@ Generate the test plan for the story below.
 
 {{fragments}}
 
-## Existing TestRail coverage — mark duplicates EXISTING, do not re-propose them
+## Existing TestRail coverage — classify every match (delta 1); never re-propose a duplicate
 
 {{coverage}}
 

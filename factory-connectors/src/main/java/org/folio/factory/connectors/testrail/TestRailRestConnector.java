@@ -96,18 +96,29 @@ public class TestRailRestConnector implements TestRailConnector, ConnectorHealth
 
     @Override
     public List<TestRailCase> getCases(long sectionId) {
+        return pagedCases("section_id", sectionId);
+    }
+
+    @Override
+    public List<TestRailCase> getCasesByRefs(String ref) {
+        return pagedCases("refs", ref);
+    }
+
+    private List<TestRailCase> pagedCases(String filter, Object value) {
         List<TestRailCase> all = new ArrayList<>();
         int offset = 0;
         int limit = 250;
         while (true) {
             JsonNode resp = properties.suiteId() != null
                     ? restClient.get()
-                            .uri("/index.php?/api/v2/get_cases/{projectId}&suite_id={suiteId}&section_id={sectionId}&limit={limit}&offset={offset}",
-                                    properties.projectId(), properties.suiteId(), sectionId, limit, offset)
+                            .uri("/index.php?/api/v2/get_cases/{projectId}&suite_id={suiteId}&" + filter
+                                            + "={value}&limit={limit}&offset={offset}",
+                                    properties.projectId(), properties.suiteId(), value, limit, offset)
                             .retrieve().body(JsonNode.class)
                     : restClient.get()
-                            .uri("/index.php?/api/v2/get_cases/{projectId}&section_id={sectionId}&limit={limit}&offset={offset}",
-                                    properties.projectId(), sectionId, limit, offset)
+                            .uri("/index.php?/api/v2/get_cases/{projectId}&" + filter
+                                            + "={value}&limit={limit}&offset={offset}",
+                                    properties.projectId(), value, limit, offset)
                             .retrieve().body(JsonNode.class);
             JsonNode cases = resp.path("cases");
             for (JsonNode c : cases) {

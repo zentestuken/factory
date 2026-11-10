@@ -302,8 +302,12 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
         // ── B · Prefetch ─────────────────────────────────────────────────────
         ContextPrefetch.ContextBundle ctx = contextPrefetch.load(areas, issue, linked);
         ExamplesPrefetch.Examples examples = examplesPrefetch.load();
+        ExamplesPrefetch.Examples areaExamples = examplesPrefetch.loadForAreas(areas);
+        SkillWorkspaceService.SkillReferences rules = skills.ruleFiles();
         FragmentPrefetch.Fragments fragments = fragmentPrefetch.scan(areas, issue.summary());
-        CoveragePrefetch.Coverage coverage = coveragePrefetch.load(areas);
+        List<String> refKeys = new ArrayList<>(List.of(issueKey));
+        linked.stream().map(JiraIssue::key).filter(k -> k != null && !refKeys.contains(k)).forEach(refKeys::add);
+        CoveragePrefetch.Coverage coverage = coveragePrefetch.load(areas, refKeys);
         String coverageBlock = coverage.index()
                 + triageCoverage(coverage, issue, dump, totalUsage);
         String sections = buildSectionsBlock();
@@ -313,10 +317,13 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
 
         Map<String, Object> vars = new HashMap<>();
         vars.put("skill", skill);
+        vars.put("skill_references", rules.text());
+        vars.put("area_examples", areaExamples.text());
         vars.put("examples", examples.text());
         vars.put("marc_examples", MarcFixtureBuilder.renderGoldenExamples());
         vars.put("context_files", ctx.text());
-        vars.put("enrichment", buildProvenanceBlock(route, areas, ctx, examples, fragments, skill));
+        vars.put("enrichment", buildProvenanceBlock(route, areas, ctx, examples, areaExamples, rules,
+                fragments, skill));
         vars.put("issue", renderIssue(issue));
         vars.put(MEDIA_VAR, images.media());
         vars.put("dev_teams", devTeams.nameList());
@@ -1154,6 +1161,8 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
     private String buildProvenanceBlock(RouterResult route, List<String> areas,
                                         ContextPrefetch.ContextBundle ctx,
                                         ExamplesPrefetch.Examples examples,
+                                        ExamplesPrefetch.Examples areaExamples,
+                                        SkillWorkspaceService.SkillReferences rules,
                                         FragmentPrefetch.Fragments fragments, String skill) {
         StringBuilder sb = new StringBuilder("## Provenance (state this verbatim at the top of `# Analysis`)\n\n");
         sb.append("- Area(s): ").append(String.join(", ", areas));
@@ -1167,7 +1176,14 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
                       + "work, not product behaviour.\n");
         }
         sb.append("- Context: ").append(ctx.sourceNote()).append('\n');
-        sb.append("- Examples: ").append(examples.sourceNote()).append('\n');
+        sb.append("- Examples: ").append(examples.sourceNote())
+          .append("; area golden case: ").append(areaExamples.sourceNote()).append('\n');
+        sb.append("- Skill rule files: ").append(rules.sourceNote()).append('\n');
+        if (!rules.missing().isEmpty()) {
+            sb.append("- ⚠️ Skill rule file(s) ").append(String.join(", ", rules.missing()))
+              .append(" could not be read - cases were written without them; say so at the top of "
+                      + "`# Analysis` so the reviewer checks style and step shape by hand.\n");
+        }
         if (!ctx.missingAreas().isEmpty()) {
             sb.append("- ⚠️ No context file for: ").append(String.join(", ", ctx.missingAreas()))
               .append(" — generate from the User Story alone for that area and say so.\n");

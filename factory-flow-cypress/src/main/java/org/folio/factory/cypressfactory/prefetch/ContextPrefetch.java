@@ -483,8 +483,13 @@ public class ContextPrefetch {
 
     private String fetchTranslations(String repo, String moduleName, List<String> keywords) {
         if (keywords.isEmpty()) return null;
-        String path = "translations/" + moduleName + "/en_US.json";
+        // en.json is the source; en_US.json is a Lokalise copy that lags behind it (skill v2).
+        String path = "translations/" + moduleName + "/en.json";
         String content = safeGetFileContent(repo, BRANCH, path);
+        if (content == null) {
+            path = "translations/" + moduleName + "/en_US.json";
+            content = safeGetFileContent(repo, BRANCH, path);
+        }
         if (content == null) return null;
         try {
             JsonNode node = jsonMapper.readTree(content);

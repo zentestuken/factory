@@ -221,7 +221,7 @@ FACTORY_CONNECTORS_JIRA_API_TOKEN=your-token
 # GitHub — both clones are public and need no token. The token is used for the API
 # fallback tiers and for context enrichment (package.json / en_US.json from ui-* repos).
 FACTORY_CONNECTORS_GITHUB_TOKEN=ghp_...
-# Repo containing FOLIO AI skills — SKILL.md, examples.md and the 30 area context files.
+# Repo containing FOLIO AI skills — SKILL.md, examples.md and the 38 area context files.
 # Cloned to skillsClone/ at startup; GitHub API and the bundled jar copies are the fallbacks.
 FACTORY_CYPRESS_FOLIO_AI_REPO=folio-org/folio-eureka-ai-dev
 # Repo where generated Cypress specs will be committed (Phase 3+)
@@ -268,7 +268,7 @@ On first startup two background clones run (shallow, ~30 s each, non-blocking):
 
 - `TafSyncService` → `folio-org/stripes-testing` into `cypressTafClone/` (Cypress fragments)
 - `SkillWorkspaceService` → `FACTORY_CYPRESS_FOLIO_AI_REPO` into `skillsClone/` (SKILL.md,
-  `examples.md`, the 30 area context files)
+  `examples.md`, the 38 area context files)
 
 Until the clones are ready both fall back to the GitHub API and then to copies bundled in the
 jar — no action needed. `SKILL.md` is the one hard dependency: if it cannot be resolved from
@@ -308,7 +308,7 @@ and then to copies bundled in the jar.
 
 | Gate | URL | What to check |
 |---|---|---|
-| Gate 1 — test cases | http://localhost:8080/reviews | `test_plan.md` holds everything in three sections. **`# Analysis`**: which area was detected and why, which context file was loaded, Key Business Rules touched, and the AC → scenario coverage matrix — read this first to judge whether the *scope* is right. **`# Test Cases`**: exactly what will be posted to TestRail — check `Test Group` (smoke/critical/extended), `User Journey`, `Automatable` and step quality. **`# Review`**: the automated quality reviewer's verdict and any issues it could not fix in up to 3 internal attempts. The YAML frontmatter carries the sync fields (`refs`, `team`, `ecs_story`, `testrail_section`) — correct `testrail_section` here if the folder is wrong (path string with › separators, or a numeric ID). The originating issue key stays in `refs` even if you edit that field. **Reject and Re-generate**: enter feedback in the "Notes / Re-generation feedback" field to reject and start a new generation immediately, seeded with this plan plus your feedback; a banner and `hitl_feedback.md` appear on the retry run. |
+| Gate 1 — test cases | http://localhost:8080/reviews | `test_plan.md` holds everything in three sections. **`# Analysis`**: which area was detected and why, which context file was loaded, Key Business Rules touched, existing TestRail cases classified as duplicate / update / unrelated, and the AC → scenario coverage matrix — read this first to judge whether the *scope* is right. **`# Test Cases`**: exactly what will be posted to TestRail — check `Test Group` (smoke/critical/extended), `User Journey`, `Automatable` and step quality. **`# Review`**: the automated quality reviewer's verdict and any issues it could not fix in up to 3 internal attempts. The YAML frontmatter carries the sync fields (`refs`, `team`, `ecs_story`, `testrail_section`) — correct `testrail_section` here if the folder is wrong (path string with › separators, or a numeric ID). The originating issue key stays in `refs` even if you edit that field. **Reject and Re-generate**: enter feedback in the "Notes / Re-generation feedback" field to reject and start a new generation immediately, seeded with this plan plus your feedback; a banner and `hitl_feedback.md` appear on the retry run. |
 
 To refresh the bundled fallback copies of `SKILL.md` and `examples.md`:
 

@@ -48,12 +48,57 @@ public class CoveragePrefetch {
 
     /** Never throws — coverage is a soft dependency. */
     public Coverage load(List<String> areas) {
+        return load(areas, List.of());
+    }
+
+    /**
+     * Area coverage plus every case whose References cite one of {@code refKeys} - the story and
+     * its related tickets (skill step 4b). The refs matches come first and are found wherever they
+     * live, so a case filed outside the area's sections, or a re-run of a story already covered,
+     * is still seen. Never throws.
+     */
+    public Coverage load(List<String> areas, List<String> refKeys) {
+        Map<Long, TestRailCase> byRefs = new LinkedHashMap<>();
+        Map<Long, String> citedKeys = new LinkedHashMap<>();
+        for (String key : refKeys == null ? List.<String>of() : refKeys) {
+            try {
+                for (TestRailCase c : testRail.getCasesByRefs(key)) {
+                    byRefs.putIfAbsent(c.id(), c);
+                    citedKeys.merge(c.id(), key, (a, b) -> a + ", " + b);
+                }
+            } catch (Exception e) {
+                log.warn("[coverage] Could not query cases by refs {}: {}", key, e.getMessage());
+            }
+        }
+        log.info("[coverage] {} existing case(s) already cite {}", byRefs.size(), refKeys);
+        Coverage area;
         try {
-            return doLoad(areas);
+            area = doLoad(areas);
         } catch (Exception e) {
             log.warn("[coverage] Load failed: {}", e.getMessage());
-            return empty("coverage lookup failed: " + e.getMessage());
+            area = empty("coverage lookup failed: " + e.getMessage());
         }
+        return byRefs.isEmpty() ? area : withRefs(area, byRefs, citedKeys);
+    }
+
+    private static Coverage withRefs(Coverage area, Map<Long, TestRailCase> byRefs, Map<Long, String> citedKeys) {
+        StringBuilder sb = new StringBuilder("# Cases that already cite the story or a related ticket\n\n")
+                .append("Found by the TestRail References field, wherever they are filed. Check these "
+                        + "first: a scenario one of them covers is a duplicate or an update, not a new case."
+                        + "\n\n");
+        Map<Long, TestRailCase> cases = new LinkedHashMap<>(byRefs);
+        Map<Long, String> sections = new LinkedHashMap<>();
+        for (TestRailCase c : byRefs.values()) {
+            String label = "refs: " + citedKeys.get(c.id());
+            sections.put(c.id(), label);
+            sb.append("- **C").append(c.id()).append("** — ").append(c.title())
+                    .append(" _(").append(label).append(")_\n");
+            String preconds = preview(c.preconditions());
+            if (!preconds.isEmpty()) sb.append("  _Preconditions:_ ").append(preconds).append('\n');
+        }
+        area.cases().forEach(cases::putIfAbsent);
+        area.sections().forEach(sections::putIfAbsent);
+        return new Coverage(sb.append('\n').append(area.index()).toString(), cases, sections);
     }
 
     private Coverage doLoad(List<String> areas) {

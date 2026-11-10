@@ -47,7 +47,7 @@ flow keeps no per-step artifacts, only the finished plan and, on a retry, the hu
 ```
 [SkillWorkspaceService]   NEW   git clone/pull FACTORY_CYPRESS_FOLIO_AI_REPO
      └─ {user.dir}/skillsClone/skills/write-testrail-cases/
-          SKILL.md · references/examples.md · references/context/*.md  (30 area files)
+          SKILL.md · references/examples.md · references/context/*.md  (38 area files)
 
 [TafSyncService]                git clone/pull stripes-testing
      └─ {user.dir}/cypressTafClone/
@@ -73,9 +73,9 @@ flow keeps no per-step artifacts, only the finished plan and, on a retry, the hu
      │      ── SKILL.md step 1 is AGENT JUDGMENT, not keyword matching:
      │           "the story itself is the source of truth"; story text outranks the
      │           Jira project prefix
-     │      ── input: raw issue + linked issues + the 30-area table lifted from SKILL.md
+     │      ── input: raw issue + linked issues + the 38-area table lifted from SKILL.md
      │      ── returns: areas[1–2] · one-line detection rationale
-     │      ── AreaDetector validates the names against the 30 real context files;
+     │      ── AreaDetector validates the names against the 38 real context files;
      │           unknown / empty / call failure → keyword-score fallback
      │      ── output is 3 small FACTS, not a summary — the mega-call still receives
      │           the raw issue and re-reasons with everything visible
@@ -269,12 +269,15 @@ Degradation is **not uniform**. One asset is a hard dependency; the rest are sof
 | **`SKILL.md`** | the entire system prompt (~18k tokens of methodology) | **HARD — throw `AgentExecutionException`.** Without it there is no MQA process: we would generate from a nameless thin prompt and produce plausible-looking cases with no signal to the reviewer that anything was wrong. Engine retry (3× / 30·120·300s) covers a transient outage, then escalates to the review inbox. Silent quality collapse is worse than a failed step. |
 | `references/context/<area>.md` | domain knowledge — KBRs, exact UI texts, permissions | **SOFT — SKILL.md sanctions it**: *"If a context file for the detected area does not exist… I'll generate cases based on the User Story alone — results may be less accurate."* Proceed; `# Analysis` states which area had no context file. |
 | `references/examples.md` | few-shot style anchor | SOFT. Verification depth and formatting degrade; structure survives. |
+| `references/writing-rules.md`, `step-patterns.md`, `house-style.md` (skill v2) | the rest of the system prompt - how a case is written | SOFT, but flagged loudly: provenance names any missing file and asks the model to say so at the top of `# Analysis`. |
+| `references/examples/<area>.md` (skill v2) | per-area golden case, user message | SOFT and usually absent (10 areas have one). |
 | TAF fragments | `automationNotes`, `automatable` flag | SOFT. Test case **content** is unaffected — only automation hints. `# Analysis` notes it so the Gate 1 reviewer knows to check the flags (the gate already says "override automatable flags"). |
 
-**Bundle scope: `SKILL.md` + `examples.md` only** (~100 KB), under
-`factory-flow-cypress/src/main/resources/references/`.
+**Bundle scope: `SKILL.md`, `examples.md`, the three rule files and `examples/*.md`** (~140 KB),
+under `factory-flow-cypress/src/main/resources/references/`, paths preserved (the classpath tier
+maps `references/x` to `references/x`, so `examples/orders.md` cannot collide with anything).
 
-- Not the 30 context files (890 KB). Their absence has a documented graceful path, and checking
+- Not the 38 context files (890 KB). Their absence has a documented graceful path, and checking
   in files we do not own creates a fork that drifts.
 - `folio-eureka-ai-dev` is **public**, so tiers 1 and 2 both work with no credentials
   (`git clone` needs none; the GitHub API is unauthenticated at 60 req/hr, far above our usage).
@@ -323,11 +326,11 @@ currently **18,577 bytes** against **27,467** live — already ~33% behind, sile
 |---|---|---|
 | `SkillWorkspaceService` | No | git clone/pull of the FOLIO AI skills repo → local disk. Modelled on `TafSyncService`. Not a flow step. |
 | `TafSyncService` | No | git clone/pull of `stripes-testing` → local disk. Not a flow step. |
-| `AreaDetector` | No | **Validator + fallback** for the router call: resolves returned area names against the 30 real context files; keyword-scores story text + Jira prefix when the router fails or returns something unknown. |
+| `AreaDetector` | No | **Validator + fallback** for the router call: resolves returned area names against the 38 real context files; keyword-scores story text + Jira prefix when the router fails or returns something unknown. |
 | `ContextPrefetch` | No | Reads area context file(s) from the skill clone; runs the 5 thin-context triggers; enriches from GitHub/Jira when triggered. |
 | `FragmentPrefetch` | No | Lists + keyword-scores TAF fragments for the detected area. An area maps to one or more directories or single files under `cypress/support/fragments` (`AREA_TO_DIRS`, default: the area name); they are scored as one pool, top 2 inlined, the rest listed. |
-| `CoveragePrefetch` | No | Area-matched TestRail sections → existing cases; dedup by case id, cap 150. Renders a title + precondition index, and full bodies for triage-nominated candidates. |
-| `ExamplesPrefetch` | No | Reads `references/examples.md` from the skill clone; GitHub then classpath fallback. |
+| `CoveragePrefetch` | No | First every case whose References cite the story or a related key (`getCasesByRefs`, skill step 4b - found wherever it is filed), then area-matched TestRail sections → existing cases; dedup by case id, cap 150. Renders a title + precondition index, and full bodies for triage-nominated candidates. |
+| `ExamplesPrefetch` | No | Reads `references/examples.md` (system prompt) and, per detected area, `references/examples/<area>.md` (user message); clone, GitHub, then classpath. |
 | `DevTeamCatalog` | No | The 27 FOLIO teams, parsed from `references/dev-teams.md`. Used by **both** workers, like `TestPlanParser`: the generator canonicalises the team it read off the ticket, sync turns that name into TestRail's `custom_dev_team` option id. Data lives in a resource so filling in a new team is an edit, not a release. |
 | **`TestCaseGenAgentWorker`** | **Yes** | Fetches the Jira issue, runs the router call, assembles the mega-prompt, one call → markdown plan, then the reviewer loop. |
 | ↳ router call | Yes | SKILL.md step 1 judgment: which area(s). ~5k in / ~200 out. `refs` (step 3) is decided per case by the generation call itself, not here — see §6.3. |
@@ -634,7 +637,7 @@ produce no artifacts.
 
 | Service | Entry point |
 |---|---|
-| `AreaDetector` | `resolve(List<String> routerAreas, JsonNode issue) → List<String>`<br>`areaTable() → String` (the 30-row table for the router prompt) |
+| `AreaDetector` | `resolve(List<String> routerAreas, JsonNode issue) → List<String>`<br>`areaTable() → String` (the 38-row table for the router prompt) |
 | `ContextPrefetch` | `load(List<String> areas, JiraIssue issue, List<JiraIssue> linkedIssues) → ContextBundle(text, sourceNote, missingAreas, enriched, qualityNote, linkNotes)` |
 | `FragmentPrefetch` | `scan(List<String> areas, String summary) → String` |
 | `CoveragePrefetch` | `load(List<String> areas) → Coverage(index, cases, sections)`<br>`Coverage.select(List<Long>, int cap)`, `Coverage.renderCandidates(List<Long>)` |
@@ -644,11 +647,11 @@ produce no artifacts.
 Notes:
 - `AreaDetector` holds `AREA_KEYWORDS`, `PROJECT_KEY_AREAS` and `detectAreas()`. It does not
   choose the area — the router call does. Its two jobs:
-  - `resolve(routerAreas, issue)` — map each router-returned name to one of the 30 real context
+  - `resolve(routerAreas, issue)` — map each router-returned name to one of the 38 real context
     files (case-insensitive, hyphen/space tolerant). Any name that does not resolve is dropped
     and logged at WARN. If nothing resolves, or the router call failed, fall back to keyword
     scoring on raw issue `summary` + `description` + `labels` + project key.
-  - `areaTable()` — the 30-row Area/context-file/keywords table, rendered for the router prompt.
+  - `areaTable()` — the 38-row Area/context-file/keywords table, rendered for the router prompt.
 - Cap at 2 areas (SKILL.md: "A story can span two areas — read both context files"). The router
   is instructed to return at most 2; `resolve()` truncates if it returns more.
 - `ContextPrefetch` owns `isThinContext`, `isDraftContext`, `countKeyBusinessRules`,
@@ -704,7 +707,31 @@ Notes:
 - Every image that does not reach the model leaves a placeholder in the description text **and** a
   gate note. `FACTORY_CYPRESS_SEND_IMAGES=false` turns the whole thing off, which matters because a
   non-vision model rejects a call carrying media rather than ignoring it.
-- `KNOWN_AREAS` must match the 30 context filenames exactly (`agreements`, `bulk-edit`,
+- **Skill v2 (folio-eureka-ai-dev#50, merged 2026-11-10).** SKILL.md became a 14 KB workflow;
+  the rules moved to `references/`. What the flow does with each part:
+  - `writing-rules.md`, `step-patterns.md`, `house-style.md` - pasted into the generation system
+    prompt after SKILL.md (`SkillWorkspaceService.RULE_FILES`, `{{skill_references}}`). Cached
+    with the rest of the system prefix, ~10k tokens.
+  - `examples/<area>.md` - per-area golden case, user message (`{{area_examples}}`), so the shared
+    system prefix stays identical across areas.
+  - `area-map.md` - not sent; the router and `AreaDetector` own detection. Its table is the source
+    for `KNOWN_AREAS` / prefixes / keywords (8 new areas added: inn-reach, open-access,
+    serials-management, claiming, export-manager, linked-data, marc-holdings, inventory-browse).
+  - `testrail-api.md` - not sent; posting is the factory's (delta 3).
+  - Step 4 (sample the target section's 10 newest cases) - **not implemented**; delta 1 tells the
+    model to use the `house-style.md` / `writing-rules.md` defaults instead. Idea in `next_steps.txt`.
+  - Step 4b (existing coverage by `refs`) - `CoveragePrefetch.load(areas, refKeys)`; delta 1 maps
+    the skill's duplicate / update / unrelated classification onto the coverage block.
+  - Capability set names (delta 9) follow the skill's order (context -> existing cases ->
+    `package.json`) and its marker `(capability set name not confirmed — verify)`, with one
+    correction: from `package.json` the flow uses `permissionName`, not `displayName` - the display
+    name is the legacy Okapi label, which the skill itself forbids in place of a capability set.
+  - Enrichment reads `translations/<module>/en.json`, falling back to `en_US.json`.
+  - Delta 11 (User Journey flag) now defers to the area norm (context file, else
+    `house-style.md`). Its old wording - "a case covering two numbered scenarios is a journey" -
+    overrode skill v2's "multi-step != journey" once v2 started merging scenarios, and flagged
+    every eureka case `Yes` (UIROLES-202, d8bc4d52) in an area that marks every case `false`.
+- `KNOWN_AREAS` must match the 38 context filenames exactly (`agreements`, `bulk-edit`,
   `check-in`, …) - the router can only choose from it, so a context file missing from the list is
   unroutable (this hid `eureka` from the router: UIROLES-202 was grounded on `users.md`).
   `SkillWorkspaceService.warnOnAreaDrift()` logs a startup WARN for any context file in the clone
@@ -1332,7 +1359,7 @@ factory-flow-cypress/
 | GitHub connector | `factory-connectors` | Second-tier asset fetch (`getFileContent`, `listDirectory`) and context enrichment. |
 | `write-testrail-cases/SKILL.md` | MQA skill repo | Loaded at runtime as the generation system prompt. Never forked. |
 | `references/examples.md` | MQA skill repo | Loaded at runtime as the few-shot style anchor. |
-| Area context files (30 × `references/context/*.md`) | MQA skill repo | Loaded at runtime for the detected area. |
+| Area context files (38 × `references/context/*.md`) | MQA skill repo | Loaded at runtime for the detected area. |
 | TAF fragments and `permissions.js` | `stripes-testing` | Scored and excerpted for automation notes and the `Automatable` flag. |
 
 Part III additionally reuses `ScriptBundleCodec` (`factory-agents`) and TAF's `CLAUDE.md` and

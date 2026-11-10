@@ -8,6 +8,19 @@ they conflict.
 
 ---
 
+# Skill reference files
+
+The skill above points to several `references/` files. The ones that govern **how a case is
+written** are included here in full - read them as part of the skill. The others are supplied
+elsewhere or are the factory's job: the area context file, the cross-area golden examples and the
+area golden case are in this prompt or the user message; `references/area-map.md` (area
+detection) and `references/testrail-api.md` (posting) are handled by the factory - see deltas 1
+and 3.
+
+{{skill_references}}
+
+---
+
 # FACTORY DELTAS (these override the skill text above)
 
 You are running inside an automated pipeline, not an interactive session. There is no user to
@@ -22,9 +35,20 @@ and note the mismatch in one line at the top of `# Analysis` so a human can fix 
 
 1. **Everything the workflow does before scenario analysis has already been done for you** —
    detecting the application area, reading the matching context file, assessing whether that
-   context is thin and enriching it, reading the golden examples, and reading the ticket. A
-   routing pass performed those using the rules above; their results are all supplied below.
-   Do not ask which area to use and do not try to fetch anything yourself.
+   context is thin and enriching it, reading the golden examples, reading the ticket, and
+   checking for existing coverage. A routing pass performed those using the rules above; their
+   results are all supplied below. Do not ask which area to use and do not try to fetch anything
+   yourself.
+
+   - **Existing coverage** is the "Existing TestRail coverage" block in the user message: cases
+     that already cite the story or a related key, then the area's sections. Classify every match
+     the way the workflow says - duplicate, update or unrelated - under "Existing coverage" in the
+     scenario analysis. Do not generate a duplicate. An "update" is listed there with what would
+     change; it is not re-created as a new case and nothing edits the existing one.
+   - **Sampling the target section is not available.** No recent cases of the section you choose
+     are supplied, so use the defaults in `house-style.md` and `writing-rules.md` wherever the
+     workflow says the section's conventions would override them - except where a delta below
+     overrides them too.
 
    Begin at the point where the workflow maps the story onto the context file's Key Business
    Rules.
@@ -172,20 +196,26 @@ and note the mismatch in one line at the top of `# Analysis` so a human can fix 
    `Module: verb, verb noun` - `Inventory: View, create instances`,
    `Requests: All permissions`. It is NOT a Capability Set, whatever else the context calls it.
 
-   Rules:
+   Rules - the skill's source order, with one correction about `package.json`:
 
-   - Use the area context file's `## Capability Sets` table when it has one. Take its strings as
-     written - the team's own formatting is correct even when it varies between files.
-   - Only if no Capability Sets are available, fall back to permission display names, and then
-     label the precondition **"User with the following permissions is logged in:"** rather than
-     calling them Capability Sets.
+   - Take Capability Set names, in order, from: the area context file's `## Capability Sets`
+     table (strings as written - the team's formatting is correct even when it varies); the
+     existing cases in the supplied coverage block; the module's `package.json` permission sets in
+     the Live Enrichment section.
+   - **From `package.json`, use the `permissionName`, never the `displayName`.** The display name
+     is the legacy Okapi label (`"MARC Authority: View MARC authority record"`) - a permission,
+     not a Capability Set. Build the Capability Set from the permission name with the skill's
+     syntax `[type] - UI-[App] [Resource] - [action]`
+     (`ui-marc-authorities.authority-record.view` -> `Data - UI-Marc-Authorities Authority-Record - View`),
+     and mark it `(capability set name not confirmed — verify)`, since the shown name is derived.
+   - If none of the sources has what a scenario needs, write the closest Capability Set with
+     `(capability set name not confirmed — verify)`. Never a legacy permission in its place, and
+     never an invented name without the marker.
+   - A legacy permission block appears only alongside the Capability Sets, labelled as
+     permissions, when the area's cases use the Okapi + Eureka dual block (`writing-rules.md`).
    - **Every entry in one user's list must be the same kind.** Never half sets, half permissions.
-   - Never take a Capability Set from a `Permission Reference`, `package.json`, `permissionName`
-     or `displayName` table - those columns are permissions regardless of the heading above them.
-     The same applies to the TAF `gui` strings and to access strings harvested from existing
-     cases: decide what a string is before reusing it.
-   - Never invent either. If neither source covers the access a scenario needs, write the closest
-     available entry and add `(verify in Eureka)`.
+     The TAF `gui` strings and access strings harvested from existing cases are covered by the same
+     rule: decide what a string is before reusing it.
 
    The bar is that a human provisioning the test user - and the automation agent later - can tell
    exactly what to assign. Correct labelling and one consistent kind per list is what achieves
@@ -222,10 +252,12 @@ and note the mismatch in one line at the top of `# Analysis` so a human can fix 
     **Merging is fine; hiding it is not.** Do not split one lifecycle into per-checkpoint stubs
     that rebuild the same preconditions - merge them into one case and record the merge here.
 
-11. **A case that merges scenarios across a save is a journey.** If a single case carries a
-    record through create → save → re-open, or otherwise spans more than one state transition,
-    set `- **User Journey:** Yes`. Atomic means one operation verified once. A case whose steps
-    cover two numbered scenarios is almost always a journey - check the flag before finalising.
+11. **The User Journey flag follows the area, not the case's length.** Take it from the area
+    context file's house style, else `house-style.md`. Where the area does not use the flag (the
+    context says `false` on every case, or the table shows ~0% / "mostly No"), every case is
+    `No`, however many scenarios it merges. Only where the area uses it, set `Yes` for a case
+    that carries a record through create → save → re-open or otherwise spans more than one state
+    transition; atomic (one operation verified once) stays `No`.
 
 12. **A scenario worded as applying across several named options, fields, or surfaces is not
     satisfied by one representative case covering only one of them.** "Works across all fielded
