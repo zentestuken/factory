@@ -633,6 +633,66 @@ class TestRailSyncAgentWorkerTest {
     }
 
     // -------------------------------------------------------------------------
+    // Hand-off to automation (testrail_cases.json)
+    // -------------------------------------------------------------------------
+
+    @Test
+    void handsOffTheCreatedCaseWithItsAutomatableFlagAndTheAreas() {
+        Map<String, Object> meta = new java.util.LinkedHashMap<>();
+        meta.put("issue_key", "ERM-1");
+        meta.put("testrail_section", "200");
+        meta.put("areas", List.of("eureka"));
+        String plan = codec.render(meta, """
+                ## TC-1: Test login
+
+                - **Test Group:** critical
+                - **Automatable:** Yes
+                - **ECS:** No
+
+                **Steps**
+                1. **Action:** click
+                   **Expected:** done
+
+                **Automation notes:** reuse usersCard.js
+                """);
+
+        String handoff = worker(new CapturingConnector(), null).execute(contextWith(plan))
+                .outputs().get(TestRailSyncAgentWorker.CREATED_CASES);
+
+        assertThat(handoff).contains("\"issueKey\":\"ERM-1\"", "\"sectionId\":200",
+                "\"areas\":[\"eureka\"]", "\"caseId\":\"C999\"", "\"planId\":\"TC-1\"",
+                "\"automatable\":true", "reuse usersCard.js");
+    }
+
+    @Test
+    void handsOffOnlyCasesTestRailAcceptedAndAnEmptyListWhenNothingWasSynced() {
+        var cases = new TestPlanParser().parse("""
+                ## TC-1: Created
+
+                - **Automatable:** No
+
+                **Steps**
+                1. **Action:** a
+                   **Expected:** b
+
+                ## TC-2: Failed to create
+
+                **Steps**
+                1. **Action:** a
+                   **Expected:** b
+                """);
+        var planFm = codec.parse(codec.render(Map.of("issue_key", "ERM-1"), "x")).metadata();
+
+        String handoff = TestRailSyncAgentWorker.createdCases(planFm, 200L, cases, Map.of("TC-1", "C5"));
+
+        assertThat(handoff).contains("\"caseId\":\"C5\"", "\"automatable\":false")
+                .doesNotContain("TC-2").contains("\"areas\":[]");
+        String unsynced = worker(new CapturingConnector(), null).execute(contextWith(testPlanWithOneCase()))
+                .outputs().get(TestRailSyncAgentWorker.CREATED_CASES);
+        assertThat(unsynced).contains("\"cases\":[]");
+    }
+
+    // -------------------------------------------------------------------------
     // Stub connector
     // -------------------------------------------------------------------------
 

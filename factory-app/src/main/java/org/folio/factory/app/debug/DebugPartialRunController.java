@@ -29,8 +29,8 @@ import java.util.UUID;
  * <p>Only active when {@code FACTORY_DEBUG_ENABLED=true}. The endpoint does not
  * exist at all when the property is absent or false — no auth guard needed.</p>
  *
- * <p>Usage: start from step 8 (testrail-sync) to test TestRail wiring, or start
- * from step 7 (gate-1-review) to exercise the amendment → sync path.</p>
+ * <p>The start step is named by {@code startStepId} (preferred - it survives steps being
+ * added) or by {@code startStepIndex}; exactly one of the two.</p>
  */
 @RestController
 @RequestMapping("/api/debug")
@@ -57,7 +57,8 @@ public class DebugPartialRunController {
 
     public record PartialRunRequest(
             String flowId,
-            int startStepIndex,
+            Integer startStepIndex,
+            String startStepId,
             JsonNode triggerPayload,
             Map<String, String> artifacts) {
     }
@@ -82,15 +83,8 @@ public class DebugPartialRunController {
     @Transactional
     public ResponseEntity<PartialRunResponse> start(@RequestBody PartialRunRequest req) {
         FlowDescriptor flow = flowRegistry.require(req.flowId());
-
-        if (!flow.hasStep(req.startStepIndex())) {
-            throw new IllegalArgumentException(
-                    "startStepIndex " + req.startStepIndex() + " is out of range for flow '"
-                            + req.flowId() + "' (" + flow.agentChain().size() + " steps, indices 0–"
-                            + (flow.agentChain().size() - 1) + ")");
-        }
-
-        StepDescriptor startStep = flow.step(req.startStepIndex());
+        int startIndex = startIndex(flow, req);
+        StepDescriptor startStep = flow.step(startIndex);
         validateArtifactsForStep(startStep, req.artifacts());
 
         String payloadJson = req.triggerPayload() == null ? null
@@ -101,7 +95,7 @@ public class DebugPartialRunController {
         // Advance cursor to target step within the same transaction.
         // The poller uses SELECT FOR UPDATE SKIP LOCKED in a separate transaction
         // and cannot see this row until we commit.
-        execution.setCurrentStepIndex(req.startStepIndex());
+        execution.setCurrentStepIndex(startIndex);
         executionRepository.save(execution);
 
         List<String> seeded = new ArrayList<>();
@@ -114,7 +108,28 @@ public class DebugPartialRunController {
 
         return ResponseEntity.accepted()
                 .body(new PartialRunResponse(execution.getId(), req.flowId(),
-                        req.startStepIndex(), startStep.stepId(), seeded));
+                        startIndex, startStep.stepId(), seeded));
+    }
+
+    static int startIndex(FlowDescriptor flow, PartialRunRequest req) {
+        boolean byId = req.startStepId() != null && !req.startStepId().isBlank();
+        if (byId == (req.startStepIndex() != null)) {
+            throw new IllegalArgumentException("Give exactly one of startStepId or startStepIndex");
+        }
+        List<StepDescriptor> steps = flow.agentChain();
+        if (byId) {
+            for (int i = 0; i < steps.size(); i++) {
+                if (steps.get(i).stepId().equals(req.startStepId())) return i;
+            }
+            throw new IllegalArgumentException("Flow '" + flow.id() + "' has no step '" + req.startStepId()
+                    + "'; steps: " + steps.stream().map(StepDescriptor::stepId).toList());
+        }
+        if (!flow.hasStep(req.startStepIndex())) {
+            throw new IllegalArgumentException(
+                    "startStepIndex " + req.startStepIndex() + " is out of range for flow '"
+                            + flow.id() + "' (" + steps.size() + " steps, indices 0–" + (steps.size() - 1) + ")");
+        }
+        return req.startStepIndex();
     }
 
     private void validateArtifactsForStep(StepDescriptor step, Map<String, String> artifacts) {

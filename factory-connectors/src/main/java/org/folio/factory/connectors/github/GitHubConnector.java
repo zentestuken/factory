@@ -34,6 +34,11 @@ public interface GitHubConnector {
      */
     List<String> listDirectory(String repo, String branch, String path);
 
+    /** Brings a fork's {@code branch} up to date with its upstream (GitHub "Sync fork"). */
+    default void syncFork(String repo, String branch) {
+        throw new UnsupportedOperationException("GitHub fork sync is not configured");
+    }
+
     /** Find an open PR inside the destination repository before creating another. */
     default java.util.Optional<String> findOpenPullRequest(String repo, String headBranch, String baseBranch) {
         throw new UnsupportedOperationException("GitHub pull request lookup is not configured");

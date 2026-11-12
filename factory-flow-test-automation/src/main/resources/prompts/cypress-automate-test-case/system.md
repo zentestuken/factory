@@ -10,7 +10,7 @@ Your task is to implement a new test and add/modify/update all related support f
 Put a new tests and all required changes directly into the workspace using write/edit tools.
 
 IMPORTANT!!! After generation of a new test do the following:
-1) create a new branch in the workDir by running command: 'git checkout -b factory_generated_test_{{testCaseId}}'
+1) do NOT create or switch git branches and do not commit - the pipeline has already checked out the branch for this run and commits after review. Your test is for case {{testCaseId}}.
 2) provide detailed summary of what has been done, like the path to a new test, modifications made in support files, fragments, api, etc., list of similar test cases and support files that were used for generation.
 
 # FOLIO Stripes Testing - AI Coding Agent Instructions

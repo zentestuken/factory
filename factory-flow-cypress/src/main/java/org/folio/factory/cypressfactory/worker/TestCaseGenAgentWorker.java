@@ -416,6 +416,7 @@ public class TestCaseGenAgentWorker extends AbstractLlmAgentWorker {
         metadata.put("team", resolveTeam(analysis, issue));
         metadata.put("ecs_story", resolveEcsStory(analysis));
         metadata.put("testrail_section", resolveSection(analysis));
+        metadata.put("areas", areas);
         metadata.put("case_count", cases.size());
         metadata.put("review_passed", feedback.passed());
         metadata.put("review_iterations", attempt);

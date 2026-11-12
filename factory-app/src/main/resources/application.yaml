@@ -486,6 +486,31 @@ factory:
     send-images: ${FACTORY_CYPRESS_SEND_IMAGES:}
     # Jira projects never added to TestRail refs. Comma-separated. Default FAT.
     refs-excluded-projects: ${FACTORY_CYPRESS_REFS_EXCLUDED_PROJECTS:}
+  # Automation steps of the cypress-factory flow (module factory-flow-test-automation).
+  test-automation-factory:
+    # Repo ("owner/name") the PR step opens pull requests in - a fork of stripes-testing, not
+    # folio-org/stripes-testing itself. Unset = no PR; the specs stay on the local branch.
+    target-repo: ${FACTORY_CYPRESS_TARGET_REPO:}
+    base-branch: ${FACTORY_CYPRESS_BASE_BRANCH:master}
+    # Default for runs that don't say "automate": true/false in their payload. Default true.
+    enabled: ${FACTORY_CYPRESS_AUTOMATION_ENABLED:}
+    # Cost cap: at most this many cases are automated per run; the rest are listed as skipped. Default 2.
+    max-cases: ${FACTORY_CYPRESS_AUTOMATION_MAX_CASES:}
+    # Let the review agent run `npx cypress run`. Needs node_modules and cypress.env.json in the
+    # workspace and a reachable FOLIO env. Default false.
+    run-specs: ${FACTORY_CYPRESS_AUTOMATION_RUN_SPECS:}
+    # Timeout per claude CLI session, seconds. Default 1800.
+    cli-timeout-seconds: ${FACTORY_CYPRESS_AUTOMATION_TIMEOUT_SECONDS:}
+    # The TAF clone automation writes to (relative to the working dir). Default cypressTafWork.
+    workspace-dir: ${FACTORY_CYPRESS_AUTOMATION_WORKSPACE:}
+    # JSON file with "non-ecs" and "ecs" profiles (stripes-testing environments.js shape) that
+    # replaces the bundled defaults (folio-etesting-snapshot diku / consortium). Each case runs on
+    # the profile matching its TestRail "ECS Enabled" field. Only used when run-specs is true.
+    run-environments-file: ${FACTORY_CYPRESS_AUTOMATION_RUN_ENVS:}
+    # Model and effort for the claude CLI sessions (generate + review). Pinned so runs don't depend
+    # on the host's personal Claude Code settings. Defaults claude-sonnet-5-5 / high.
+    cli-model: ${FACTORY_CYPRESS_AUTOMATION_CLI_MODEL:}
+    cli-effort: ${FACTORY_CYPRESS_AUTOMATION_CLI_EFFORT:}
 
 logging:
   # OBS-1: JSON logging is opt-in via env so local `mvn spring-boot:run` stays

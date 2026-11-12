@@ -1,27 +1,33 @@
 package org.folio.factory.autotests.worker;
 
 import org.folio.factory.agents.llm.AbstractLlmAgentWorker;
+import org.folio.factory.autotests.cli.CodingAgentCli;
+import org.folio.factory.autotests.workspace.AutomationWorkspace;
 import org.folio.factory.core.agent.AgentContext;
 import org.folio.factory.core.agent.AgentResult;
 import org.springframework.ai.chat.client.ChatClient;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
-import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
+import java.util.List;
 import java.util.Map;
 
+/** Writes the spec (and any fragment changes) for one case with the claude CLI, in the automation workspace. */
 public class CypressTestAutomationGenerationAgentWorker extends AbstractLlmAgentWorker {
 
     public static final String ID = "cypress-automate-test-case";
+    /** No git: the pipeline owns branches and commits. */
+    static final List<String> TOOLS = List.of("Read", "Edit", "Write", "Glob", "Grep");
+    private static final JsonMapper JSON = new JsonMapper();
 
-    private final String anthropicApiKey;
+    private final CodingAgentCli cli;
+    private final AutomationWorkspace workspace;
 
-    public CypressTestAutomationGenerationAgentWorker(ChatClient chatClient) {
+    public CypressTestAutomationGenerationAgentWorker(ChatClient chatClient, CodingAgentCli cli,
+                                                      AutomationWorkspace workspace) {
         super(chatClient);
-        this.anthropicApiKey = System.getenv("ANTHROPIC_API_KEY");
+        this.cli = cli;
+        this.workspace = workspace;
     }
 
     @Override
@@ -29,67 +35,27 @@ public class CypressTestAutomationGenerationAgentWorker extends AbstractLlmAgent
         return ID;
     }
 
-
-
-
     @Override
     public AgentResult execute(AgentContext context) {
-        String testCaseDetails = context.requireInput("testCaseDetails").content();
-        JsonNode testCase = new JsonMapper().readTree(testCaseDetails);
-        JsonNode relatedFiles = new JsonMapper().readTree(context.requireInput("relatedFiles").content());
-
-        Map<String, Object> variables = Map.of("testCase", testCase, "relatedFiles", relatedFiles);
-
-        String system = systemPrompt(variables);
-        String user = userPrompt(variables);
-
-
-
-        String claudePrompt = system + "\n" + user;
-
-        Path workspace = Path.of(System.getProperty("user.dir"), "cypressTafClone");
-        String generationSummary = runClaude(claudePrompt, workspace);
-
-        return AgentResult.of("generationSummary", generationSummary);
+        JsonNode testCase = JSON.readTree(context.requireInput("testCaseDetails").content());
+        JsonNode relatedFiles = JSON.readTree(context.requireInput("relatedFiles").content());
+        return AgentResult.of("generationSummary", automate(testCase, relatedFiles, ""));
     }
 
-    // --allowedTools: whitelists Read/Write/Edit/Glob/Grep only — no permission prompts for these, everything else denied
-    // --add-dir: grants file access to cypressTafClone (absolute path required)
-    // --print: headless mode, reads prompt from stdin (redirected from temp file to avoid cmd.exe 8191-char limit)
-    // ANTHROPIC_API_KEY is inherited from the parent JVM process environment
-    private String runClaude(String prompt, Path workDir) {
-        Path promptFile = null;
-        try {
-            promptFile = Files.createTempFile("claude-prompt-", ".txt");
-            Files.writeString(promptFile, prompt, StandardCharsets.UTF_8);
-
-            ProcessBuilder pb = new ProcessBuilder(
-                    "cmd.exe", "/c", "claude",
-                    "--print",
-                    "--allowedTools", "Read,Edit,Write,Glob,Grep,Bash(git checkout:*)",
-                    "--add-dir", workDir.toAbsolutePath().toString())
-                    .directory(workDir.toFile())
-                    .redirectInput(promptFile.toFile())
-                    .redirectErrorStream(true);
-            pb.environment().put("ANTHROPIC_API_KEY", anthropicApiKey);
-
-            Process process = pb.start();
-
-            String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-            int exitCode = process.waitFor();
-            if (exitCode != 0) {
-                throw new RuntimeException("claude exited with code " + exitCode + ": " + output);
-            }
-            return output;
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new RuntimeException("Interrupted waiting for claude", e);
-        } catch (IOException e) {
-            throw new RuntimeException("Failed to run claude process", e);
-        } finally {
-            if (promptFile != null) {
-                try { Files.deleteIfExists(promptFile); } catch (IOException ignored) {}
-            }
+    /** @param guidance case-specific notes from the pipeline (dev team, author notes, gate 2 feedback), or blank */
+    public String automate(JsonNode testCase, JsonNode relatedFiles, String guidance) {
+        Map<String, Object> variables = Map.of("testCase", testCase, "relatedFiles", relatedFiles,
+                "testCaseId", caseId(testCase));
+        String prompt = systemPrompt(variables) + "\n" + userPrompt(variables)
+                + "\n\nFormatting and lint (prettier, eslint --fix) run in the pipeline after the review - "
+                + "do not run them yourself.";
+        if (guidance != null && !guidance.isBlank()) {
+            prompt += "\n\n## Notes for this test case - follow them\n\n" + guidance;
         }
+        return cli.run(prompt, workspace.root(), TOOLS);
+    }
+
+    static String caseId(JsonNode testCase) {
+        return "C" + testCase.path("id").asString("");
     }
 }

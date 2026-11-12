@@ -2,9 +2,9 @@
 
 **Story → Manual Test Cases → Cypress E2E specs, using TAF AI assets and MQA skill assets**
 
-This is the single plan for the flow. It covers what is built and running (Part I), the shared
-reference material both halves need (Part II), and the Cypress-automation phases still ahead
-(Part III).
+This is the single plan for the flow. It covers the test-case half (Part I), the shared reference
+material both halves need (Part II), and the Cypress-automation half (Part III). Both halves are
+built and run as one flow, `cypress-factory`. How to run it is in [QUICKSTART.md](QUICKSTART.md).
 
 ---
 
@@ -12,9 +12,9 @@ reference material both halves need (Part II), and the Cypress-automation phases
 
 | | Scope | State |
 |---|---|---|
-| **Part I** | Story → manual test cases → TestRail, behind one QA gate | Implemented. 3 steps, 2 artifacts, 1 LLM worker. |
+| **Part I** | Story → manual test cases → TestRail, behind QA gate 1 | Implemented. Steps 0-2. |
 | **Part II** | Asset inventories, roles, env vars, reuse | Reference for both halves. |
-| **Part III** | Test cases → Cypress specs → PR → execution → Allure report | Not implemented. Design only. |
+| **Part III** | TestRail cases → Cypress specs (one commit per case) → gate 2 → PR on a fork | Implemented (2026-11-12). Steps 3-6. Spec runs are implemented but not yet verified end to end. |
 
 ---
 
@@ -176,63 +176,62 @@ flow keeps no per-step artifacts, only the finished plan and, on a retry, the hu
      ▼
 [test_plan.md]  — TC-NNN tokens in body headings replaced with real C###### IDs
      ▼
-[downstream: Cypress automation flow — out of scope for this plan]
+[automation-select → automate → gate 2 → publish]  — Part III
 ```
 
 ## 3. Flow descriptor
 
-`factory-flow-cypress/src/main/resources/flows/cypress-factory.yaml`
+`factory-flow-cypress/src/main/resources/flows/cypress-factory.yaml` (abridged - the gate
+instructions are block scalars in the file):
 
 ```yaml
 id: cypress-factory
-name: Cypress Factory
-version: 2.0.0
-triggers:
-  - event_type: manual
+version: 2.2.0
 input_schema:
   required: [issueKey]
-output_schema:
-  artifacts: [test_plan.md]
 retry_policy:
   max_attempts: 3
   backoff_seconds: [30, 120, 300]
 agent_chain:
-  - step_id: testcase-gen
+  - step_id: testcase-gen            # Part I
     type: AGENT
     worker_id: cypress-testcase-gen-agent
     inputs: ["$trigger"]
     optional_inputs: [test_plan.md, hitl_feedback.md]
     outputs: [test_plan.md]
-
   - step_id: gate-1-review
     type: HITL_GATE
-    gate:
-      gate_id: gate-1-test-cases
-      title: "QA review: test cases"
-      review_instructions: |
-        Everything is in test_plan.md, in three sections. Read them in this order:
-
-        - "# Analysis" — the area that was detected and why, the context file that was
-          loaded, the Key Business Rules the story touches, and the AC to scenario coverage
-          matrix. Read this first: it tells you whether the SCOPE is right, which is the one
-          thing no automated check can judge.
-        - "# Test Cases" — exactly what will be posted to TestRail, nothing else.
-        - "# Review" — the automated reviewer's verdict.
-
-        (Abridged. The descriptor holds the full block scalar, which also covers the four
-        frontmatter fields and the degradation warning. UiFormat.instructionBlocks renders
-        blank-line-separated paragraphs and "- " runs as real paragraphs and lists.)
-      reviewed_artifacts: [test_plan.md, hitl_feedback.md]
-      reference_prompts: [cypress-testcase-reviewer]
-
+    gate: {gate_id: gate-1-test-cases, reviewed_artifacts: [test_plan.md, hitl_feedback.md],
+           reference_prompts: [cypress-testcase-reviewer]}
   - step_id: testrail-sync
     type: AGENT
     worker_id: cypress-testrail-sync
     inputs: [test_plan.md]
-    outputs: [test_plan.md]
+    outputs: [test_plan.md, testrail_cases.json]
+  - step_id: automation-select       # Part III
+    type: AGENT
+    worker_id: cypress-automation-select
+    inputs: ["$trigger"]
+    optional_inputs: [testrail_cases.json]
+    outputs: [automation_cases.json]
+  - step_id: automate
+    type: AGENT
+    worker_id: cypress-automate-cases
+    inputs: [automation_cases.json]
+    optional_inputs: [hitl_feedback.md]
+    outputs: [automation_report.md, automation_results.json]
+  - step_id: gate-2-review
+    type: HITL_GATE
+    gate: {gate_id: gate-2-autotests, reviewed_artifacts: [automation_report.md, hitl_feedback.md]}
+  - step_id: publish
+    type: AGENT
+    worker_id: cypress-automation-publish
+    inputs: [automation_results.json, automation_cases.json]
+    outputs: [automation_publish.json]
 ```
 
-**3 steps. 1 HITL gate. 2 artifacts.**
+**7 steps. 2 HITL gates.** Reject and Re-generate restarts at the AGENT step right before the
+gate: `testcase-gen` for gate 1, `automate` for gate 2.
 
 ### The Gate 1 page
 
@@ -534,8 +533,8 @@ The body is the single source of truth for case data. Downstream workers parse c
 headings using the same `## ID: Title` pattern — after this step, `tc.id()` returns `C627249`.
 
 **Partial failure caveat:** if `addCaseWithMetadata` throws for one case, that `TCNNN` token
-stays unreplaced in the body, and a downstream consumer would read it as a case id. See the
-Part III risks.
+stays unreplaced in the body. Automation is not affected: it takes case ids only from
+`testrail_cases.json`, which lists only the cases TestRail accepted.
 
 ### Section hierarchy for `describeBlocks`
 
@@ -1237,7 +1236,9 @@ factory-flow-cypress/src/main/resources/prompts/cypress-testcase-gen/system.md
 factory-flow-cypress/src/main/resources/prompts/cypress-area-router/system.md
 factory-flow-cypress/src/main/resources/prompts/cypress-coverage-triage/system.md
 factory-flow-cypress/src/main/resources/prompts/cypress-testcase-reviewer/system.md
-factory-flow-cypress/src/main/resources/prompts/cypress-automation-agent/system.md   (Part III)
+factory-flow-test-automation/src/main/resources/prompts/cypress-test-framework-explorer/system.md   (Part III)
+factory-flow-test-automation/src/main/resources/prompts/cypress-automate-test-case/system.md         (Part III)
+factory-flow-test-automation/src/main/resources/prompts/cypress-review-automated-test-case/system.md  (Part III)
 ```
 
 **A developer writes these files during implementation** by reading the source assets (MQA's
@@ -1254,9 +1255,10 @@ corresponding `system.md` by hand.
 > `write-testrail-cases` skill best. It is literally copy-paste from SKILL.md plus a few lines
 > specifying output format. No Java required.
 
-> **For AQA engineers:** Writing `cypress-automation-agent/system.md` is your job — you know
-> `CLAUDE.md` and the ECS skill best. Same approach: copy relevant sections, add output format
-> instructions, embed a few real `.cy.js` examples.
+> **For AQA engineers:** the three Part III prompts (explorer, automate, review) are yours (Ostap
+> wrote them from the TAF's `CLAUDE.md`). The pipeline appends run-specific notes from code (the
+> case's dev team, the author's automation notes, gate 2 feedback, whether specs may be run), so
+> the prompt files stay plain.
 
 ### Who assembles the user prompts — the factory, every run
 
@@ -1315,12 +1317,8 @@ factory-flow-cypress/
       PromptDump.java                        (rendered-prompt + response capture, debug only)
       TestCaseGenAgentWorker.java           (LLM: router call, generation, review loop)
       TestRailSyncAgentWorker.java          (non-LLM: push cases, write real ids back)
-      CypressAutomationAgentWorker.java     (LLM)                          [Part III]
-      CypressExecutionWorker.java           (process runner, no LLM)       [Part III]
-      CypressFinalizerWorker.java                                          [Part III]
   src/main/resources/
     flows/cypress-factory.yaml
-    cypress-exec.yaml                       (execution env config)         [Part III]
     references/
       SKILL.md                              (bundled last-tier copy)
       examples.md                           (bundled last-tier copy)
@@ -1337,9 +1335,26 @@ factory-flow-cypress/
     prompts/cypress-testcase-reviewer/
       system.md
       user.md
-    prompts/cypress-automation-agent/       [Part III]
-      system.md
-      user.md
+```
+
+### 2. Automation module: `factory-flow-test-automation` (Part III)
+
+```
+factory-flow-test-automation/
+  src/main/java/org/folio/factory/autotests/
+    TestAutomationFlowConfiguration.java / TestAutomationFlowProperties.java
+    cli/        CodingAgentCli.java, ClaudeCodeCli.java
+    workspace/  AutomationWorkspace.java, PreCommitChecks.java, RunEnvironments.java
+    worker/     AutomationSelectAgentWorker.java, AutomateCasesAgentWorker.java,
+                AutomationPublishAgentWorker.java, DevTeamNames.java,
+                CypressTestFrameworkExplorerAgentWorker.java (Ostap),
+                CypressTestAutomationGenerationAgentWorker.java (Ostap),
+                CypressTestAutomationReviewAgentWorker.java (Ostap),
+                CypressDraftTestAutomationAgentWorker.java (Ostap, unused)
+  src/main/resources/
+    cypress-run-environments.json           (ecs / non-ecs FOLIO envs for spec runs)
+    prompts/cypress-test-framework-explorer/, cypress-automate-test-case/,
+            cypress-review-automated-test-case/, cypress-draft-automate-test-case/
 ```
 
 ---
@@ -1362,8 +1377,9 @@ factory-flow-cypress/
 | Area context files (38 × `references/context/*.md`) | MQA skill repo | Loaded at runtime for the detected area. |
 | TAF fragments and `permissions.js` | `stripes-testing` | Scored and excerpted for automation notes and the `Automatable` flag. |
 
-Part III additionally reuses `ScriptBundleCodec` (`factory-agents`) and TAF's `CLAUDE.md` and
-`ecs-user-setup/SKILL.md` as system-prompt sources.
+Part III also uses the GitHub connector's `syncFork` / `createPullRequest` / `findOpenPullRequest`
+for the PR step, the `claude` CLI for the coding sessions, and the TAF's own tooling
+(`lint-staged`, `environments.js`, `cypress run`).
 
 ## Environment Variables
 
@@ -1371,8 +1387,8 @@ Part III additionally reuses `ScriptBundleCodec` (`factory-agents`) and TAF's `C
 |---|---|
 | TAF path | Auto-managed: `TafSyncService` clones to `{user.dir}/cypressTafClone` on startup — no env var needed |
 | `FACTORY_CYPRESS_FOLIO_AI_REPO` | GitHub repo (`owner/name`) containing the FOLIO AI skills. Cloned to `skillsClone/` at startup by `SkillWorkspaceService`; the GitHub API and the jar-bundled copies are the second and third fallbacks. Supplies SKILL.md, `examples.md` and the area context files. |
-| `FACTORY_CYPRESS_TARGET_REPO` | GitHub repo (`owner/name`) where generated Cypress specs are committed (e.g. `folio-org/stripes-testing`) |
-| `FACTORY_CYPRESS_BASE_BRANCH` | Base branch in `TARGET_REPO` (default: `master`) |
+| `FACTORY_CYPRESS_TARGET_REPO` | Repo (`owner/name`) where the PR step opens pull requests - a **fork** of stripes-testing; the GitHub token needs push access. Unset = no PR. |
+| `FACTORY_CYPRESS_BASE_BRANCH` | PR base branch in the target repo (default `master`) |
 | `FACTORY_CYPRESS_TESTRAIL_SECTION_ID` | Fallback TestRail section ID (long integer); used when `testrail_section` is absent from `test_plan.md` frontmatter, or present but unresolvable against TestRail |
 | `FACTORY_CYPRESS_TESTRAIL_CASE_TYPE_NAME` | TestRail case type name, resolved against `get_case_types` at sync time (not a hardcoded id - those drift); code default `Functional` |
 | `FACTORY_CYPRESS_TESTRAIL_PRIORITY_NAME` | TestRail priority name, resolved against `get_priorities` the same way; code default `Medium` |
@@ -1386,783 +1402,105 @@ Part III additionally reuses `ScriptBundleCodec` (`factory-agents`) and TAF's `C
 | `FACTORY_CONNECTORS_TESTRAIL_API_KEY` | TestRail API key |
 | `FACTORY_CONNECTORS_TESTRAIL_PROJECT_ID` | TestRail project ID (integer) |
 | `FACTORY_CONNECTORS_TESTRAIL_SUITE_ID` | TestRail suite ID (integer; required on multi-suite projects) |
-| `FACTORY_CONNECTORS_GITHUB_TOKEN` | GitHub personal access token (read for context/examples fetch; write for finalizer PR) |
+| `FACTORY_CONNECTORS_GITHUB_TOKEN` | GitHub token: reads for asset fetch and enrichment; push to the target fork and PR creation for the PR step |
 | `FACTORY_CONNECTORS_GITHUB_BASE_URL` | GitHub API base URL (default: `https://api.github.com`; override for GHE) |
 | `FACTORY_DEBUG_ENABLED` | Dumps every rendered prompt, with the model's raw response appended below it, to `debugPrompts/<executionId>/`, and exposes `POST /api/debug/partial-run`. Local use only. |
-| `FACTORY_TAF_HAS_ENV_CONFIG` | Set `true` to enable execution mode in `CypressExecutionWorker` (Phase 3+) |
-| `FACTORY_CYPRESS_EXEC_CONFIG` | Path to `cypress-exec.yaml`; defaults to bundled `src/main/resources/cypress-exec.yaml` |
-| `FACTORY_CYPRESS_REGULAR_ENV` | Deploy-time override for regular-test env params (`key=val,key=val`); merged on top of `cypress-exec.yaml` regular block |
-| `FACTORY_CYPRESS_ECS_ENV` | Deploy-time override for ECS-test env params (`key=val,key=val`); merged on top of `cypress-exec.yaml` ecs block |
+| `FACTORY_CYPRESS_AUTOMATION_ENABLED` | Default for runs that don't send `"automate"` (default `true`) |
+| `FACTORY_CYPRESS_AUTOMATION_MAX_CASES` | Cases automated per run; the rest are listed as skipped (default `2`) |
+| `FACTORY_CYPRESS_AUTOMATION_RUN_SPECS` | `true` = the review session runs each spec on the case's ECS / non-ECS env and fixes it up to twice (default `false`; not yet verified end to end) |
+| `FACTORY_CYPRESS_AUTOMATION_RUN_ENVS` | JSON with `non-ecs` and `ecs` profiles replacing the bundled spec-run environments |
+| `FACTORY_CYPRESS_AUTOMATION_CLI_MODEL` / `_CLI_EFFORT` | claude CLI `--model` / `--effort` (defaults `claude-sonnet-5-5` / `high`); never taken from the host's `~/.claude/settings.json` |
+| `FACTORY_CYPRESS_AUTOMATION_TIMEOUT_SECONDS` | Per claude CLI session (default `1800`) |
+| `FACTORY_CYPRESS_AUTOMATION_WORKSPACE` | The clone automation writes to (default `cypressTafWork`) |
 
 ---
 
 
 ---
 
-# Part III — Cypress automation (not built)
+# Part III — Cypress automation (built 2026-11-12)
 
-Design only — none of the following is implemented. The input is `test_plan.md` carrying real
-TestRail C###### ids, which is what Part I produces.
+Steps 3-6 of `cypress-factory`. The code is in `factory-flow-test-automation`: Ostap's explorer,
+generation and review workers, driven by a per-case loop. History, decisions and follow-ups are
+in [CYPRESS_AUTOMATION_MERGE_PLAN.md](CYPRESS_AUTOMATION_MERGE_PLAN.md). How to run it is in
+[QUICKSTART.md](QUICKSTART.md). An earlier design for this part (an automation agent, a separate
+execution worker, a finalizer and an Allure report) was never built and has been removed from
+this plan.
 
----
-
-## 1. `CypressAutomationAgentWorker` — LLM worker (yaml id: `cypress-automation-agent`)
-
-**Do not write this from scratch.** The content already exists in the TAF.
-
-**Build the system prompt from these sources in order:**
-
-1. **Core patterns from `CLAUDE.md`** — embed the relevant sections verbatim:
-   - Key Development Patterns (test data, fragment architecture, interactors)
-   - Test File Creation rules (tagging, naming, step comments)
-   - Permission vs Capability Selection Strategy (the CRITICAL DECISION RULE section)
-   - Permissions Approach Implementation
-   - Capabilities Approach Implementation
-   - Common Gotchas
-
-2. **ECS rules from `.github/skills/ecs-user-setup/SKILL.md`** — embed the decision tree and
-   code patterns. The factory LLM cannot invoke IDE skills; the guidance must be in the prompt.
-
-3. **Fragment library injection** — the fragment excerpt produced by `FragmentPrefetch`
-   is included in the user-facing prompt template (not the system prompt, since it changes per run).
-
-4. **Few-shot examples** — 3-5 real `.cy.js` specs from the TAF (one per complexity level: simple
-   CRUD, permission-based, ECS). These go in the system prompt and anchor the LLM to the actual
-   code style, not a reconstructed approximation of it.
-
-**Important:** this worker reads `test_plan.md` and **skips any case where `automatable: false`**.
-Only automatable cases get a Cypress spec. The prompt must be told this explicitly — instruct the
-LLM to ignore non-automatable cases entirely rather than generating a stub or placeholder for them.
-
-**What the prompt must add beyond CLAUDE.md:**
-
-- Output format: `ScriptBundle` (same frontmatter format as Flow A)
-- File path derivation: place the spec under `cypress/e2e/` using the test case context from
-  `test_plan.md` (title, scope, feature area) and its frontmatter as the folder structure
-  guide — same way CLAUDE.md instructs the IDE agents. By this stage, `test_plan.md` already
-  carries real `C######` IDs (assigned by `testrail-sync-agent`). The LLM derives folder structure
-  from content and context, not from TestRail section hierarchy. The mapping is not 1:1; do not
-  prescribe a rigid template — trust LLM judgment, as existing TAF agents already do.
-- Real ID usage: by the time this worker runs, `test_plan.md` already carries real `C######` IDs
-  (assigned by `testrail-sync-agent` after Gate 1). Use them directly throughout the specs —
-  tags `['extendedPath', 'spitfire', 'C627249']`, test data `AT_C627249_EntityType_${getRandomPostfix()}`,
-  variable names `c627249EntityName`, file names `c627249-feature.cy.js`. No find-replace needed.
-- Import depth rule: derive `../../../support/` depth from the spec file's path in the bundle
-- Fragment strategy: the LLM may freely add new methods or variables to existing fragments.
-  For gaps with no reasonable existing analogue (entirely new app, entity type, etc.), generate
-  a new fragment file and include it in the `ScriptBundle` alongside the specs. The bundle may
-  therefore contain both `.cy.js` spec files and `support/fragments/**/*.js` fragment files —
-  all committed together in the same PR by the finalizer.
-  New fragment files must open with this banner comment:
-  ```javascript
-  // ⚠️  AI-GENERATED DRAFT — NEEDS HEAVY REVIEW BEFORE USE
-  // This fragment was scaffolded automatically. Verify all selectors, method names,
-  // and interactions against the actual UI before relying on this in tests.
-  ```
-- Team tag: read from `test_plan.md` as a string (e.g. `spitfire`). The team name is sourced
-  from the Jira story's Dev Team field and written into the `test_plan.md` frontmatter by the
-  generation worker. If the value is `unknown`, use
-  `'N/A - please fill'` as the tag and add this banner at the top of the spec:
-  ```javascript
-  // ⚠️  TEAM TAG UNRESOLVED — Jira team value did not match any known team in the mapping table.
-  // Replace 'N/A - please fill' in the tags array with the correct team tag before merging.
-  ```
-
----
-
-
-## 2. `CypressSanityPostProcessor` — post-processor (no YAML entry — auto-runs after every step)
-
-Registered globally — runs after **every** agent step, not just `cypress-automation-agent`.
-The guard `if (outputs.get("test_scripts.md") == null) return;` at the top of `process()` means
-it silently no-ops for all other steps. Mirrors `KarateSanityPostProcessor`.
-
-Checks (applied only to `.cy.js` files; fragment files are passed through without validation):
-
-Hard failures — throw `AgentExecutionException` (triggers LLM retry):
-- Every spec file contains `describe(` and `it(`
-- Each `it()` call has a `tags:` array with exactly 3 elements
-- No raw `cy.get('` calls (interactors or fragment methods must be used)
-- New fragment files (anything under `support/fragments/`) contain the AI-draft banner comment
-
-Warnings — log but don't fail:
-- Missing `before()`/`beforeEach()` or `after()`/`afterEach()` (valid for simple read-only specs)
-- Spec file has no `import` statements (acceptable for simple/API tests; flag for Gate 2 reviewer)
-- Multiple `it()` blocks in one file
-- Import depth in path strings does not match the file's actual nesting level (hard to verify statically; flag for Gate 2 reviewer)
-
----
-
-
-## 3. `CypressExecutionWorker` — non-LLM worker (yaml id: `cypress-execution-agent`)
-
-**Advisory mode** (default when `FACTORY_TAF_HAS_ENV_CONFIG` is not `true`): produces `test_results.md` with `mode: ADVISORY`, all cases `NOT_EXECUTED`.
-
-**Execution mode**: reads `test_scripts.md` (Cypress bundle with real C###### IDs) and
-`test_plan.md` (to know the per-case ECS flag, used to split specs into regular vs ECS
-buckets). Writes specs and any new fragment stubs to their final paths in the TAF root
-(`cypress/e2e/` for specs, `cypress/support/fragments/` for fragments), then runs Cypress.
-Both artifacts must be declared in the step's `inputs:` in the YAML.
-
-### Why `environments.js` is not used
-
-`environments.js` is gitignored — the factory cannot rely on it being present or correctly
-configured on the execution host. Instead, the worker passes all env params explicitly via
-command-line flags, bypassing the TAF's local-dev mechanism entirely.
-
-### Split runs: regular vs ECS
-
-Regular and ECS tests require different environments and env params and cannot run together.
-The worker splits the bundle into two buckets using the per-case `- **ECS:** Yes/No` flag in
-`test_plan.md`, then runs them sequentially:
+## 1. Chain
 
 ```
-# Before any run: clear stale allure results so both runs contribute to one report
-rm -rf allure-results
-
-# Regular tests (ecsEnabled=false)
-npx cypress run -b chrome \
-  --spec <regular-spec-paths> \
-  --config baseUrl=<regular.baseUrl> \
-  -e OKAPI_HOST=...,OKAPI_TENANT=...,diku_login=...,diku_password=...,eureka=true,ecsEnabled=false,allure=true
-
-# ECS tests (ecsEnabled=true)  — only if ECS specs exist
-npx cypress run -b chrome \
-  --spec <ecs-spec-paths> \
-  --config baseUrl=<ecs.baseUrl> \
-  -e OKAPI_HOST=...,OKAPI_TENANT=...,ecs_env_name=...,eureka=true,ecsEnabled=true,allure=true
-
-# After all runs: generate the HTML report (both runs' results merged into one)
-allure generate allure-results --clean -o allure-report
+[cypress-testrail-sync]   (Part I) also writes testrail_cases.json: created case ids, Automatable
+     │                     flag, automation notes, areas, the story's dev team
+     ▼
+[cypress-automation-select]                                          non-LLM
+     │  ── case ids from the trigger (testCaseIds / testCaseId) or else from testrail_cases.json
+     │  ── "automate": false in the payload (or FACTORY_CYPRESS_AUTOMATION_ENABLED=false) -> none
+     │  ── drops Automatable: No, applies FACTORY_CYPRESS_AUTOMATION_MAX_CASES (rest = skipped)
+     │  ── fetches each case from TestRail; team per case (hand-off, or Dev Team id -> name)
+     ▼
+[automation_cases.json]
+     ▼
+[cypress-automate-cases]                    LLM (claude CLI), one case at a time, one branch
+     │  ── workspace: cypressTafWork/ (own clone; cypressTafClone/ stays read-only for Part I)
+     │       branch factory/<issueKey> from fresh origin/master; yarn install once
+     │  ── per case: explorer (file list narrowed to the area) -> generate (claude CLI)
+     │       -> [environments.js with the case's ECS / non-ECS profile, if RUN_SPECS]
+     │       -> review (claude CLI; with RUN_SPECS also runs the spec and fixes it, at most twice)
+     │       -> lint-staged (prettier --write + stripes-lint --fix: the TAF pre-commit hook)
+     │       -> commit (one per case; a failed case's changes are discarded, the loop goes on)
+     ▼
+[automation_report.md, automation_results.json]
+     ▼
+[gate-2-review]                                                      HITL
+     ▼
+[cypress-automation-publish]                                         non-LLM
+     │  ── sync the fork (FACTORY_CYPRESS_TARGET_REPO) with upstream
+     │  ── git push of the run's branch (token as an http extraHeader via GIT_CONFIG_* env)
+     │  ── open the PR via the GitHub API
+     ▼
+[automation_publish.json]  (PR url; skipped without a target repo or token)
 ```
 
-`allure=true` must be passed explicitly because the factory bypasses `environments.js`. This
-activates `@shelex/cypress-allure-plugin` which is already wired in the TAF's `cypress.config.js`
-(`allureWriter(on, config)` in `setupNodeEvents`) — no TAF changes needed.
+## 2. Ways to run
 
-Note: `baseUrl` is a top-level Cypress config option → `--config baseUrl=...`, not `-e baseUrl=...`.
-Both runs accumulate JSON results under `allure-results/` before `allure generate` runs once at
-the end. Skip a bucket entirely if it has no specs.
-
-**Prerequisite:** Allure CLI must be available on the execution host (`allure` on PATH). Install
-via `npm install -g allure-commandline` or system package manager.
-
-### Allure report output and serving
-
-The worker generates the HTML report to:
-```
-{user.dir}/cypressTafClone/allure-report/
-```
-
-After generation, the worker records the absolute path in `test_results.md` metadata:
-```yaml
-allure_report_path: /absolute/path/to/stripes-testing/allure-report
-```
-
-**Serving the report** — two options:
-
-1. **Local / developer use:** `allure open allure-report` in the TAF root — opens a browser tab
-   directly. Run this manually after the factory execution completes.
-
-2. **Server / CI use:** Add a static-file endpoint to `factory-app` that maps
-   `/executions/{id}/allure/**` to the `allure_report_path` stored in `test_results.md`.
-   This is a small addition to `factory-app` (one `@GetMapping` with a `Resource` response)
-   and lets the factory UI render a "View Allure Report" link on the execution page.
-   See Effort Estimate — this is listed as an optional add-on.
-
-### `cypress-exec.yaml` — the execution config file
-
-Lives at `factory-flow-cypress/src/main/resources/cypress-exec.yaml`. Checked in, team-specific.
-Each factory deployment owns this file and sets it to match their FOLIO environments:
-
-```yaml
-regular:
-  baseUrl: "https://folio-etesting-cypress-diku.ci.folio.org"
-  env:
-    OKAPI_HOST: "https://folio-etesting-cypress-kong.ci.folio.org"
-    OKAPI_TENANT: "diku"
-    diku_login: "diku_admin"
-    diku_password: "admin"
-    eureka: true
-    ecsEnabled: false
-
-ecs:
-  baseUrl: "https://folio-ecs-snapshot.ci.folio.org"
-  env:
-    OKAPI_HOST: "https://folio-ecs-snapshot-kong.ci.folio.org"
-    OKAPI_TENANT: "consortium"
-    diku_login: "consortium_admin"
-    diku_password: "admin"
-    ecs_env_name: "snapshot"
-    eureka: true
-    ecsEnabled: true
-```
-
-### Three-tier precedence (highest wins)
-
-```
-1. Gate 2 per-run override   — reviewer types key=val,key=val into the review form
-2. Deploy-time env vars      — FACTORY_CYPRESS_REGULAR_ENV / FACTORY_CYPRESS_ECS_ENV (key=val string)
-3. cypress-exec.yaml         — checked-in baseline
-```
-
-Tier 2 env vars let CI/CD inject real credentials without modifying the committed file.
-Tier 1 handles one-off edge cases without touching config or restarting the server.
-
-### Gate 2 execution section
-
-When `FACTORY_TAF_HAS_ENV_CONFIG=true`, Gate 2 renders an **Execution Plan** section beneath
-the spec review (invisible in advisory mode). It shows the resolved commands — with all params
-filled from the precedence chain — before anything runs:
-
-```
-── Execution Plan ──────────────────────────────────────────────────────
-Regular tests (C627249, C627250): 2 specs
-  baseUrl : https://folio-etesting-cypress-diku.ci.folio.org
-  env     : OKAPI_HOST=..., OKAPI_TENANT=diku, ecsEnabled=false, eureka=true, ...
-  override: [_________________________________]  ← key=val,key=val or leave blank
-
-ECS tests (C627251): 1 spec
-  baseUrl : https://folio-ecs-snapshot.ci.folio.org
-  env     : OKAPI_HOST=..., ecs_env_name=snapshot, ecsEnabled=true, eureka=true, ...
-  override: [_________________________________]  ← key=val,key=val or leave blank
-────────────────────────────────────────────────────────────────────────
-```
-
-Note: IDs shown here are real `C######` IDs — assigned by `TestRailSyncAgentWorker` after
-Gate 1 approval. By the time Gate 2 is reached, all IDs are already final TestRail case IDs.
-
-Override fields use the same `key=val,key=val` format Cypress accepts natively.
-Override values are merged on top of the resolved config (not a full replacement).
-Overrides are stored in the HITL decision payload and applied only to this run.
-
-Parse `cypress/results/*.xml` (JUnit output). Timeout: 30 minutes minimum per run.
-
----
-
-
-## 4. `CypressFinalizerWorker` — non-LLM worker (yaml id: `cypress-finalizer`)
-
-Adapted from `TestFactoryFinalizerWorker`. Case creation is already done by
-`TestRailSyncAgentWorker`, so this worker handles the remaining GitHub and reporting work:
-
-- **Commit all files** from `test_scripts.md` bundle to `stripes-testing` — both `.cy.js`
-  specs and any new fragment stubs under `cypress/support/fragments/`
-  - Branch: `test-factory/cypress-{issueKey}`
-  - PR title: `{issueKey}: AI-generated Cypress E2E specs`
-  - PR body: list of covered TestRail case IDs; note any AI-draft fragment files included
-- **Post a Jira comment** summarizing what was done — total cases pushed to TestRail, how
-  many are automated, PR link; if execution mode was used, append run summary: passed / failed /
-  skipped counts and names of failed specs (read from `test_results.md`)
-
----
-
-
-## Phase 2 — Cypress spec generation + Gate 2
-
-**Goal: Gate 2 produces a reviewable `.cy.js` bundle with real C###### IDs (already in place).**
-
-9. Build `cypress-automation-agent/system.md`:
-   - Start with CLAUDE.md relevant sections (copy verbatim, don't paraphrase)
-   - Add ECS rules from `ecs-user-setup/SKILL.md`
-   - Add output format instructions (ScriptBundle, real ID usage, path rules, tag format)
-   - Find 3-5 real `.cy.js` examples from TAF spanning simple/permission/ECS cases — embed as
-     few-shot examples in the prompt
-10. Implement `CypressAutomationAgentWorker` (mirrors `TestAutomationAgentWorker`)
-11. Implement `CypressSanityPostProcessor`
-12. Extend `cypress-factory.yaml` to include `cypress-automation` + Gate 2
-13. End-to-end test: run 3-5 real Jira stories, compare output quality at Gate 2
-
-**Milestone:** Approved bundle at Gate 2 has correct structure with real `C######` IDs throughout.
-
-**Verify:** Inspect the Gate 2 review panel — `test_scripts.md` should contain `.cy.js` files
-with `tags: ['extendedPath', 'spitfire', 'C627249']` style tags, `AT_C627249_` prefixed variable
-names, and no raw `cy.get('` calls (sanity post-processor should have caught those already).
-
-**Iteration expected:** Plan for 3-5 prompt tuning rounds on `cypress-automation-agent`, the
-same way test case generation needed them. For case generation, the context files + SKILL.md
-writing
-guidelines are the highest-leverage knob — they provide FOLIO-specific factual grounding
-(exact UI texts, business rules, capability sets) that the LLM cannot reliably produce from
-training data alone. Few-shot examples are the highest-leverage knob for `cypress-automation-agent`.
-
----
-
-## Phase 3 — Execution and finalize
-
-**Goal: Specs run (or skip), PR opens in stripes-testing, Jira gets a comment.**
-
-14. Implement `CypressExecutionWorker` (advisory mode first, real execution second)
-15. Implement `CypressFinalizerWorker`
-16. Full end-to-end test
-
-**Milestone:** Full pipeline from Jira story to stripes-testing PR with real `C######` IDs and
-TestRail cases created only after human approval.
-
-**Verify:** Check TestRail — new cases appear in the configured section with the AI label (67).
-Check the PR in stripes-testing — spec files use `C######` tags and `AT_C######_` variable names
-(not `TC###`). If execution mode was used: `allure-report/` directory exists in the TAF root
-and the Allure HTML opens correctly.
-
----
-
-
-## Risks — Cypress automation
-
-Part I's risks are in Part I §9. These are specific to the phases below.
-
-### Fragment accuracy (highest LLM quality risk for spec generation)
-`FragmentPrefetch` mitigates this significantly. Even with the index, the LLM may use
-wrong method names. The Gate 2 HITL review and the resulting PR review in stripes-testing are
-the safety nets — not the automated checks.
-
-### Area detection accuracy (spec generation)
-The keyword-matching table from the skill handles most stories. Ambiguous stories (touching multiple
-modules) may detect the wrong area. Mitigations:
-- Show `detected_area` and `confidence` in Gate 1 review — the QA reviewer can catch and
-  note corrections before approving
-- Log detection results clearly so misdetections are easy to diagnose
-
-### Permissions / Capabilities dictionary (500+ entries)
-The context files already provide the relevant capability sets and legacy permissions per module.
-The LLM uses this rather than guessing or scanning the full dictionary.
-
-### ECS test complexity
-The `ecs-user-setup` skill content is detailed and correct. Embedding it verbatim in the system
-prompt is the right approach. In v1, consider flagging ECS tests at Gate 2 with a special warning
-note to the reviewer: "This test was classified as ECS — review user setup carefully."
-
-### TestRail partial failure — TC-X leaking to Phase 2 (Phase 2 prerequisite)
-
-If `addCaseWithMetadata` succeeds for some cases but throws for others, the failed cases keep
-their `TC-X` placeholder in `test_plan.md`. `cypress-automation-agent` reads those IDs and
-embeds them verbatim in spec tags (`['TC-1']`), variable names (`AT_TC-1_...`), and filenames.
-The TestRail link for those specs is silently broken.
-
-Retrying the step (via the bounded retry policy) would re-create the successful cases again —
-duplicate TestRail entries.
-
-**Mitigation before Phase 2:** distinguish failure types in `TestRailSyncAgentWorker`:
-- All cases fail → almost certainly credentials/config → throw immediately (no duplicates)
-- Some cases fail → write a `testrail_failures` list into `test_plan.md` frontmatter so
-  `cypress-automation-agent` can skip or flag those cases rather than treating `TC-X` as real.
-
-### Test case quality feeding spec generation
-The `write-testrail-cases/SKILL.md` writing guidelines and area context files are a significant
-upgrade from the generic Flow A prompts. The context files provide verbatim UI texts, verified
-business rules, and exact capability set names — the factual grounding that previously had to
-come from the LLM's training data (unreliable for specific FOLIO versions).
-
-Remaining mitigations:
-- `automatable: true/false` flag per case — Gate 1 is the main quality control; QA confirms or overrides
-- Non-automatable cases still go to TestRail; just skipped by the automation agent
-- The `test_scripts.md` bundle will have fewer specs than test cases in `test_plan.md`; this is expected (non-automatable cases are skipped) and noted in `sync_report.md`
-
-## Effort Estimate
-
-Part I is built, so only the remaining phases are estimated here.
-
-| What | Estimate |
+| Mode | How |
 |---|---|
-| `cypress-automation-agent/system.md` (initial + 3-5 tuning rounds) | 2-3 days |
-| `CypressAutomationAgentWorker` + `CypressSanityPostProcessor` | 1 day |
-| `CypressExecutionWorker` (advisory mode) | 0.5 day |
-| `CypressExecutionWorker` (real execution) | 1 day |
-| `CypressFinalizerWorker` | 1 day |
-| Gate 2 + `cypress-factory.yaml` extension | 0.5 day |
-| Phase 2-3 end-to-end testing | 2 days |
-| Allure report serving endpoint in `factory-app` (optional) | 0.5 day |
+| Full | manual trigger with `issueKey` |
+| Cases only | `"automate": false` in the payload, or `FACTORY_CYPRESS_AUTOMATION_ENABLED=false`. Gate 2 opens with "Automation disabled"; approve to finish. |
+| Automation only | `POST /api/debug/partial-run` at `startStepId: automation-select` with `triggerPayload: {"testCaseIds": [...], "areas": [...]}` (`areas` optional) |
 
-**Total: ~8-9 days for Phases 2-3** (+ 0.5 day optional Allure serving)
+## 3. Components (`factory-flow-test-automation`)
 
-Starting from `CLAUDE.md` (TAF's tested instructions) for `cypress-automation-agent` saves
-meaningful prompt engineering time, the same way starting from MQA's `SKILL.md` did for Part I.
-
----
-
-
-## Implementation Reference — How to Actually Write the Workers
-
-> This section is for engineers new to the factory codebase. It shows the exact patterns to copy
-> for each new component. Read the existing Flow A code alongside these examples —
-> `factory-flow-test-factory` is your reference implementation.
-
-### `@Component` vs `@Bean` — when to use which
-
-You will notice that some workers have `@Component` on the class and others don't. The rule:
-
-- **Post-processors** (`implements StepPostProcessor`) → always `@Component` on the class.
-  The engine discovers them via Spring's component scan — no manual wiring needed.
-- **Non-LLM workers** (`implements AgentWorker`) → either `@Component` on the class **or**
-  a `@Bean` method in `CypressFlowConfiguration`. Both work. Use whichever matches the nearest
-  Flow A analog.
-- **LLM workers** (`extends AbstractLlmAgentWorker`) → typically a `@Bean` in the config class
-  because they need a `ChatClient` injected at construction time, and the config class is where
-  `ChatClient` is built.
-
-When in doubt: open `FlowAConfiguration` in `factory-flow-test-factory` and find the analogous
-worker — copy exactly how it's registered there.
-
----
-
-### The three-sentence mental model
-
-Every worker receives an `AgentContext` (inputs + config), does something, and returns an
-`AgentResult` (outputs). Non-LLM workers do it in pure Java. LLM workers extend
-`AbstractLlmAgentWorker` and call `callForEntity(vars, MyRecord.class)`. That's it.
-The engine handles orchestration, retries, artifact storage, and HITL pauses — your worker
-never touches any of that.
-
----
-
-
-### LLM worker: `CypressAutomationAgentWorker`
-
-Copy the shape of `TestAutomationAgentWorker`. Extend `AbstractLlmAgentWorker`. You get
-`callForEntity()` and prompt loading for free.
-
-```java
-// factory-flow-cypress/src/main/java/.../worker/CypressAutomationAgentWorker.java
-
-public class CypressAutomationAgentWorker extends AbstractLlmAgentWorker {
-
-    public static final String ID = "cypress-automation-agent";
-
-    private final ScriptBundleCodec bundleCodec;
-
-    public CypressAutomationAgentWorker(ChatClient chatClient,
-                                        ScriptBundleCodec bundleCodec) {
-        super(chatClient);    // ← always pass ChatClient to super
-        this.bundleCodec = bundleCodec;
-    }
-
-    @Override
-    public String id() { return ID; }
-
-    @Override
-    public AgentResult execute(AgentContext context) throws AgentExecutionException {
-
-        // 1. Read inputs
-        String testPlan       = context.requireInput("test_plan.md").content();
-        String fragmentLibrary = fragmentPrefetch.scan(areas, summary);
-
-        // 2. Call the LLM — vars map becomes {{placeholder}} substitutions in user.md
-        //    callForEntity parses the LLM's JSON response into a ScriptBundle record
-        ScriptBundle bundle = callForEntity(
-            Map.of(
-                "test_plan",       testPlan,
-                "fragments", fragmentLibrary
-            ),
-            ScriptBundle.class   // ← the record the LLM must produce; defined in your model package
-        );
-
-        // 3. Validate and return
-        if (bundle.files().isEmpty()) {
-            throw new AgentExecutionException("LLM returned an empty script bundle");
-        }
-        return resultWithUsage("test_scripts.md", bundleCodec.render(bundle));
-    }
-}
-```
-
-The prompt files live at:
-```
-src/main/resources/prompts/cypress-automation-agent/system.md   ← static instructions
-src/main/resources/prompts/cypress-automation-agent/user.md     ← template with {{test_plan}}, {{fragments}}
-```
-
-The base class loads them by `workerId` automatically — the file names are the contract.
-`{{placeholder}}` in the `.md` file is replaced with whatever key you put in the `Map.of(...)`.
-
----
-
-
-### Post-processor: `CypressSanityPostProcessor`
-
-Copy `KarateSanityPostProcessor`. Annotate with `@Component` — the engine auto-discovers all
-`StepPostProcessor` beans and runs them after **every** agent step.
-
-```java
-// factory-flow-cypress/src/main/java/.../quality/CypressSanityPostProcessor.java
-
-@Component   // ← this is how the engine finds it; no manual wiring needed
-public class CypressSanityPostProcessor implements StepPostProcessor {
-
-    @Override
-    public void process(FlowDescriptor flow, StepDescriptor step,
-                        Map<String, String> outputs) throws AgentExecutionException {
-
-        // Guard: this processor only cares about cypress spec output
-        // If the current step didn't produce test_scripts.md, do nothing
-        String raw = outputs.get("test_scripts.md");
-        if (raw == null) return;
-
-        // Parse the bundle — ScriptBundleCodec splits the multi-file Markdown artifact
-        // into individual { path, content } entries
-        ScriptBundle bundle = bundleCodec.parse(raw);
-
-        for (ScriptBundle.ScriptFile file : bundle.files()) {
-            if (!file.path().endsWith(".cy.js")) continue;   // skip fragment stubs
-            String src = file.content();
-
-            // Hard failures — throwing here triggers the step retry budget
-            if (!src.contains("describe(") || !src.contains("it(")) {
-                throw new AgentExecutionException(
-                    "Spec " + file.path() + " is missing describe() or it()");
-            }
-            // ... other hard checks from section 7 of this plan
-        }
-        // Warnings: log but return normally — step succeeds
-    }
-}
-```
-
-Key rule: **throw `AgentExecutionException` for hard failures; log for warnings.** A thrown
-exception burns one retry from the step's `retry_policy`. Warnings are free.
-
----
-
-
-### Non-LLM worker with external connector: `TestRailSyncAgentWorker`
-
-Same shape as any non-LLM worker, but with `TestRailConnector` injected.
-
-```java
-// factory-flow-cypress/src/main/java/.../worker/TestRailSyncAgentWorker.java
-
-public class TestRailSyncAgentWorker implements AgentWorker {
-
-    public static final String ID = "cypress-testrail-sync";
-
-    private final TestRailConnector testRail;
-    private final FrontmatterCodec frontmatterCodec;
-
-    // constructor injection (omitted for brevity)
-
-    @Override
-    public String id() { return ID; }
-
-    @Override
-    public AgentResult execute(AgentContext context) throws AgentExecutionException {
-
-        // 1. Read test_plan.md (Gate-1-approved cases, no IDs yet)
-        String testPlanRaw = context.requireInput("test_plan.md").content();
-
-        // 2. Parse cases (all cases — automatable + non-automatable)
-        List<TestCase> cases = parseCases(testPlanRaw);
-
-        // 3. Push each case to TestRail, collect title→realId mapping
-        Map<String, String> idMap = new LinkedHashMap<>();
-        for (TestCase tc : cases) {
-            long realId = testRail.addCase(sectionId, tc.title(), renderSteps(tc), renderExpected(tc));   // see TestFactoryFinalizerWorker.syncTestRail() for field mapping
-            idMap.put(tc.title(), String.valueOf(realId));              // "Create order" → "627249"
-        }
-
-        // 4. Write real C###### IDs back into test_plan.md (each case gets id: C627249)
-        String updatedPlan = writeIdsBackToPlan(testPlanRaw, idMap);
-
-        return AgentResult.of("test_plan.md", updatedPlan);
-    }
-}
-```
-
-Look at `TestFactoryFinalizerWorker.syncTestRail()` for the exact `TestRailConnector` API calls.
-The `getSection(sectionId)` method needs to be added to `TestRailConnector` (one `GET` call).
-
----
-
-
-### Non-LLM worker with GitHub + Jira connectors: `CypressFinalizerWorker`
-
-Copy the shape of `TestFactoryFinalizerWorker`. The key difference: case creation already
-happened in `TestRailSyncAgentWorker`, so this worker only handles GitHub commit + PR + Jira.
-
-```java
-// factory-flow-cypress/src/main/java/.../worker/CypressFinalizerWorker.java
-
-public class CypressFinalizerWorker implements AgentWorker {
-
-    public static final String ID = "cypress-finalizer";
-
-    private final GitHubConnector github;
-    private final JiraConnector jira;
-    private final ScriptBundleCodec bundleCodec;
-
-    // constructor injection (omitted for brevity)
-
-    @Override
-    public String id() { return ID; }
-
-    @Override
-    public AgentResult execute(AgentContext context) throws AgentExecutionException {
-
-        ScriptBundle bundle        = bundleCodec.parse(context.requireInput("test_scripts.md").content());
-        String testResultsRaw      = context.requireInput("test_results.md").content();
-        String testPlanRaw         = context.requireInput("test_plan.md").content();
-
-        // 1. Commit all files (specs + any fragment stubs) to a new branch in stripes-testing
-        String issueKey = parseIssueKey(testPlanRaw);        // from the test_plan.md frontmatter
-        String branch   = "test-factory/cypress-" + issueKey;
-        String repo     = properties.targetRepo();   // FACTORY_CONNECTORS_GITHUB_* target
-        github.createBranch(repo, properties.baseBranch(), branch);
-        github.commitFiles(repo, branch, toFileMap(bundle.files()),
-            issueKey + ": AI-generated Cypress E2E specs");
-
-        // 2. Open a PR
-        String prUrl = github.createPullRequest(
-            repo, branch, properties.baseBranch(),
-            issueKey + ": AI-generated Cypress E2E specs",
-            buildPrBody(bundle, testResultsRaw)
-        );
-
-        // 3. Post a Jira comment summarizing results
-        jira.addComment(issueKey, buildJiraComment(bundle, prUrl, testResultsRaw));
-
-        // 4. Produce final artifact
-        return AgentResult.of("sync_report.md", buildSyncReport(bundle, prUrl, testResultsRaw));
-    }
-}
-```
-
-`buildPrBody` lists all covered TestRail case IDs (`C######`) and flags any AI-draft fragment
-files with a note for reviewers. `buildJiraComment` includes PR link + run summary (if execution
-mode was used; advisory mode → omit run summary).
-
----
-
-
-### Subprocess runner pattern (`CypressExecutionWorker`)
-
-For running `npx cypress run`, use `ProcessBuilder` — the same approach `TestExecutionWorker`
-uses for `java -jar karate.jar`:
-
-```java
-ProcessBuilder pb = new ProcessBuilder(
-    "npx", "cypress", "run",
-    "-b", "chrome",
-    "--spec", String.join(",", specPaths),
-    "--config", "baseUrl=" + config.baseUrl(),
-    "-e", buildEnvString(config.env())   // "OKAPI_HOST=...,OKAPI_TENANT=..."
-);
-pb.directory(tafSyncService.tafRoot().toFile());
-pb.redirectOutput(outputFile);   // write stdout+stderr to a temp file, not a pipe
-pb.redirectErrorStream(true);    // merge stderr into stdout
-Process process = pb.start();
-boolean finished = process.waitFor(30, TimeUnit.MINUTES);
-```
-
-Do **not** use `pb.inheritIO()` or read from `process.getInputStream()` directly — the JVM
-pipe buffer will fill and deadlock. Always redirect to a file (`pb.redirectOutput(file)`).
-Parse results from the JUnit XML files Cypress writes to `cypress/results/*.xml`.
-
----
-
-> **Where to look for more:** Every pattern above has a fully working reference in
-> `factory-flow-test-factory`. When in doubt, find the nearest analog there and copy its shape.
-
----
-
-
-## Suggested Next Steps (Post Phase 3)
-
-> These are extensions to consider after the Phase 1-3 flow is working and tested end-to-end.
-> Do not build any of this until the base pipeline is stable.
-
-#### Phase 4 — Automatic fix loop for Cypress failures
-
-Generated specs will have failures on first run — wrong fragment method names, wrong assertion
-text, missing imports, timing issues. Phase 3 leaves these as "human fix required." A fix loop
-would let the factory self-repair the obvious ones before handing off.
-
-##### How it would work
-
-After `CypressExecutionWorker` produces `test_results.md`, extend the pipeline with:
-
-```
-[cypress-execution-agent]   (existing)
-    │ test_results.md
-    ▼
-[failure-analyzer]          ← NEW, non-LLM: parse Allure JSONs, categorize failures
-    │ failure_report.md       per failing test: error text, failed step, test intent
-    ▼                         each failure tagged FIXABLE / ENV_ISSUE / UNCLEAR
-[spec-fix-agent]            ← NEW, LLM: generate targeted fixes for FIXABLE failures only
-    │ test_scripts_fixed.md   ScriptBundle with only the modified files — not a full rewrite
-    ▼
-[sanity-check]              ← existing CypressSanityPostProcessor runs automatically
-    ▼
-[cypress-execution-agent]   ← re-run failing specs only (--spec <failing-only>)
-    │ test_results_vN.md
-    ▼
-[repeat up to N=2 times]
-    ▼
-[cypress-finalizer]         ← commit best-passing version; unfixable failures noted in sync_report
-```
-
-Enable the loop via env flag so teams can skip it initially:
-```
-FACTORY_CYPRESS_ENABLE_FIX_LOOP=true   # default: false
-FACTORY_CYPRESS_FIX_LOOP_MAX=2         # default: 2
-```
-
-##### `FailureAnalyzerWorker` — non-LLM, the critical gating step
-
-Reads Allure JSON files from `allure-results/` and `test_plan.md`. For each failing test,
-produces a `failure_report.md` entry with:
-- Which step failed and the raw error/assertion message
-- The test's original intent (from `test_plan.md`)
-- A category tag:
-  - `FIXABLE` — structural issues an LLM can reliably fix: import errors, unknown method names
-    (cross-referenced against the fragment library), assertion text mismatches where the actual
-    value is visible in the error, wrong path depth in imports
-  - `ENV_ISSUE` — credential failures, network timeouts, missing test data, tenant not found —
-    no code change can fix these; skip them
-  - `UNCLEAR` — everything else; pass to the fix agent but with low confidence
-
-This step prevents the LLM from burning iterations on environment problems that will never be
-fixed by editing code.
-
-##### `SpecFixAgentWorker` — LLM, surgical fixes only
-
-Key constraints the prompt must enforce explicitly:
-- Only modify files listed in `failure_report.md` as `FIXABLE` or `UNCLEAR` — do not touch
-  passing tests
-- Output a ScriptBundle containing **only the modified files** — a diff, not a full rewrite
-- Fixing a failure by removing or weakening an assertion is not a fix — flag it as `UNFIXABLE`
-  instead
-- If a fix requires a new fragment method that does not exist in the fragment library, generate
-  a fragment stub and include it in the bundle (same pattern as the automation agent)
-
-Re-run command targets only failing specs:
-```bash
-npx cypress run -b chrome --spec <previously-failing-spec-paths> ...
-```
-
-##### What to report
-
-After N iterations, any still-failing tests are surfaced in `sync_report.md` as
-`unfixed_failures` — a list of case IDs with their final error and category. These appear
-prominently in the Jira comment so engineers know exactly what needs manual attention.
-
-##### What's realistically fixable
-
-| Failure type | Auto-fixable? |
+| Class | Role |
 |---|---|
-| Missing import, wrong path depth | Yes |
-| Fragment method name mismatch | Yes — fragment index provides correct names |
-| Assertion text mismatch (actual value in error) | Yes |
-| Wrong capability set name | Yes — context file has canonical names |
-| Timing / element not found (simple) | Partially — add wait/retry, but don't over-pad |
-| Wrong navigation or business logic | Risky — LLM may weaken the assertion; treat as UNCLEAR |
-| Environment: wrong creds, missing data, network | Never — mark ENV_ISSUE and skip |
-| ECS multi-tenant setup errors | Probably not — too subtle; treat as UNCLEAR |
+| `AutomationSelectAgentWorker` | Selection step (above). Replaces Ostap's `cypress-testrail-get-test`. |
+| `AutomateCasesAgentWorker` | The loop, the per-case commits, and the gate 2 report. Reads the reviewer's closing JSON verdict, whatever its key names; the spec path falls back to the case's commit. |
+| `CypressTestFrameworkExplorerAgentWorker`, `CypressTestAutomationGenerationAgentWorker`, `CypressTestAutomationReviewAgentWorker` | Ostap's workers and prompts. Each has a plain method (`explore` / `automate` / `review`) the loop calls. |
+| `AutomationPublishAgentWorker` | PR step. |
+| `AutomationWorkspace` | The work clone: branch per run, commit, discard, push, yarn install, lint-staged. All git calls run without hooks or a credential helper. |
+| `PreCommitChecks.LintStaged` | What the TAF's husky pre-commit hook does, run explicitly before each commit. |
+| `RunEnvironments` | The two FOLIO environments for spec runs (`cypress-run-environments.json`, etesting snapshot diku / consortium). |
+| `ClaudeCodeCli` | `claude --print` with a pinned model and effort, a tool allowlist, a timeout, and `cmd /c` only on Windows. |
+| `DevTeamNames` | TestRail Dev Team id -> name, from Part I's `references/dev-teams.md`. |
 
-##### Prevention is cheaper than repair
+Part I's `cypress-factory.yaml` references these worker ids. There is no Maven dependency between
+the two modules: descriptors are validated against every registered worker in `factory-app`.
 
-Before building Phase 4, consider expanding `CypressSanityPostProcessor` to catch more
-structural issues *before* execution: unknown fragment references (cross-check against
-the fragment library), wrong import depth (verify against bundle file path), tag format
-violations. Better prevention means fewer failures reach the fix loop in the first place.
+## 4. Status and known limits
 
+- Built and run for real end to end (UIU-3562, UIOR-1492): cases -> gate 1 -> sync -> two specs
+  with one commit each -> gate 2 -> PR on the fork. Lint was clean, and a from-scratch clone and
+  install worked.
+- **Spec runs (`RUN_SPECS=true`): implemented, not verified end to end; off by default.** A slow
+  environment (60 s `pageLoadTimeout`) makes specs fail for reasons unrelated to the spec.
+- Gate 2 **Reject and Re-generate** starts over from fresh master; the model does not see its
+  previous specs or findings. A fix is designed (carry the previous results, branch from the
+  previous head).
+- Lint errors that `--fix` can't fix are reported at gate 2, not fixed. Fixing them with the model
+  inside the spec-gen loop, and opening a draft PR when problems remain, is after-demo work.
+- The specs follow the case's dev team, but capability-set names and UI locators the TAF doesn't
+  know yet are guesses, which the reviewer reports as such.
 
 ---
 

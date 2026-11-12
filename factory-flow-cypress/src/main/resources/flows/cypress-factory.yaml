@@ -1,12 +1,12 @@
 id: cypress-factory
 name: Cypress Factory
-version: 2.0.0
+version: 2.2.0
 triggers:
   - event_type: manual
 input_schema:
   required: [issueKey]
 output_schema:
-  artifacts: [test_plan.md]
+  artifacts: [test_plan.md, testrail_cases.json, automation_report.md, automation_publish.json]
 retry_policy:
   max_attempts: 3
   backoff_seconds: [30, 120, 300]
@@ -58,4 +58,53 @@ agent_chain:
     type: AGENT
     worker_id: cypress-testrail-sync
     inputs: [test_plan.md]
-    outputs: [test_plan.md]
+    outputs: [test_plan.md, testrail_cases.json]
+
+  # Automation (module factory-flow-test-automation). Runs on the cases created above, or - started
+  # by partial-run at automation-select with {"testCaseIds": [...]} - on any existing cases.
+  # "automate": false in the payload (or FACTORY_CYPRESS_AUTOMATION_ENABLED=false) turns it off.
+  - step_id: automation-select
+    type: AGENT
+    worker_id: cypress-automation-select
+    inputs: ["$trigger"]
+    optional_inputs: [testrail_cases.json]
+    outputs: [automation_cases.json]
+
+  - step_id: automate
+    type: AGENT
+    worker_id: cypress-automate-cases
+    inputs: [automation_cases.json]
+    optional_inputs: [hitl_feedback.md]
+    outputs: [automation_report.md, automation_results.json]
+
+  - step_id: gate-2-review
+    type: HITL_GATE
+    gate:
+      gate_id: gate-2-autotests
+      title: "AQA review: generated autotests"
+      review_instructions: |
+        automation_report.md lists, per case: the spec that was written, the review agent's
+        verdict and findings, and both agents' summaries. The changes are committed locally on
+        the branch named at the top, one commit per case, in the automation workspace - open the
+        diff there (the report gives the git log command) before approving. A failed case's
+        changes are discarded. Nothing has been pushed.
+
+        - Approve - open a pull request with these specs in FACTORY_CYPRESS_TARGET_REPO (a fork
+          of stripes-testing). Without it set, approving just finishes the run.
+        - Reject and Re-generate - re-runs the automation for the same cases with your notes as
+          feedback, on a fresh branch from master.
+        - "Automation disabled" / "No automatable cases" - nothing to review; approve to finish.
+
+        Before each case's commit the TAF's own pre-commit checks ran (lint-staged: prettier
+        --write, then stripes-lint --fix). Lint errors they could not fix are flagged at the top
+        of the report and listed per case - nothing fixes them automatically yet.
+
+        Spec runs are off unless FACTORY_CYPRESS_AUTOMATION_RUN_SPECS=true, so "spec not run"
+        is expected: the review was static.
+      reviewed_artifacts: [automation_report.md, hitl_feedback.md]
+
+  - step_id: publish
+    type: AGENT
+    worker_id: cypress-automation-publish
+    inputs: [automation_results.json, automation_cases.json]
+    outputs: [automation_publish.json]

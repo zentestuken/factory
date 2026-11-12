@@ -1,0 +1,23 @@
+{
+  "non-ecs": {
+    "baseUrl": "https://folio-etesting-snapshot-diku.ci.folio.org",
+    "env": {
+      "OKAPI_HOST": "https://folio-etesting-snapshot-kong.ci.folio.org",
+      "OKAPI_TENANT": "diku",
+      "diku_login": "diku_admin",
+      "diku_password": "admin",
+      "ecsEnabled": false
+    }
+  },
+  "ecs": {
+    "baseUrl": "https://folio-etesting-snapshot-consortium.ci.folio.org",
+    "env": {
+      "OKAPI_HOST": "https://ecs-folio-etesting-snapshot-kong.ci.folio.org",
+      "OKAPI_TENANT": "consortium",
+      "diku_login": "consortium_admin",
+      "diku_password": "admin",
+      "ecs_env_name": "snapshot",
+      "ecsEnabled": true
+    }
+  }
+}

@@ -82,6 +82,11 @@ public final class UnconfiguredConnectors {
         }
 
         @Override
+        public void syncFork(String repo, String branch) {
+            throw notConfigured();
+        }
+
+        @Override
         public void commitFiles(String repo, String branch, Map<String, String> files, String message) {
             throw notConfigured();
         }

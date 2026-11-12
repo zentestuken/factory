@@ -22,6 +22,7 @@ target/
 
 # auto-cloned stripes-testing TAF (managed at runtime by TafSyncService)
 cypressTafClone/
+cypressTafWork/
 skillsClone/
 debugPrompts/
 

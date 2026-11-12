@@ -1,6 +1,8 @@
 package org.folio.factory.core.engine;
 
 import org.folio.factory.core.domain.Artifact;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.folio.factory.core.domain.AuditEventType;
 import org.folio.factory.core.domain.ExecutionStatus;
 import org.folio.factory.core.domain.HitlReview;
@@ -28,6 +30,7 @@ import java.util.Map;
 public class HitlGateOpener {
 
     public static final String ESCALATION_GATE_ID = "escalation";
+    private static final Logger log = LoggerFactory.getLogger(HitlGateOpener.class);
 
     private final HitlReviewRepository reviews;
     private final ArtifactStore artifactStore;
@@ -71,6 +74,8 @@ public class HitlGateOpener {
         reviews.save(review);
         auditLog.record(execution.getId(), AuditEventType.HITL_REQUESTED, step.stepId(),
                 Map.of("gateId", gate.gateId(), "reviewId", review.getId().toString()));
+        log.info("[gate] Waiting for review: \"{}\" ({} execution {}) - open /reviews/{}",
+                gate.title(), execution.getFlowId(), execution.getId(), review.getId());
         return review;
     }
 
@@ -103,6 +108,8 @@ public class HitlGateOpener {
         reviews.save(review);
         auditLog.record(execution.getId(), AuditEventType.HITL_REQUESTED, step.stepId(),
                 Map.of("gateId", ESCALATION_GATE_ID, "reviewId", review.getId().toString()));
+        log.warn("[gate] Escalated for review: step '{}' failed {} time(s) ({} execution {}) - open /reviews/{}",
+                step.stepId(), attempts, execution.getFlowId(), execution.getId(), review.getId());
         return review;
     }
 

@@ -17,9 +17,11 @@ import org.folio.factory.cypressfactory.plan.TestPlanParser.ParsedCase;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -32,6 +34,9 @@ import java.util.regex.Pattern;
 public class TestRailSyncAgentWorker implements AgentWorker {
 
     public static final String ID = "cypress-testrail-sync";
+    /** Hand-off to the automation steps: the cases this run created, in plan order. */
+    public static final String CREATED_CASES = "testrail_cases.json";
+    private static final JsonMapper JSON = new JsonMapper();
 
     private static final Logger log = LoggerFactory.getLogger(TestRailSyncAgentWorker.class);
     private static final Map<String, Integer> TIER_TO_TEST_GROUP = Map.of(
@@ -82,13 +87,13 @@ public class TestRailSyncAgentWorker implements AgentWorker {
         if (cases.isEmpty()) {
             log.info("No cases found under '{}' in test_plan.md - skipping TestRail sync",
                     TestPlanParser.CASES_HEADING);
-            return AgentResult.of("test_plan.md", testPlan);
+            return synced(testPlan, planFm, 0L, List.of(), Map.of());
         }
 
         long sectionId = resolveSectionId(planFm);
         if (sectionId == 0L) {
             log.info("TestRail section not configured (set FACTORY_CYPRESS_TESTRAIL_SECTION_ID or add testrail_section to test_plan.md frontmatter) - skipping TestRail sync");
-            return AgentResult.of("test_plan.md", testPlan);
+            return synced(testPlan, planFm, 0L, List.of(), Map.of());
         }
 
         long cypressLabelId = resolveCypressLabel();
@@ -115,7 +120,39 @@ public class TestRailSyncAgentWorker implements AgentWorker {
 
         String updatedBody = replaceIds(fm.body(), idMap);
         String updatedContent = frontmatterCodec.render(fm.metadata(), updatedBody);
-        return AgentResult.of("test_plan.md", updatedContent);
+        return synced(updatedContent, planFm, sectionId, cases, idMap);
+    }
+
+    private static AgentResult synced(String plan, JsonNode planFm, long sectionId,
+                                      List<ParsedCase> cases, Map<String, String> idMap) {
+        return new AgentResult(Map.of("test_plan.md", plan,
+                CREATED_CASES, createdCases(planFm, sectionId, cases, idMap)), Map.of());
+    }
+
+    /** Only cases TestRail actually accepted appear, so automation never chases a missing id. */
+    static String createdCases(JsonNode planFm, long sectionId, List<ParsedCase> cases,
+                               Map<String, String> idMap) {
+        List<String> areas = new ArrayList<>();
+        planFm.path("areas").forEach(a -> areas.add(a.asString("")));
+        List<Map<String, Object>> created = new ArrayList<>();
+        for (ParsedCase tc : cases) {
+            String caseId = idMap.get(tc.id());
+            if (caseId == null) continue;
+            Map<String, Object> entry = new LinkedHashMap<>();
+            entry.put("caseId", caseId);
+            entry.put("planId", tc.id());
+            entry.put("title", tc.title());
+            entry.put("automatable", tc.automatable());
+            entry.put("automationNotes", tc.automationNotes() == null ? "" : tc.automationNotes());
+            created.add(entry);
+        }
+        Map<String, Object> root = new LinkedHashMap<>();
+        root.put("issueKey", planFm.path("issue_key").asString(""));
+        root.put("team", planFm.path("team").asString(""));
+        root.put("sectionId", sectionId);
+        root.put("areas", areas);
+        root.put("cases", created);
+        return JSON.writeValueAsString(root);
     }
 
     private long resolveSectionId(JsonNode planFm) {

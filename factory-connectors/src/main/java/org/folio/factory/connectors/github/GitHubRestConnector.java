@@ -46,6 +46,15 @@ public class GitHubRestConnector implements GitHubConnector, ConnectorHealth {
     }
 
     @Override
+    public void syncFork(String repo, String branch) {
+        restClient.post()
+                .uri("/repos/" + repo + "/merge-upstream")
+                .body(Map.of("branch", branch))
+                .retrieve()
+                .toBodilessEntity();
+    }
+
+    @Override
     public void commitFiles(String repo, String branch, Map<String, String> files, String message) {
         for (Map.Entry<String, String> file : files.entrySet()) {
             Map<String, Object> request = new HashMap<>();

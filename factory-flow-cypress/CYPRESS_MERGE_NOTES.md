@@ -16,6 +16,7 @@ Scope, so you can stop reading early:
 | §3 additive changes | Nobody — listed so you do not have to re-derive that they are safe. |
 | §4 cypress deletions | Only if you reused a cypress `worker_id`, or you have parallel work on the cypress flow. Flow modules do not depend on each other, so building a *different* flow is unaffected. |
 | §5 Test Factory | Only the Test Factory owner. |
+| §5b automation joined in | Ostap, or anyone with work in `factory-flow-test-automation`. |
 
 ---
 
@@ -318,6 +319,35 @@ acceptance criteria verbatim. That was motivated by the cypress flow, which no l
 (`acceptance_criteria` in the scope manifest) and all Test Factory tests pass, but if you own
 that flow, be aware the manifest shape grew for a reason that no longer applies. Reverting it is
 safe if you would rather keep the diff honest.
+
+---
+
+## 5b. Test automation joined into `cypress-factory` (branch `cypress-flow-merged`)
+
+For Ostap and anyone with work in `factory-flow-test-automation`. Plan and reasons:
+`factory-flow-cypress/CYPRESS_AUTOMATION_MERGE_PLAN.md`. To set up and run the merged flow:
+`factory-flow-cypress/GETTING_STARTED.md` (short) or `factory-flow-cypress/QUICKSTART.md`
+(the full reference; Cypress flow only).
+
+| Change | What it means for you |
+|---|---|
+| `test-automation-factory.yaml` **deleted** | Its steps are now steps 3-6 of `cypress-factory`: `automation-select` → `automate` → `gate-2-review` → `publish`. Run automation alone with partial-run at `automation-select` and `{"testCaseIds": [...]}` (`PARTIAL_TESTING.md`). |
+| `TestRailGetTestAgentWorker` (`cypress-testrail-get-test`) **deleted** | Replaced by `AutomationSelectAgentWorker` (`cypress-automation-select`). It takes ids from the trigger or from the sync step's `testrail_cases.json`, applies the Automatable flag, the `automate` switch and the case cap, and fetches each case from TestRail. |
+| New `AutomateCasesAgentWorker` (`cypress-automate-cases`) | Loops over the selected cases, calling the explorer, generation and review workers once per case. One commit per case, on one branch per run, whatever the review verdict (a `FAIL` spec stays for the gate 2 reviewer). Only a case whose CLI session errors or times out is recorded as failed and its changes discarded. Writes `automation_report.md` (gate 2) and `automation_results.json`. |
+| Explorer / generation / review workers | Same prompts and same jobs. Each gained a plain method the loop calls (`explore`, `automate`, `review`); `execute` delegates to it. They now work in **`cypressTafWork/`** (`AutomationWorkspace`), not `cypressTafClone/`, which is the case flow's read-only copy. The constructors changed accordingly (see `TestAutomationFlowConfiguration`). |
+| Generation prompt step 1 | "create a new branch …" became "do NOT create or switch branches; the pipeline owns them". The `{{testCaseId}}` and `{{TEST_CASE_ID}}` placeholders were never filled before; they are now. |
+| claude CLI launch | Shared `ClaudeCodeCli`: `cmd.exe /c` only on Windows, a timeout (default 1800 s), and the "claude.ai connectors are disabled" notice stripped from the output. The `CodingAgentCli` interface lets tests fake it. `npx cypress run` is offered to the review session only when `FACTORY_CYPRESS_AUTOMATION_RUN_SPECS=true`. |
+| Explorer file list | Paths are relative, `fixtures/` `jsonSchemas/` `plugins/` `tasks/` are dropped, and `e2e/` is narrowed to the case's area folders. 874 KB → 59 KB for eureka. |
+| `TestAutomationFlowProperties` | Eight new components: `enabled`, `maxCases`, `runSpecs`, `cliTimeoutSeconds`, `workspaceDir`, `runEnvironmentsFile`, `cliModel`, `cliEffort`. The last two are passed to the claude CLI as `--model` / `--effort` (defaults `claude-sonnet-5-5` / `high`), so a run never takes them from the host's `~/.claude/settings.json`. The env vars are in `application.yaml`, `.env.example` and `factory-flow-cypress/QUICKSTART.md`. |
+| Spec runs (`RUN_SPECS=true`) - **implemented, not yet verified end to end; default off** | `RunEnvironments` holds the two FOLIO environments: bundled `cypress-run-environments.json` (etesting snapshot diku and consortium), or a file named by `FACTORY_CYPRESS_AUTOMATION_RUN_ENVS`. Before each case's review, the loop writes stripes-testing's gitignored `environments.js` with the case's profile active, chosen by the TestRail `custom_ecs_enabled` field. `node_modules` comes from the one-time `yarn install` of the workspace (see the pre-commit row). |
+| PR step (`AutomationPublishAgentWorker`, `cypress-automation-publish`, after gate 2) | Opens a PR in `FACTORY_CYPRESS_TARGET_REPO` (a fork, synced with upstream first via the new `GitHubConnector.syncFork` default method). The run's branch is **pushed with git** as-is - one commit per case, any change incl. deletions and binary fixtures - with the token passed as an `http.<host>.extraHeader` through `GIT_CONFIG_*` env vars (never in args or the URL), the same way Flow D's `PublicationGit` does; then the PR is opened through the API. Skipped (`CONNECTOR_SKIPPED`) without the target repo or token; a push/GitHub error is reported, not thrown. |
+| Pre-commit checks (`PreCommitChecks.LintStaged`) | Before each case's commit the loop runs the TAF's own `lint-staged` (`npx lint-staged --no-stash`: prettier --write + stripes-lint --fix on staged `*.js`) - what its husky hook would run - so commits match TAF style. Remaining errors are reported in gate 2 (top warning + per case), not fixed. `node_modules` is installed on the first automation run (not only with `RUN_SPECS`); if that fails, cases still commit and the report says lint was not run. |
+| Dev-team tag | The spec's team tag follows the TestRail case's dev team, not neighbouring specs. `testrail_cases.json` carries the story's team; automation-only runs map the case's `custom_dev_team` id back to a name with `DevTeamNames`, which reads the cypress module's `references/dev-teams.md` from the classpath at runtime (no compile dependency). The loop passes it to the generator explicitly. |
+| Report and PR details | The spec path comes from the reviewer's JSON verdict (any of `test_file` / `spec` / `file`), or else from the case's commit. Case commits read `Automate C… (<issueKey>) - generated by the FOLIO AI factory`. |
+| Known limit: gate-2 Reject and Re-generate | Starts over from fresh master; the model does not see its previous specs or findings. A fix is designed in the merge plan (section 0). |
+| Git hooks off in the work clone | The TAF's `yarn install` runs `husky install`, after which every commit would run `lint-staged`. All factory git calls run with `core.hooksPath` pointed at a non-existent dir, no credential helper and `GIT_TERMINAL_PROMPT=0`. |
+| Terminal lines | `[gate] Waiting for review: …` from `HitlGateOpener` (`factory-core`, every flow, every gate; escalations log a warning). Also `[automation] Automating N of M case(s) …` and `[automation] Finished: …`. |
+| No Maven dependency between the two modules | `cypress-factory.yaml` (in the cypress module) references the automation module's worker ids. Descriptors are validated against every registered worker in `factory-app`, so this works without either module depending on the other. |
 
 ---
 

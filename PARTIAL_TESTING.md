@@ -6,56 +6,41 @@ How to run the cypress-factory flow starting from a specific step, without re-ru
 
 ## Problem
 
-The cypress-factory flow currently has 3 steps (Phase 1): `testcase-gen` → `gate-1` → `testrail-sync`. Phases 2 and 3 will add Cypress spec generation, test execution, and GitHub/Jira finalizer — growing the full chain to ~9 steps with multiple LLM calls. Running the full flow to test a change at step 3 (`cypress-automation`) or later wastes time every iteration. This guide describes how to skip early steps by providing pre-baked artifacts and starting execution at the desired step.
-
-This problem grows with each phase: **Phase 2 and 3 steps are the most important targets for partial testing**, because they are furthest from the trigger and will be iterated on most heavily once implemented.
+Running the whole cypress-factory flow to test a change in a late step wastes time and money: case
+generation alone is several minutes and several LLM calls. Partial-run starts an execution at any
+step, with the artifacts that step needs seeded in the request.
 
 ---
 
-## Flow Step Reference (all planned phases)
+## Flow Step Reference
 
-### Phase 1 — Test Planning (current)
+`cypress-factory` (2026-11-12). Start a partial run by **`startStepId`** - indices shift whenever a
+step is added; `startStepIndex` still works.
 
 | # | step_id | type | inputs | outputs |
 |---|---------|------|--------|---------|
 | 0 | `testcase-gen` | AGENT | `$trigger` (optional: `test_plan.md`, `hitl_feedback.md`) | `test_plan.md` |
 | 1 | `gate-1-review` | HITL_GATE | — | — |
-| 2 | `testrail-sync` | AGENT | `test_plan.md` | `test_plan.md` _(with real C###### IDs)_ |
+| 2 | `testrail-sync` | AGENT | `test_plan.md` | `test_plan.md` _(real C###### ids)_, `testrail_cases.json` |
+| 3 | `automation-select` | AGENT | `$trigger` (optional: `testrail_cases.json`) | `automation_cases.json` |
+| 4 | `automate` | AGENT | `automation_cases.json` (optional: `hitl_feedback.md`) | `automation_report.md`, `automation_results.json` |
+| 5 | `gate-2-review` | HITL_GATE | — | — |
 
-### Phase 2 — Cypress Spec Generation (planned)
+Running specs and fixing them happens inside `automate` (Ostap's review session, when
+`FACTORY_CYPRESS_AUTOMATION_RUN_SPECS=true`); there is no separate execution or failure-analysis
+step. A PR step after gate 2 is planned (`factory-flow-cypress/CYPRESS_AUTOMATION_MERGE_PLAN.md`).
 
-| # | step_id | type | inputs | outputs |
-|---|---------|------|--------|---------|
-| 3 | `cypress-automation` | AGENT | `test_plan.md` _(C###### IDs required)_, `fragment_library.md` | `test_scripts.md` |
-| 4 | `gate-2` | HITL_GATE | — | — |
+**Most common starting points:**
 
-### Phase 3 — Execution & Finalization (planned)
-
-| # | step_id | type | inputs | outputs |
-|---|---------|------|--------|---------|
-| 5 | `cypress-execution` | AGENT | `test_scripts.md`, `test_plan.md` | `test_results.md` |
-| 6 | `cypress-finalize` | AGENT | `test_scripts.md`, `test_results.md`, `scope_manifest.md` | `sync_report.md` |
-
-### Phase 4 — Failure Analysis Loop (optional, planned)
-
-| # | step_id | type | inputs | outputs |
-|---|---------|------|--------|---------|
-| 7 | `failure-analyzer` | AGENT | `test_results.md`, `test_scripts.md` | `failure_report.md` |
-| 8 | `spec-fix-agent` | AGENT | `failure_report.md`, `test_scripts.md` | `test_scripts.md` |
-
-> Step indices 3–8 are indicative — final numbers depend on whether Phase 4 is inserted between Phase 2 and 3 or appended. Update seed examples when the YAML is finalized.
-
-**Most common starting points (all phases):**
-
-| Starting step | What you're testing | Seed artifacts needed |
+| startStepId | What you're testing | Seed |
 |---|---|---|
-| **1** (`gate-1-review`) | Gate amendment flow, gate → testrail-sync path | `test_plan.md` |
-| **2** (`testrail-sync`) | TestRail section/label/team wiring | `test_plan.md` |
-| **3** (`cypress-automation`) ⭐ | Cypress spec generation — most-iterated Phase 2 step | `test_plan.md` _(with real C###### IDs)_, `fragment_library.md` |
-| **5** (`cypress-execution`) | Execution runner, result parsing | `test_scripts.md`, `test_plan.md` |
-| **6** (`cypress-finalize`) | GitHub commit/PR, Jira sync | `test_scripts.md`, `test_results.md`, `scope_manifest.md` |
+| `gate-1-review` | Gate amendment flow, gate → testrail-sync path | artifact `test_plan.md` |
+| `testrail-sync` | TestRail section/label/team wiring, the `testrail_cases.json` hand-off | artifact `test_plan.md` |
+| `automation-select` ⭐ | Automation on existing TestRail cases | **no artifacts** - `triggerPayload: {"testCaseIds": ["C…"], "areas": ["eureka"]}` (`areas` optional, narrows the explorer prompt) |
+| `automate` | The per-case loop with a hand-made selection | artifact `automation_cases.json` (copy one from a prior run) |
 
-> ⭐ Step 3 (`cypress-automation`) will be the most important partial testing target: it is the heaviest LLM call in Phase 2 and the one most frequently iterated during spec generation development.
+> ⭐ `automation-select` is the usual way to iterate on the automation prompts: it fetches the
+> cases from TestRail itself, so the only thing to provide is their ids.
 
 ---
 
@@ -189,7 +174,7 @@ No factory-core changes needed. `StateManager`, `ArtifactStore`, `FlowRegistry`,
      -d '{
        "flowId": "cypress-factory",
        "startStepIndex": 2,
-       "triggerPayload": {"issueKey": "ERM-1234"},
+       "triggerPayload": {"issueKey": "ERM-1234", "automate": false},
        "artifacts": {
          "test_plan.md": "---\nissue_key: ERM-1234\nteam: spitfire\necs_story: \"non-ecs\"\ntestrail_section: 114774\ncase_count: 1\n---\n\n## TC-1: Create purchase order\n\n..."
        }
@@ -214,6 +199,9 @@ edit system.md / user.md under prompts/cypress-testcase-gen/
 
 **To start from step 2 (testrail-sync only):**
 
+`"automate": false` keeps the run from going on into the (paid) automation steps after the sync;
+gate 2 then opens with "Automation disabled" - approve it to finish.
+
 Replace `114774` with your real TestRail section ID, then copy and paste as-is:
 
 ```bash
@@ -223,7 +211,7 @@ curl -s -X POST http://localhost:8080/api/debug/partial-run \
 {
   "flowId": "cypress-factory",
   "startStepIndex": 2,
-  "triggerPayload": {"issueKey": "ERM-1234"},
+  "triggerPayload": {"issueKey": "ERM-1234", "automate": false},
   "artifacts": {
     "test_plan.md": "---\nissue_key: ERM-1234\nteam: spitfire\necs_story: \"non-ecs\"\ntestrail_section: 114774\ncase_count: 1\n---\n\n## TC-1: Create purchase order\n\n- **Tier:** criticalPath\n- **Automatable:** Yes\n- **ECS:** No\n\n**Preconditions**\n- User with Acquisitions module access is logged in\n- At least one active vendor record exists in the system\n\n**Steps**\n1. **Action:** Navigate to the Orders module and open Purchase orders\n   **Expected:** Purchase orders list is displayed with New button visible\n2. **Action:** Click New to open the order creation form\n   **Expected:** Order creation form opens with all required fields empty\n3. **Action:** Fill in Vendor and Order type then click Save and close\n   **Expected:** Order is saved with status Pending and appears in the list\n"
   }
@@ -242,7 +230,7 @@ curl -s -X POST http://localhost:8080/api/debug/partial-run \
 {
   "flowId": "cypress-factory",
   "startStepIndex": 1,
-  "triggerPayload": {"issueKey": "ERM-1234"},
+  "triggerPayload": {"issueKey": "ERM-1234", "automate": false},
   "artifacts": {
     "test_plan.md": "---\nissue_key: ERM-1234\nteam: spitfire\necs_story: \"non-ecs\"\ntestrail_section: 114774\ncase_count: 1\n---\n\n## TC-1: Create purchase order\n\n- **Tier:** criticalPath\n- **Automatable:** Yes\n- **ECS:** No\n\n**Preconditions**\n- User with Acquisitions module access is logged in\n- At least one active vendor record exists in the system\n\n**Steps**\n1. **Action:** Navigate to the Orders module and open Purchase orders\n   **Expected:** Purchase orders list is displayed with New button visible\n2. **Action:** Click New to open the order creation form\n   **Expected:** Order creation form opens with all required fields empty\n3. **Action:** Fill in Vendor and Order type then click Save and close\n   **Expected:** Order is saved with status Pending and appears in the list\n"
   }
@@ -250,49 +238,18 @@ curl -s -X POST http://localhost:8080/api/debug/partial-run \
 EOF
 ```
 
-**To start from step 3 (cypress-automation — Phase 2):**
+**To run automation only, on existing TestRail cases (start at `automation-select`):**
+
+No artifacts needed: the step reads the case ids from the trigger payload and fetches the cases
+from TestRail itself. `areas` is optional; it narrows the explorer's file list (e.g. `["eureka"]`,
+`["inventory"]`).
+
 ```bash
-# test_plan.md MUST contain real C###### IDs (produced by testrail-sync at step 2)
-# fragment_library.md is the TAF fragment index
--d '{
-  "flowId": "cypress-factory",
-  "startStepIndex": 3,
-  "triggerPayload": {"issueKey": "ERM-1234"},
-  "artifacts": {
-    "test_plan.md": "---\nissue_key: ERM-1234\nteam: spitfire\necs_story: \"non-ecs\"\ncase_count: 1\n---\n\n## C1234567: Create purchase order\n\n- **Tier:** criticalPath\n- **Automatable:** Yes\n- **ECS:** No\n\n**Steps**\n1. **Action:** ...\n   **Expected:** ...\n",
-    "fragment_library.md": "# TAF Fragments\n..."
-  }
-}'
+curl -s -X POST http://localhost:8080/api/debug/partial-run -H 'Content-Type: application/json' -d '{"flowId":"cypress-factory","startStepId":"automation-select","triggerPayload":{"testCaseIds":["C656309"],"areas":["inventory"]}}'
 ```
 
-> `test_plan.md` here must come from a completed step 2 output — it needs real C###### IDs, not TC-## placeholders. Extract from a prior full run via the UI or `GET /api/executions/{id}`.
-
-**To start from step 5 (cypress-execution — Phase 3):**
-```bash
--d '{
-  "flowId": "cypress-factory",
-  "startStepIndex": 5,
-  "triggerPayload": {"issueKey": "ERM-1234"},
-  "artifacts": {
-    "test_scripts.md": "# Cypress Specs\n...",
-    "test_plan.md": "---\nissue_key: ERM-1234\nteam: spitfire\necs_story: \"non-ecs\"\ncase_count: 1\n---\n\n## C1234567: Create purchase order\n\n..."
-  }
-}'
-```
-
-**To start from step 6 (cypress-finalize — Phase 3):**
-```bash
--d '{
-  "flowId": "cypress-factory",
-  "startStepIndex": 6,
-  "triggerPayload": {"issueKey": "ERM-1234"},
-  "artifacts": {
-    "test_scripts.md": "# Cypress Specs\n...",
-    "test_results.md": "# Test Results\n...",
-    "scope_manifest.md": "---\nissue_key: ERM-1234\n..."
-  }
-}'
-```
+The run stops at gate 2 with the automation report. Its branch is `factory/<firstCaseId>` in
+`cypressTafWork/`.
 
 ### Cleanup / Revert
 
@@ -320,23 +277,6 @@ Or via UI: executions that were manually seeded show up in the execution list no
 | Full audit trail and execution history | |
 | Works for any step in any flow — not cypress-specific | |
 | Zero production impact (endpoint literally does not exist when disabled) | |
-
----
-
-## Phase 2/3 Readiness Checklist
-
-When Phase 2 (`cypress-automation`) is added to the flow YAML:
-
-1. Update the step index table in this document with the final step numbers from `cypress-factory.yaml`.
-2. Save a real `test_plan.md` output (with C###### IDs) from a completed full run as `fixtures/test_plan_phase2_seed.md`.
-3. Save a real `fragment_library.md` from the same run as `fixtures/fragment_library_seed.md`.
-4. Implement the debug endpoint if not already done — Phase 2 will be iterated on far more than Phase 1 steps.
-
-When Phase 3 (`cypress-execution`, `cypress-finalize`) is added:
-
-1. Update step indices again.
-2. Save a real `test_scripts.md` from a gate-2-approved run as `fixtures/test_scripts_seed.md`.
-3. For `cypress-finalize` partial runs: use a real `test_results.md` with both pass and fail entries to exercise all branch paths of the finalizer.
 
 ---
 

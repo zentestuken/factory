@@ -49,6 +49,17 @@ class GitHubRestConnectorTest {
     }
 
     @Test
+    void syncForkMergesUpstreamIntoTheGivenBranch() {
+        server.expect(requestTo("https://api.github.com/repos/me/stripes-testing/merge-upstream"))
+                .andExpect(method(POST))
+                .andExpect(jsonPath("$.branch").value("master"))
+                .andRespond(withSuccess());
+
+        connector.syncFork("me/stripes-testing", "master");
+        server.verify();
+    }
+
+    @Test
     void commitFilesCreatesNewFileWhenAbsent() {
         server.expect(requestTo("https://api.github.com/repos/o/r/contents/tests/a.feature?ref=b"))
                 .andExpect(method(GET))
